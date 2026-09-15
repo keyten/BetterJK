@@ -1,105 +1,232 @@
-# OpenJK
+# BetterJK
 
-OpenJK is a community effort to maintain and improve the game and engine powering Jedi Academy and Jedi Outcast, while maintaining _full backwards compatibility_ with the existing games and mods.  
-This project does not intend to add major features, rebalance, or otherwise modify core gameplay.
+This mod brings various gameplay extensions and new modding abilities into Jedi Academy / Jedi Outcast. It attempts to keep the full backward compatibility with the game and mods by introducing any changes only under commands. Therefore the game should behaving exactly same as before, until you execute a command or install a mod that enables new functionality.
 
-Our aims are to:
+It is single player only.
 
-- Improve the stability of the engine by fixing bugs and improving performance.
-- Support more hardware (x86_64, Arm, Apple Silicon) and software platforms (Linux, macOS)
-- Provide a clean base from which new code modifications can be made.
+The name is a reference to a BetterJA mod that I once maintained.
 
-[![discord](https://img.shields.io/badge/discord-join-7289DA.svg?logo=discord&longCache=true&style=flat)](https://discord.gg/dPNCfeQ)
-[![forum](https://img.shields.io/badge/forum-JKHub.org%20OpenJK-brightgreen.svg)](https://jkhub.org/forums/forum/49-openjk/)
+## Map-specific scripts
 
-[![build](https://github.com/JACoders/OpenJK/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/JACoders/OpenJK/actions/workflows/build.yml?query=branch%3Amaster)
-[![coverity](https://scan.coverity.com/projects/1153/badge.svg)](https://scan.coverity.com/projects/1153)
+In mods you can bind commands to a map loading/unloading. Examples of usage:
+- give some item (saber, weapon, force power) only on specific map to change its gameplay
+- update renderer settings, so that specific map gets some colour correction, light settings or anything like that
+- add physical objects (cloth, pushable entities, etc) to playable maps
 
-## Supported Games
+Example:
 
-| Game | Single Player | Multi Player |
-| - | - | - |
-| Jedi Academy | ✅ Stable | ✅ Stable |
-| Jedi Outcast | 😧 Works, needs attention | 🙅 Not supported - consider [JK2MV](https://jk2mv.org) |
+**give_red_saber_on_t1_rail.pk3** - a mod that gives you Force Deflect exclusively on t1_rail map:
+```
+maps_configs/t1_rail/give_force_deflect.cfg
+maps_configs/t1_rail/give_force_deflect_unload.cfg
+```
 
-Please direct support queries, discussions and feature requests to the JKHub sub-forum or Discord linked above.
+**give_force_deflect.cfg**:
+```
+setforcedeflect 1
+```
 
-## License
+**give_force_deflect_unload.cfg**
+```
+setforcedeflect 0
+```
+
+Please always make sure to unload your changes, so that they don't leak into other maps.
+
+## New physical objects
+
+You can use `get_position` command on the map to get your current in-map coordinates.
+
+### Cloth
+
+Adds a rectangle cloth. It reacts to the player, npcs (including force gripped ones), force push/pull and saber damage.
+
+```
+add_cloth x y z width height angle [shader]
+```
+
+Example:
+
+```
+add_cloth 100 200 300 128 192 90 textures/kejim/metal
+```
+
+### Movable entities
+
+Adds an object in front of the player. The object can knockdown NPCs, can be pushed, pulled and moved via Force Telekinesis. 
+
+```
+add_object objectname mass
+```
+
+Examples:
+```
+add_object box 80
+add_object barrel 40
+add_object imperial/crate_02 150
+add_object models/map_objects/hoth/crate_snow.md3 120
+```
+
+You can also make an existing in-map entity physical by doing:
+```
+make_entity_physical <entity_id> <mass>
+```
+
+You can find out `entity_id` of the entity under your crosshair by `get_entity_id`.
+
+UNSTABLE: you can also make all entities on the map physical by:
+```
+make_all_entities_physical [mass]
+convert_static_models [mass]
+```
+
+### UNSTABLE: deformable objects
+
+Same but the objects can be deformed. This is absolutely not working the way I wanted, so I mark it as unstable.
+
+```
+add_object_deform <objectname> <mass> [density] [elasticity] [plasticity] [damping] [iterations]
+```
+
+Example:
+```
+add_object_deform box 80
+add_object_deform barrel 120 2.0 0.35 0.9 0.94 7
+```
+
+BSP surfaces can also be made deformable from explosions / concussions, but that works even worse.
+
+Uses Verlet:
+```
+make_box_deform x y z width height depth [density] [elasticity] [plasticity] [damping] [iterations]
+```
+
+Tries to just create a crater:
+```
+make_box_deform2 x y z width height depth [depth_scale] [edge_noise]
+```
+
+## New force powers
+
+### Force Telekinesis
+
+Same as Force Grip in The Force Unleashed.
+
+Grabs an NPC or an objects and lets you move them in space. Unlike Force Grip, doesn't do damage on the NPC.
+
+- If you release NPC/object while moving it somewhere, it'll be pushed that way (same as in TFU).
+- Works with pull and push.
+- Physical objects are also movable (added by `add_object` command).
+- You cannot move while holding someone or something, as your movement keys are used to move the held object.
+
+```
+setForceTelekinesis 3
+```
+
+### Force Soar
+
+Gives you more aerial abilities but requires some skill.
+- You can sit to the wall (not just push from it).
+- Wallruns and wallflips can be done even when you touch the wall mid-air.
+- Second jump available after touching the wall (wallruns and wallflips).
+- You can freeze for a few attacks in the air before landing.
+
+```
+setForceSoar 3
+```
+
+### Deflect
+
+Lets you protect yourself from weapons without a saber. Inspired by Kylo Ren's from Ep. 9.
+
+- Level 1: lets you freeze a blaster bolt, it'll disappear after.
+- Level 2: you can also move.
+- Level 3: deflects the bolt back into enemy.
+
+### Chain Lightning
+
+Works on one NPC for 2 seconds, spreads to the next NPC after 1 second. Activated by _Force Grip 4 + Lightning_, but can be used as a separate FP.
+
+- Level 1: max 2 NPC
+- Level 2: max 5 NPC
+- Level 3: unlimited.
+
+```
+setForceChainLightning 3
+bind J +force_chain_lightning
+```
+
+## Some force powers are upped to 4-5
+
+No existing force power is changed. Some are overpowered intentionally, so you can use them to play as Vader / Yoda / Starkiller.
+
+### Saber throw
+
+Level 4 added:
+- Dual swords are thrown both together (saber throw 3 throws only one sword)
+- Staff can be thrown
+
+```
+setSaberThrow 4
+```
+
+### Force Push, Pull, Jump
+
+Levels 4 and 5 added. Extended range, distance and power.
+
+**Force Pull 5** can disarm a lightsaber from a weak NPC.
+
+```
+setForceJump 5
+setForcePush 5
+setForcePull 5
+```
+
+### Force Grip
+
+Levels 4 and 5 added.
+- Extended distance (level 4 - 768, level 5 - 1024)
+- Works on ungrippable NPCs (such as Desann)
+- Level 4: turns off Force Absorb 1-2
+- Level 5: turns off Force Absorb 3
+- Level 4: grips two NPC (without force) at the same time
+- Level 5: grips three NPC
+
+Combination with forces:
+- Grip 4/5 + Lightning: works as Chain Lightning
+- Grip 4/5 + Drain: pulls the player to the NPC and activates Force Drain
+- Grip 4/5 + Attack: does Force Pull + attack, impossible to deflect.
+
+```
+setForceGrip 5
+```
+
+### Force Drain 4
+
+- Turns off NPCs Force Absorb 1-2, Force Protection 1-2, Force Heal 1-2
+- Ignores Force Push 1
+- Drains HP & FP faster.
+
+```
+setForceDrain 4
+```
+
+### Force Heal
+
+Level 4:
+- Heals faster.
+- Ups maximum hp to 120.
+
+```
+setForceHeal 4
+```
+
+## How to install
+
+
+
+## OpenJK
+
+TAL at the original OpenJK readme [here](https://github.com/JACoders/OpenJK/blob/master/README.md).
 
 OpenJK is licensed under GPLv2 as free software. You are free to use, modify and redistribute OpenJK following the terms in [LICENSE.txt](https://github.com/JACoders/OpenJK/blob/master/LICENSE.txt)
-
-## For players
-
-To install OpenJK, you will first need Jedi Academy installed. If you don't already own the game you can buy it from online stores such as [Steam](https://store.steampowered.com/app/6020/), [Amazon](https://www.amazon.com/Star-Wars-Jedi-Knight-Academy-Pc/dp/B0000A2MCN) or [GOG](https://www.gog.com/game/star_wars_jedi_knight_jedi_academy).
-
-Download the [latest build](https://github.com/JACoders/OpenJK/releases/tag/latest) ([alt link](https://builds.openjk.org)) for your operating system.
-
-Installing and running OpenJK:
-
-1. Extract the contents of the file into the Jedi Academy `GameData/` folder. For Steam users, this will be in `<Steam Folder>/steamapps/common/Jedi Academy/GameData/`.
-1. Run `openjk.x86.exe` (Windows), `openjk.i386` (Linux 32-bit), `openjk.x86_64` (Linux 64-bit) or the `OpenJK` app bundle (macOS), depending on your operating system.
-
-### Linux Instructions
-
-If you do not have an existing JKA installation and need to download the base game:
-
-1. Download and Install SteamCMD [SteamCMD](https://developer.valvesoftware.com/wiki/SteamCMD#Linux).
-1. Set the download path using steamCMD: `force_install_dir /path/to/install/jka/`
-1. Using SteamCMD Set the platform to windows to download any windows game on steam. @sSteamCmdForcePlatformType "windows"
-1. Using SteamCMD download the game, `app_update 6020`.
-
-Extract the contents of the file into the Jedi Academy `GameData/` folder. For Steam users, this will be in `<Steam Folder>/steamapps/common/Jedi Academy/GameData/`.
-
-### macOS Instructions
-
-If you have the Mac App Store Version of Jedi Academy, follow these steps to get OpenJK runnning under macOS:
-
-1. Install [Homebrew](https://brew.sh/) if you don't have it.
-1. Open the Terminal app, and enter the command `brew install sdl2`.
-1. Extract the contents of the OpenJK DMG into the game directory `/Applications/Star Wars Jedi Knight: Jedi Academy.app/Contents/`
-1. Run `OpenJK.app` or `OpenJK SP.app`
-1. Savegames, Config Files and Log Files are stored in `/Users/$USER/Library/Application Support/OpenJK/`
-
-## For Developers
-
-### Building OpenJK
-
-- [Compilation guide](https://github.com/JACoders/OpenJK/wiki/Compilation-guide)
-- [Debugging guide](https://github.com/JACoders/OpenJK/wiki/Debugging)
-
-### Contributing to OpenJK
-
-- [Fork](https://github.com/JACoders/OpenJK/fork) the project on GitHub
-- Create a new branch and make your changes
-- Send a [pull request](https://help.github.com/articles/creating-a-pull-request) to upstream (JACoders/OpenJK)
-
-### Using OpenJK as a base for a new mod
-
-- [Fork](https://github.com/JACoders/OpenJK/fork) the project on GitHub
-- Change the JK_VERSION define in codemp/qcommon/game_version.h from "OpenJK" to your project name
-- If you make a nice change, please consider back-porting to upstream via pull request as described above. This is so everyone benefits without having to reinvent the wheel for every project.
-
-## Maintainers (full list: [@JACoders](https://github.com/orgs/JACoders/people))
-
-Leads:
-
-- [Ensiform](https://github.com/ensiform)
-- [razor](https://github.com/Razish)
-- [Xycaleth](https://github.com/xycaleth)
-
-## Significant contributors ([full list](https://github.com/JACoders/OpenJK/graphs/contributors))
-
-- [bibendovsky](https://github.com/bibendovsky) (save games, platform support)
-- [BobaFett](https://github.com/Lrns123)
-- [BSzili](https://github.com/BSzili) (JK2, platform support)
-- [Cat](https://github.com/deepy) (infra)
-- [Didz](https://github.com/dionrhys)
-- [eezstreet](https://github.com/eezstreet)
-- exidl (SDL2, platform support)
-- [ImperatorPrime](https://github.com/ImperatorPrime) (JK2)
-- [mrwonko](https://github.com/mrwonko)
-- [redsaurus](https://github.com/redsaurus)
-- [Scooper](https://github.com/xScooper)
-- [Sil](https://github.com/TheSil)
-- [smcv](https://github.com/smcv) (debian packaging)
-- [Tristamus](https://tristamus.com>) (icon)
