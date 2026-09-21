@@ -602,6 +602,24 @@ uint32_t RB_CreateSkySortKey(const DrawItem& item, int stage, int skyNumber, int
 	return key;
 }
 
+// Opaque lightall stages of a view with screen-space reflections also write
+// the SSR material attachments of renderFbo (tr_ssr.cpp). Blended stages
+// must not: they would blend the material data.
+static bool RB_WritesSSRMaterial( const shaderProgram_t *sp, uint32_t stateBits, bool forceRefraction )
+{
+	if ( !backEnd.ssrView || backEnd.depthFill || backEnd.refractionFill || forceRefraction )
+		return false;
+
+	if ( sp < tr.lightallShader || sp >= tr.lightallShader + LIGHTDEF_COUNT )
+		return false;
+
+	if ( stateBits & GLS_COLORMASK_BITS )
+		return false;
+
+	const uint32_t blendBits = stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
+	return blendBits == 0 || blendBits == (GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO);
+}
+
 uint32_t RB_CreateSortKey( const DrawItem& item, int stage, int layer )
 {
 	uint32_t key = 0;
@@ -2051,6 +2069,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 						uniformDataWriter.SetUniformVec4(UNIFORM_CUBEMAPINFO, vec);
 					}
+					else if (R_SSRResourcesEnabled())
+					{
+						// lightall computes the specular reflectance for SSR
+						// even without a cubemap
+						samplerBindingsWriter.AddStaticImage(tr.envBrdfImage, TB_ENVBRDFMAP);
+					}
 
 					// screen-space AO (r) and sun contact shadow (g) of this
 					// view, see RB_RenderScreenSpaceLighting
@@ -2106,6 +2130,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		DrawItem item = {};
 		item.renderState.stateBits = stateBits;
 		item.renderState.cullType = forceRefraction ? CT_TWO_SIDED : cullType;
+		item.renderState.ssrAux = RB_WritesSSRMaterial(sp, stateBits, forceRefraction);
 		item.renderState.depthRange = RB_GetDepthRange(backEnd.currentEntity, input->shader);
 		item.program = sp;
 		item.ibo = input->externalIBO ? input->externalIBO : backEndData->currentFrame->dynamicIbo;

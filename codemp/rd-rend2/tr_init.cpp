@@ -181,6 +181,22 @@ cvar_t  *r_motionBlurCutAngle;
 cvar_t  *r_motionBlurReset;
 cvar_t  *r_motionBlurDebug;
 
+cvar_t  *r_ssr;
+cvar_t  *r_ssrQuality;
+cvar_t  *r_ssrSteps;
+cvar_t  *r_ssrRefineSteps;
+cvar_t  *r_ssrMaxDistance;
+cvar_t  *r_ssrThickness;
+cvar_t  *r_ssrMaxRoughness;
+cvar_t  *r_ssrEdgeFade;
+cvar_t  *r_ssrHalfRes;
+cvar_t  *r_ssrHiZ;
+cvar_t  *r_ssrTemporal;
+cvar_t  *r_ssrTemporalWeight;
+cvar_t  *r_ssrStrength;
+cvar_t  *r_ssrCompare;
+cvar_t  *r_ssrDebug;
+
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
 cvar_t  *r_deluxeMapping;
@@ -1632,6 +1648,37 @@ void R_Register( void )
 	r_motionBlurDebug = ri.Cvar_Get( "r_motionBlurDebug", "0", CVAR_CHEAT, "Motion blur debug view: 1 = velocity, 2 = camera velocity, 3 = object velocity, 4 = sample count, 5 = blur contribution" );
 	ri.Cvar_CheckRange( r_motionBlurDebug, 0, 5, qtrue );
 
+	r_ssr = ri.Cvar_Get( "r_ssr", "0", CVAR_ARCHIVE | CVAR_LATCH, "Screen-space reflections, blended with the cubemap reflections of PBR materials (needs r_specularMapping)" );
+	ri.Cvar_CheckRange( r_ssr, 0, 1, qtrue );
+	r_ssrQuality = ri.Cvar_Get( "r_ssrQuality", "1", CVAR_ARCHIVE, "SSR quality: 0 = low, 1 = medium, 2 = high, 3 = ultra" );
+	ri.Cvar_CheckRange( r_ssrQuality, 0, 3, qtrue );
+	r_ssrSteps = ri.Cvar_Get( "r_ssrSteps", "0", CVAR_ARCHIVE, "SSR ray march steps, 0 = from r_ssrQuality" );
+	ri.Cvar_CheckRange( r_ssrSteps, 0, 256, qtrue );
+	r_ssrRefineSteps = ri.Cvar_Get( "r_ssrRefineSteps", "0", CVAR_ARCHIVE, "SSR binary search steps after a ray crossing, 0 = from r_ssrQuality" );
+	ri.Cvar_CheckRange( r_ssrRefineSteps, 0, 16, qtrue );
+	r_ssrMaxDistance = ri.Cvar_Get( "r_ssrMaxDistance", "1024", CVAR_ARCHIVE, "SSR maximum ray length in world units (shortened on rough surfaces)" );
+	ri.Cvar_CheckRange( r_ssrMaxDistance, 16.0f, 16384.0f, qfalse );
+	r_ssrThickness = ri.Cvar_Get( "r_ssrThickness", "8", CVAR_ARCHIVE, "SSR assumed thickness of the depth buffer surfaces in world units (grows with the distance)" );
+	ri.Cvar_CheckRange( r_ssrThickness, 0.5f, 256.0f, qfalse );
+	r_ssrMaxRoughness = ri.Cvar_Get( "r_ssrMaxRoughness", "0.6", CVAR_ARCHIVE, "Rougher surfaces only use the cubemap reflection (SSR fades out towards this roughness)" );
+	ri.Cvar_CheckRange( r_ssrMaxRoughness, 0.05f, 1.0f, qfalse );
+	r_ssrEdgeFade = ri.Cvar_Get( "r_ssrEdgeFade", "0.1", CVAR_ARCHIVE, "SSR fade out band at the screen edges, fraction of the view size" );
+	ri.Cvar_CheckRange( r_ssrEdgeFade, 0.0f, 0.5f, qfalse );
+	r_ssrHalfRes = ri.Cvar_Get( "r_ssrHalfRes", "-1", CVAR_ARCHIVE, "SSR rays at half resolution: -1 = from r_ssrQuality, 0 = full, 1 = half" );
+	ri.Cvar_CheckRange( r_ssrHalfRes, -1, 1, qtrue );
+	r_ssrHiZ = ri.Cvar_Get( "r_ssrHiZ", "-1", CVAR_ARCHIVE, "SSR hierarchical depth tracing: -1 = from r_ssrQuality, 0 = off, 1 = on" );
+	ri.Cvar_CheckRange( r_ssrHiZ, -1, 1, qtrue );
+	r_ssrTemporal = ri.Cvar_Get( "r_ssrTemporal", "0", CVAR_ARCHIVE | CVAR_LATCH, "SSR temporal accumulation (reprojected history, uses the velocity buffer)" );
+	ri.Cvar_CheckRange( r_ssrTemporal, 0, 1, qtrue );
+	r_ssrTemporalWeight = ri.Cvar_Get( "r_ssrTemporalWeight", "0.9", CVAR_ARCHIVE, "SSR history weight of the temporal accumulation" );
+	ri.Cvar_CheckRange( r_ssrTemporalWeight, 0.0f, 0.98f, qfalse );
+	r_ssrStrength = ri.Cvar_Get( "r_ssrStrength", "1", CVAR_ARCHIVE, "SSR confidence scale: 0 = cubemap reflections only, 1 = full SSR where it is reliable" );
+	ri.Cvar_CheckRange( r_ssrStrength, 0.0f, 1.0f, qfalse );
+	r_ssrCompare = ri.Cvar_Get( "r_ssrCompare", "0", CVAR_ARCHIVE, "SSR split screen: left half cubemap reflections only, right half with SSR" );
+	ri.Cvar_CheckRange( r_ssrCompare, 0, 1, qtrue );
+	r_ssrDebug = ri.Cvar_Get( "r_ssrDebug", "0", CVAR_CHEAT, "SSR debug view: 1 = material normal, 2 = roughness, 3 = specular reflectance, 4 = ray hit/miss, 5 = hit distance, 6 = confidence, 7 = raw SSR, 8 = cubemap reflection, 9 = hybrid reflection, 10 = replaced part (SSR - cubemap)" );
+	ri.Cvar_CheckRange( r_ssrDebug, 0, 10, qtrue );
+
 	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );
 	r_deluxeMapping = ri.Cvar_Get( "r_deluxeMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable reading deluxemaps when compiled with q3map2" );
@@ -1886,7 +1933,7 @@ static void R_InitBackEndFrameData()
 	bool reserveTemporalUbo = (r_smaa->integer == 2
 		// || r_smaa->integer == 4
 		// || r_taa->integer
-		// || r_ssr->integer
+		|| (r_ssr->integer && r_ssrTemporal->integer)
 		|| r_motionBlur->integer
 		);
 

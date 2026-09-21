@@ -306,6 +306,10 @@ void GL_State( uint32_t stateBits )
 		{
 			qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		}
+
+		// the SSR attachments of renderFbo are only written by the draws
+		// that ask for it, see RB_SetRenderState
+		GL_ResetSSRAuxWrite();
 	}
 
 	//
@@ -631,6 +635,9 @@ void RB_BeginDrawingView (void) {
 		// Clear the glow target
 		qglClearBufferfv (GL_COLOR, 1, colorBlack);
 	}
+
+	// screen-space reflections of this view: clears the SSR attachments
+	RB_SSRBeginView();
 
 	if ( ( backEnd.refdef.rdflags & RDF_HYPERSPACE ) )
 	{
@@ -1074,6 +1081,7 @@ static void RB_SetRenderState(const RenderState& renderState)
 {
 	GL_Cull(renderState.cullType);
 	GL_State(renderState.stateBits);
+	GL_SetSSRAuxWrite(renderState.ssrAux);
 	GL_DepthRange(
 		renderState.depthRange.minDepth,
 		renderState.depthRange.maxDepth);
@@ -1173,6 +1181,8 @@ static void RB_DrawItems(
 			qglDisable(GL_RASTERIZER_DISCARD);
 		}
 	}
+
+	GL_SetSSRAuxWrite(false);
 }
 
 void RB_AddDrawItem( Pass *pass, uint32_t sortKey, const DrawItem& drawItem )
@@ -1430,7 +1440,32 @@ static void RB_SubmitRenderPass(
 		return sortKeys[a] < sortKeys[b];
 	});
 
-	RB_DrawItems(renderPass.numDrawItems, renderPass.drawItems, drawOrder);
+	if (!RB_SSRActive())
+	{
+		RB_DrawItems(renderPass.numDrawItems, renderPass.drawItems, drawOrder);
+		return;
+	}
+
+	// Screen-space reflections replace part of the cubemap reflections of
+	// the opaque surfaces: draw the opaque sort (without its fog passes),
+	// trace and composite, then decals, fog and everything blended on top.
+	// See RB_CreateSortKey for the key layout.
+	uint32_t numOpaqueItems = numDrawItems;
+	for ( uint32_t i = 0; i < numDrawItems; ++i )
+	{
+		const uint32_t key = sortKeys[drawOrder[i]];
+		const uint32_t layer = key >> 28;
+		const uint32_t stage = (key >> 24) & 0xf;
+		if ( layer > SS_OPAQUE || (layer == SS_OPAQUE && stage >= 14) )
+		{
+			numOpaqueItems = i;
+			break;
+		}
+	}
+
+	RB_DrawItems(numOpaqueItems, renderPass.drawItems, drawOrder);
+	RB_RenderSSR();
+	RB_DrawItems(numDrawItems - numOpaqueItems, renderPass.drawItems, drawOrder + numOpaqueItems);
 }
 
 /*
@@ -2134,6 +2169,7 @@ static void RB_RenderDepthOnly( drawSurf_t *drawSurfs, int numDrawSurfs )
 		!backEnd.colorMask[1],
 		!backEnd.colorMask[2],
 		!backEnd.colorMask[3]);
+	GL_ResetSSRAuxWrite();
 	backEnd.depthFill = qfalse;
 
 	if (tr.msaaResolveVelocityFbo && needVelocityBuffer)
@@ -2883,6 +2919,7 @@ static const void *RB_ColorMask(const void *data)
 	backEnd.colorMask[3] = (qboolean)(!cmd->rgba[3]);
 
 	qglColorMask(cmd->rgba[0], cmd->rgba[1], cmd->rgba[2], cmd->rgba[3]);
+	GL_ResetSSRAuxWrite();
 
 	return (const void *)(cmd + 1);
 }
@@ -3349,6 +3386,7 @@ const void *RB_PostProcess(const void *data)
 
 	RB_AODebugOverlay();
 	RB_MotionBlurDebugOverlay();
+	RB_SSRDebugOverlay();
 
 	backEnd.framePostProcessed = qtrue;
 	FBO_Bind(NULL);

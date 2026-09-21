@@ -146,6 +146,7 @@ void FBO_CreateBuffer(FBO_t *fbo, int format, int index, int multisample)
 	switch(format)
 	{
 		case GL_RG16F:
+		case GL_RGB10_A2:
 		case GL_RGB:
 		case GL_RGBA:
 		case GL_RGB8:
@@ -433,6 +434,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.renderFbo);
 		FBO_CreateBuffer(tr.renderFbo, hdrFormat, 0, multisample);
 		FBO_CreateBuffer(tr.renderFbo, hdrFormat, 1, multisample);
+		R_AttachSSRRenderTargets(tr.renderFbo, multisample);
 		FBO_CreateBuffer(tr.renderFbo, GL_DEPTH24_STENCIL8, 0, multisample);
 		FBO_SetupDrawBuffers();
 
@@ -445,6 +447,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.msaaResolveFbo);
 		FBO_AttachTextureImage(tr.renderImage, 0);
 		FBO_AttachTextureImage(tr.glowImage, 1);
+		R_AttachSSRRenderTargets(tr.msaaResolveFbo, 0);
 		R_AttachFBOTexturePackedDepthStencil(tr.renderDepthImage->texnum);
 		FBO_SetupDrawBuffers();
 
@@ -459,6 +462,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.renderFbo);
 		FBO_AttachTextureImage(tr.renderImage, 0);
 		FBO_AttachTextureImage(tr.glowImage, 1);
+		R_AttachSSRRenderTargets(tr.renderFbo, 0);
 		R_AttachFBOTexturePackedDepthStencil(tr.renderDepthImage->texnum);
 		FBO_SetupDrawBuffers();
 
@@ -573,6 +577,9 @@ void FBO_Init(void)
 		FBO_SetupDrawBuffers();
 		R_CheckFBO(tr.historyFbo);
 	}
+
+	// screen-space reflection targets (tr_ssr.cpp)
+	R_CreateSSRFBOs();
 
 	// motion blur output (tr_motionblur.cpp)
 	tr.motionBlurFbo = NULL;

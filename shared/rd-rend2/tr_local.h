@@ -212,6 +212,22 @@ extern cvar_t  *r_motionBlurCutAngle;
 extern cvar_t  *r_motionBlurReset;
 extern cvar_t  *r_motionBlurDebug;
 
+extern cvar_t  *r_ssr;
+extern cvar_t  *r_ssrQuality;
+extern cvar_t  *r_ssrSteps;
+extern cvar_t  *r_ssrRefineSteps;
+extern cvar_t  *r_ssrMaxDistance;
+extern cvar_t  *r_ssrThickness;
+extern cvar_t  *r_ssrMaxRoughness;
+extern cvar_t  *r_ssrEdgeFade;
+extern cvar_t  *r_ssrHalfRes;
+extern cvar_t  *r_ssrHiZ;
+extern cvar_t  *r_ssrTemporal;
+extern cvar_t  *r_ssrTemporalWeight;
+extern cvar_t  *r_ssrStrength;
+extern cvar_t  *r_ssrCompare;
+extern cvar_t  *r_ssrDebug;
+
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
@@ -951,6 +967,11 @@ enum
 // linear depth mip levels of the GTAO depth chain (tr_ao.cpp)
 #define AO_DEPTH_MIPS 4
 
+// screen-space reflections (tr_ssr.cpp): mip levels of the opaque scene color
+// pyramid (roughness blur) and of the closest depth pyramid (Hi-Z tracing)
+#define SSR_COLOR_MIPS 7
+#define SSR_HIZ_MIPS 7
+
 typedef enum
 {
 	// material shader stage types
@@ -1352,6 +1373,13 @@ enum
 
 enum
 {
+	SSRDEF_TRACE		= 0,	// ray march, linear
+	SSRDEF_TRACE_HIZ	= 1,	// ray march, hierarchical depth
+	SSRDEF_COUNT
+};
+
+enum
+{
 	REFRACTIONDEF_USE_DEFORM_VERTEXES		= 0x0001,
 	REFRACTIONDEF_USE_TCGEN_AND_TCMOD		= 0x0002,
 	REFRACTIONDEF_USE_RGBAGEN				= 0x0004,
@@ -1589,6 +1617,24 @@ typedef enum
 	UNIFORM_MBPARAMS,		// exposure scale, max length (px), max samples, velocity buffer valid
 	UNIFORM_MBPARAMS2,		// view model scale, P[14], P[10], legacy (display encoded) HDR buffer
 	UNIFORM_MBPARAMS3,		// debug view, quality, 0, 0
+
+	UNIFORM_SSRNORMALMAP,	// tr_ssr.cpp, see the ssr_*.glsl headers
+	UNIFORM_SSRSPECULARMAP,
+	UNIFORM_SSRCUBEMAPMAP,
+	UNIFORM_SSRSCENEMAP,
+	UNIFORM_SSRTRACEMAP,
+	UNIFORM_SSRHISTORYMAP,
+	UNIFORM_SSRHISTORYGEOMMAP,
+	UNIFORM_SSRHIZMAP,
+	UNIFORM_SSRPROJECTION,	// P[0], P[5], P[8], P[9]
+	UNIFORM_SSRDEPTHPARAMS,	// P[14], P[10], zFar, depth hack threshold
+	UNIFORM_SSRVIEWPORT,	// view rectangle in texture coordinates
+	UNIFORM_SSRTEXELSIZE,	// 1 / source size, 1 / destination size
+	UNIFORM_SSRSETTINGS,	// pass specific
+	UNIFORM_SSRSETTINGS2,	// pass specific
+	UNIFORM_SSRSETTINGS3,	// pass specific
+	UNIFORM_SSRWORLDTOVIEW,	// world -> SSR view space (x right, y up, z forward)
+	UNIFORM_SSRREPROJECT,	// SSR view space -> previous frame clip space
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2419,6 +2465,7 @@ typedef struct glstate_s {
 	int			texEnv[2];
 	int			faceCulling;
 	bool		blend;
+	bool		ssrAuxWrite;	// color mask of the SSR attachments of renderFbo
 	float		minDepth;
 	float		maxDepth;
 	ivec2_t		viewportOrigin;
@@ -2566,6 +2613,7 @@ typedef struct {
 	qboolean    depthFill;
 	qboolean    refractionFill;
 	image_t    *screenAoImage;	// AO / contact shadow map lightall samples in this view (TB_SSAOMAP)
+	qboolean    ssrView;		// this view writes the SSR material attachments, see RB_SSRBeginView
 } backEndState_t;
 
 /*
@@ -2654,6 +2702,16 @@ typedef struct trGlobals_s {
 	image_t					*smaaBlendImage;
 	image_t					*smaaResolveImage;
 	image_t					*motionBlurImage;	// motion blur output (HDR), copied back into renderImage
+	// screen-space reflections (tr_ssr.cpp)
+	image_t					*ssrNormalImage;	// rg = octahedral world normal, b = roughness, a = receiver
+	image_t					*ssrSpecularImage;	// rgb = sqrt(specular IBL weight)
+	image_t					*ssrCubemapImage;	// rgb = cubemap specular added by lightall, a = view depth
+	image_t					*ssrColorImage;		// opaque HDR scene, SSR_COLOR_MIPS levels
+	image_t					*ssrHiZImage;		// closest linear view depth, SSR_HIZ_MIPS levels
+	image_t					*ssrTraceImage;		// xy = hit uv, z = hit distance / max, w = confidence
+	image_t					*ssrResolveImage;	// rgb = reflected radiance, a = confidence
+	image_t					*ssrHistoryImage[2];
+	image_t					*ssrHistoryGeomImage[2];	// x = view depth, yz = octahedral normal, w = roughness
 
 	FBO_t					*renderFbo;
 	FBO_t					*depthVelocityFbo;
@@ -2683,6 +2741,12 @@ typedef struct trGlobals_s {
 	FBO_t					*temporalResolveFbo;
 	FBO_t					*historyFbo;
 	FBO_t					*motionBlurFbo;
+	FBO_t					*ssrColorFbo[SSR_COLOR_MIPS];
+	FBO_t					*ssrHiZFbo[SSR_HIZ_MIPS];
+	FBO_t					*ssrTraceFbo;
+	FBO_t					*ssrResolveFbo;
+	FBO_t					*ssrHistoryFbo[2];
+	FBO_t					*ssrCompositeFbo;	// renderFbo color 0 only
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -2752,6 +2816,13 @@ typedef struct trGlobals_s {
 	shaderProgram_t aoCompositeShader;
 	shaderProgram_t aoDebugShader;
 	shaderProgram_t motionBlurShader[MOTIONBLURDEF_COUNT];
+	shaderProgram_t ssrDownsampleShader;
+	shaderProgram_t ssrHiZShader[2];		// 0 = linearize, 1 = downsample mip
+	shaderProgram_t ssrTraceShader[SSRDEF_COUNT];
+	shaderProgram_t ssrResolveShader;
+	shaderProgram_t ssrTemporalShader;
+	shaderProgram_t ssrCompositeShader;
+	shaderProgram_t ssrDebugShader;
 	// Make sure staticUbo is right behind all shaderProgram_t or edit 
 	// R_ClearTr to make sure shaderPrograms are cached correctly
 
@@ -4094,6 +4165,26 @@ void RB_MotionBlurUpdateHistory(struct gpuFrame_t *frame, const struct gpuFrame_
 qboolean RB_MotionBlurActive(void);
 void RB_MotionBlur(FBO_t *srcFbo);
 void RB_MotionBlurDebugOverlay(void);
+
+/*
+============================================================
+
+SCREEN-SPACE REFLECTIONS, tr_ssr.cpp
+
+============================================================
+*/
+
+qboolean R_SSRResourcesEnabled(void);
+qboolean R_SSRWantsVelocity(void);
+void R_CreateSSRImages(int width, int height, int hdrFormat);
+void R_AttachSSRRenderTargets(FBO_t *fbo, int multisample);
+void R_CreateSSRFBOs(void);
+void RB_SSRBeginView(void);
+qboolean RB_SSRActive(void);
+void RB_RenderSSR(void);
+void RB_SSRDebugOverlay(void);
+void GL_SetSSRAuxWrite(bool enable);
+void GL_ResetSSRAuxWrite(void);
 void R_SetMapColorGrading(const char *worldName);
 void R_UpdateColorGrading(void);
 
@@ -4170,6 +4261,9 @@ struct RenderState
 	uint32_t cullType; // this is stupid
 
 	bool transformFeedback;
+
+	// also write the SSR material attachments of renderFbo (tr_ssr.cpp)
+	bool ssrAux;
 };
 
 struct DrawItem

@@ -217,6 +217,7 @@ PFNGLGETQUERYOBJECTUIVPROC qglGetQueryObjectuiv;
 // GL state
 PFNGLGETSTRINGIPROC qglGetStringi;
 PFNGLCOLORMASKIPROC qglColorMaski;
+PFNGLBLENDEQUATIONPROC qglBlendEquation;
 
 // Sync objects and fences
 PFNGLFENCESYNCPROC qglFenceSync;
@@ -522,6 +523,7 @@ void GLimp_InitCoreFunctions()
 	// GL state
 	GetGLFunction (qglGetStringi, "glGetStringi", qtrue);
 	GetGLFunction (qglColorMaski, "glColorMaski", qtrue);
+	GetGLFunction (qglBlendEquation, "glBlendEquation", qtrue);
 
 	// Sync objects and fences
 	GetGLFunction (qglFenceSync, "glFenceSync", qtrue);

@@ -155,6 +155,24 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_MBParams",				GLSL_VEC4, 1 },
 	{ "u_MBParams2",			GLSL_VEC4, 1 },
 	{ "u_MBParams3",			GLSL_VEC4, 1 },
+
+	{ "u_SSRNormalMap",			GLSL_INT, 1 },
+	{ "u_SSRSpecularMap",		GLSL_INT, 1 },
+	{ "u_SSRCubemapMap",		GLSL_INT, 1 },
+	{ "u_SSRSceneMap",			GLSL_INT, 1 },
+	{ "u_SSRTraceMap",			GLSL_INT, 1 },
+	{ "u_SSRHistoryMap",		GLSL_INT, 1 },
+	{ "u_SSRHistoryGeomMap",	GLSL_INT, 1 },
+	{ "u_SSRHiZMap",			GLSL_INT, 1 },
+	{ "u_SSRProjection",		GLSL_VEC4, 1 },
+	{ "u_SSRDepthParams",		GLSL_VEC4, 1 },
+	{ "u_SSRViewport",			GLSL_VEC4, 1 },
+	{ "u_SSRTexelSize",			GLSL_VEC4, 1 },
+	{ "u_SSRSettings",			GLSL_VEC4, 1 },
+	{ "u_SSRSettings2",			GLSL_VEC4, 1 },
+	{ "u_SSRSettings3",			GLSL_VEC4, 1 },
+	{ "u_SSRWorldToView",		GLSL_MAT4x4, 1 },
+	{ "u_SSRReproject",			GLSL_MAT4x4, 1 },
 };
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
@@ -415,6 +433,10 @@ static size_t GLSL_GetShaderHeader(
 	if (R_AOResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSAO\n");
 
+	// lightall writes the SSR material attachments of renderFbo, tr_ssr.cpp
+	if (R_SSRResourcesEnabled())
+		Q_strcat(dest, size, "#define USE_SSR\n");
+
 	if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
 		Q_strcat(dest, size, "#define USE_TONEMAPPING\n");
 
@@ -627,6 +649,9 @@ static void GLSL_BindShaderInterface( shaderProgram_t *program )
 	static const char *shaderOutputNames[] = {
 		"out_Color",  // Color output
 		"out_Glow",  // Glow output
+		"out_SSRNormal",  // SSR material attachments of renderFbo, tr_ssr.cpp
+		"out_SSRSpecular",
+		"out_SSRCubemap",
 	};
 
 	const uint32_t attribs = program->attribs;
@@ -2502,6 +2527,73 @@ static int GLSL_LoadGPUProgramMotionBlur(
 	return numPrograms;
 }
 
+// Screen-space reflections (tr_ssr.cpp). Every program gets the fragment
+// block of ssr_common.glsl (encodings, view space reconstruction).
+static int GLSL_LoadGPUProgramSSR(
+	ShaderProgramBuilder& builder,
+	Allocator& scratchAlloc )
+{
+	if (!R_SSRResourcesEnabled())
+		return 0;
+
+	Allocator allocator(scratchAlloc.Base(), scratchAlloc.GetSize());
+	const GPUShaderDesc *common = nullptr;
+	{
+		const GPUProgramDesc *commonDesc =
+			LoadProgramSource("ssr_common", allocator, fallback_ssr_commonProgram);
+		for ( size_t i = 0; i < commonDesc->numShaders; ++i )
+		{
+			if ( commonDesc->shaders[i].type == GPUSHADER_FRAGMENT )
+				common = &commonDesc->shaders[i];
+		}
+		if ( !common )
+			ri.Error(ERR_FATAL, "Could not load ssr_common shader library!");
+	}
+
+	const uint32_t attribs = ATTR_POSITION | ATTR_TEXCOORD0;
+	int numPrograms = 0;
+
+	auto load = [&]( shaderProgram_t *sp, const char *name, const char *programName,
+		const GPUProgramDesc& fallback, const char *defines )
+	{
+		const GPUProgramDesc *programDesc =
+			LoadProgramSource(programName, allocator, fallback);
+		if ( !GLSL_LoadGPUShader(builder, sp, name, attribs, NO_XFB_VARS,
+				defines ? defines : "", *programDesc, common) )
+		{
+			ri.Error(ERR_FATAL, "Could not load %s shader!", name);
+		}
+
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENDEPTHMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRNORMALMAP, TB_LIGHTMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRSPECULARMAP, TB_NORMALMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRCUBEMAPMAP, TB_DELUXEMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRSCENEMAP, TB_SPECULARMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRTRACEMAP, TB_SHADOWMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRHISTORYMAP, TB_CUBEMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRHISTORYGEOMMAP, TB_ENVBRDFMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSRHIZMAP, TB_SHADOWMAPARRAY);
+		GLSL_SetUniformInt(sp, UNIFORM_VELOCITYMAP, TB_SSAOMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	};
+
+	load(&tr.ssrDownsampleShader, "ssr_downsample", "ssr_downsample", fallback_ssr_downsampleProgram, nullptr);
+	load(&tr.ssrHiZShader[0], "ssr_hiz_linearize", "ssr_hiz", fallback_ssr_hizProgram, "#define LINEARIZE\n");
+	load(&tr.ssrHiZShader[1], "ssr_hiz", "ssr_hiz", fallback_ssr_hizProgram, nullptr);
+	load(&tr.ssrTraceShader[SSRDEF_TRACE], "ssr_trace", "ssr_trace", fallback_ssr_traceProgram, nullptr);
+	load(&tr.ssrTraceShader[SSRDEF_TRACE_HIZ], "ssr_trace_hiz", "ssr_trace", fallback_ssr_traceProgram, "#define USE_HIZ\n");
+	load(&tr.ssrResolveShader, "ssr_resolve", "ssr_resolve", fallback_ssr_resolveProgram, nullptr);
+	load(&tr.ssrTemporalShader, "ssr_temporal", "ssr_temporal", fallback_ssr_temporalProgram, nullptr);
+	load(&tr.ssrCompositeShader, "ssr_composite", "ssr_composite", fallback_ssr_compositeProgram, nullptr);
+	load(&tr.ssrDebugShader, "ssr_debug", "ssr_debug", fallback_ssr_debugProgram, nullptr);
+
+	return numPrograms;
+}
+
 static int GLSL_LoadGPUProgramPrefilterEnvMap(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc)
@@ -2981,6 +3073,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramSSAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramScreenSpaceAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramMotionBlur(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramSSR(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDepthBlur(builder, allocator);
@@ -3051,6 +3144,16 @@ void GLSL_ShutdownGPUShaders(void)
 
 	for ( i = 0; i < MOTIONBLURDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.motionBlurShader[i]);
+
+	GLSL_DeleteGPUShader(&tr.ssrDownsampleShader);
+	for ( i = 0; i < 2; i++)
+		GLSL_DeleteGPUShader(&tr.ssrHiZShader[i]);
+	for ( i = 0; i < SSRDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.ssrTraceShader[i]);
+	GLSL_DeleteGPUShader(&tr.ssrResolveShader);
+	GLSL_DeleteGPUShader(&tr.ssrTemporalShader);
+	GLSL_DeleteGPUShader(&tr.ssrCompositeShader);
+	GLSL_DeleteGPUShader(&tr.ssrDebugShader);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);

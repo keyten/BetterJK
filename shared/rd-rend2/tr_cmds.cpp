@@ -706,6 +706,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			{
 				// clear both, front and backbuffer.
 				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+				GL_ResetSSRAuxWrite();
 				backEnd.colorMask[0] = qfalse;
 				backEnd.colorMask[1] = qfalse;
 				backEnd.colorMask[2] = qfalse;
@@ -777,6 +778,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			if(r_anaglyphMode->modified)
 			{
 				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+				GL_ResetSSRAuxWrite();
 				backEnd.colorMask[0] = qfalse;
 				backEnd.colorMask[1] = qfalse;
 				backEnd.colorMask[2] = qfalse;

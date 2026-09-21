@@ -3512,10 +3512,13 @@ void R_CreateBuiltinImages( void ) {
 	// motion blur output target (tr_motionblur.cpp)
 	R_CreateMotionBlurImages(width, height, hdrFormat);
 
+	// screen-space reflection targets (tr_ssr.cpp)
+	R_CreateSSRImages(width, height, hdrFormat);
+
 	bool needVelocityBuffer = (
 		r_smaa->integer == 2
 		// || r_smaa->integer == 4
-		// || r_ssr->integer
+		|| R_SSRWantsVelocity()
 		|| R_MotionBlurEnabled()
 		// || r_taa->integer
 		);

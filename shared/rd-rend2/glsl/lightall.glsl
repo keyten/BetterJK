@@ -452,6 +452,8 @@ uniform sampler2DArrayShadow u_ShadowMap2;
 #if defined(USE_CUBEMAP)
 uniform samplerCube u_CubeMap;
 uniform sampler2D u_EnvBrdfMap;
+#elif defined(USE_SSR)
+uniform sampler2D u_EnvBrdfMap;
 #endif
 #endif
 
@@ -485,6 +487,31 @@ in vec3 var_Normal;
 
 out vec4 out_Color;
 out vec4 out_Glow;
+
+#if defined(USE_SSR)
+// Material attachments of renderFbo for screen-space reflections (tr_ssr.cpp,
+// ssr_*.glsl). Only written by opaque stages, the others have them masked.
+out vec4 out_SSRNormal;   // rg = octahedral world normal, b = roughness, a = receiver
+out vec4 out_SSRSpecular; // rgb = sqrt(specular IBL weight)
+out vec4 out_SSRCubemap;  // rgb = cubemap reflection added to out_Color, a = view depth
+
+vec2 SSREncodeNormal(in vec3 n)
+{
+	n /= abs(n.x) + abs(n.y) + abs(n.z);
+	vec2 e = n.xy;
+	if (n.z < 0.0)
+		e = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+	return e * 0.5 + 0.5;
+}
+
+void SSRWriteNone(in vec3 worldPosition)
+{
+	float viewDepth = dot(worldPosition - u_ViewOrigin, normalize(u_ViewForward));
+	out_SSRNormal = vec4(0.5, 0.5, 1.0, 0.0);
+	out_SSRSpecular = vec4(0.0);
+	out_SSRCubemap = vec4(0.0, 0.0, 0.0, viewDepth);
+}
+#endif
 
 #if defined(USE_SHADOWMAP)
 // depth is GL_DEPTH_COMPONENT16
@@ -1056,6 +1083,24 @@ vec3 CalcIBLContribution(
 #endif
 }
 
+#if defined(USE_SSR)
+// The factor CalcIBLContribution applies to the cubemap radiance: SSR
+// replaces cubemap radiance with screen-space radiance under the same BRDF.
+vec3 SSRSpecularWeight(in float roughness, in float NE, in vec3 specular)
+{
+#if defined(PER_PIXEL_LIGHTING) && defined(USE_SPECULARMAP)
+	#if !defined(USE_CLOTH_BRDF)
+		vec2 EnvBRDF = texture(u_EnvBrdfMap, vec2(roughness, NE)).rg;
+		return specular.rgb * EnvBRDF.x + EnvBRDF.y;
+	#else
+		return vec3(texture(u_EnvBrdfMap, vec2(roughness, NE)).b);
+	#endif
+#else
+	return vec3(0.0);
+#endif
+}
+#endif
+
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_SSAO)
 // Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indirect
 // Occlusion": multi-bounce fit, bright albedo loses less light in creases
@@ -1096,6 +1141,13 @@ void main()
 
 	vec2 texCoords = var_TexCoords.xy;
 	vec2 lmCoords = var_TexCoords.zw;
+#if defined(USE_SSR)
+  #if defined(PER_PIXEL_LIGHTING)
+	SSRWriteNone(u_ViewOrigin - var_ViewDir.xyz);
+  #else
+	SSRWriteNone(var_Position);
+  #endif
+#endif
 #if defined(PER_PIXEL_LIGHTING)
 	// Unpack tangent view direction
 	vec3 tangentViewDir = vec3(var_LightDir.w, var_Normal.w, var_ViewDir.w);
@@ -1286,7 +1338,17 @@ void main()
 	out_Color.rgb += ambientColor * diffuse.rgb;
 
 	out_Color.rgb += CalcDynamicLightContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, diffuse.rgb, specular.rgb, vertexNormal);
+#if defined(USE_SSR)
+	vec3 cubemapReflection = CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specularAO, lightColor + ambientColor);
+	out_Color.rgb += cubemapReflection;
+  #if defined(USE_SPECULARMAP)
+	out_SSRNormal = vec4(SSREncodeNormal(N), roughness, 1.0);
+	out_SSRSpecular = vec4(sqrt(clamp(SSRSpecularWeight(roughness, NE, specularAO), 0.0, 1.0)), 0.0);
+	out_SSRCubemap.rgb = cubemapReflection;
+  #endif
+#else
 	out_Color.rgb += CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specularAO, lightColor + ambientColor);
+#endif
 
   #if defined(USE_PRIMARY_LIGHT)
 	vec3  L2   = normalize(u_PrimaryLightOrigin.xyz);
