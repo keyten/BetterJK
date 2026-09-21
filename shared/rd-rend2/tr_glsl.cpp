@@ -149,6 +149,12 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_AOSettings",			GLSL_VEC4, 1 },
 	{ "u_AOSettings2",			GLSL_VEC4, 1 },
 	{ "u_AOLightDir",			GLSL_VEC3, 1 },
+
+	{ "u_MBInvViewProjection",	GLSL_MAT4x4, 1 },
+	{ "u_MBPrevViewProjection",	GLSL_MAT4x4, 1 },
+	{ "u_MBParams",				GLSL_VEC4, 1 },
+	{ "u_MBParams2",			GLSL_VEC4, 1 },
+	{ "u_MBParams3",			GLSL_VEC4, 1 },
 };
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
@@ -2458,6 +2464,44 @@ static int GLSL_LoadGPUProgramScreenSpaceAO(
 	return numPrograms;
 }
 
+static int GLSL_LoadGPUProgramMotionBlur(
+	ShaderProgramBuilder& builder,
+	Allocator& scratchAlloc )
+{
+	// Always built: GPU shaders survive a map change, r_motionBlur (latched)
+	// may be turned on in between
+	static const char *defines[MOTIONBLURDEF_COUNT] =
+	{
+		nullptr,
+		"#define USE_LOW_QUALITY\n",
+		"#define USE_DEBUG\n",
+	};
+
+	int numPrograms = 0;
+	for (int i = 0; i < MOTIONBLURDEF_COUNT; i++)
+	{
+		shaderProgram_t *sp = &tr.motionBlurShader[i];
+		GLSL_LoadGPUProgramBasicWithDefinitions(
+			builder,
+			scratchAlloc,
+			sp,
+			"motionblur",
+			fallback_motionblurProgram,
+			defines[i]);
+
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENIMAGEMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_VELOCITYMAP, TB_LIGHTMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENDEPTHMAP, TB_NORMALMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	return numPrograms;
+}
+
 static int GLSL_LoadGPUProgramPrefilterEnvMap(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc)
@@ -2936,6 +2980,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramHighPass(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramSSAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramScreenSpaceAO(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramMotionBlur(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDepthBlur(builder, allocator);
@@ -3003,6 +3048,9 @@ void GLSL_ShutdownGPUShaders(void)
 	GLSL_DeleteGPUShader(&tr.gtaoDenoiseShader);
 	GLSL_DeleteGPUShader(&tr.aoCompositeShader);
 	GLSL_DeleteGPUShader(&tr.aoDebugShader);
+
+	for ( i = 0; i < MOTIONBLURDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.motionBlurShader[i]);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);

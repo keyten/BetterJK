@@ -891,6 +891,14 @@ static UniformBlockBinding GetPreviousEntityBlockUniformBinding(
 		{
 			const int refEntityNum = refEntity - backEnd.refdef.entities;
 			long offset = tr.previousEntityUboOffsets[refEntityNum];
+			if (offset == -1)
+			{
+				// No previous frame data for this entity (new entity, no match,
+				// history reset): use the current block, so it has no object
+				// motion. Offset 0 of the previous frame UBO is unrelated data.
+				offset = tr.entityUboOffsets[refEntityNum];
+				binding.ubo = backEndData->currentFrame->ubo[currentFrameScene];
+			}
 			binding.offset = offset == -1 ? 0 :offset;
 		}
 	}
@@ -922,8 +930,15 @@ static UniformBlockBinding GetPreviousBonesBlockUniformBinding()
 	binding.ubo = frameUbo;
 	binding.block = UNIFORM_BLOCK_PREVIOUS_BONES;
 
-	if (glState.skeletalAnimation)
+	if (glState.skeletalAnimation && tr.previousAnimationBoneUboOffset >= 0)
 		binding.offset = tr.previousAnimationBoneUboOffset;
+	else if (glState.skeletalAnimation)
+	{
+		// No bones of the previous frame (new model, history reset): use the
+		// current ones, so there is no skeletal motion
+		binding.ubo = backEndData->currentFrame->ubo[frameScene];
+		binding.offset = Q_max(0L, tr.animationBoneUboOffset);
+	}
 	else
 		binding.offset = 0;
 

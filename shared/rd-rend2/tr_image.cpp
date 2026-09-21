@@ -3509,11 +3509,14 @@ void R_CreateBuiltinImages( void ) {
 		IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE,
 		GL_DEPTH_COMPONENT24);
 
+	// motion blur output target (tr_motionblur.cpp)
+	R_CreateMotionBlurImages(width, height, hdrFormat);
+
 	bool needVelocityBuffer = (
 		r_smaa->integer == 2
 		// || r_smaa->integer == 4
 		// || r_ssr->integer
-		// || r_motionBlur->integer
+		|| R_MotionBlurEnabled()
 		// || r_taa->integer
 		);
 	if (needVelocityBuffer)

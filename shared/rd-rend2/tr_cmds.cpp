@@ -533,6 +533,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	int frameNumber = backEndData->realFrameNumber;
 	gpuFrame_t *thisFrame = &backEndData->frames[frameNumber % MAX_FRAMES];
 	backEndData->currentFrame = thisFrame;
+	thisFrame->hasMainView = qfalse; // set by the first world scene, tr_motionblur.cpp
 	if ( thisFrame->sync )
 	{
 		GLsync sync = thisFrame->sync;

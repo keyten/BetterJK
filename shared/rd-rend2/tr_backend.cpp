@@ -2278,16 +2278,23 @@ static void RB_UpdateCameraConstants(gpuFrame_t *frame)
 	}
 }
 
-static void RB_UpdateTemporalConstants(gpuFrame_t *frame, gpuFrame_t *previousFrame)
+static void RB_UpdateTemporalConstants(gpuFrame_t *frame, gpuFrame_t *previousFrame, const trRefdef_t *refdef)
 {
 	if (tr.depthVelocityFbo == nullptr || !frame || !previousFrame)
 	{
+		tr.temporalHistoryValid = qtrue;
 		tr.temporalInfoUboOffset = -1;
 		return;
 	}
 
+	// cuts, teleports, map loads (motion blur only, tr_motionblur.cpp)
+	RB_MotionBlurUpdateHistory(frame, previousFrame, refdef);
+
 	TemporalBlock tempBlock = {};
-	memcpy(tempBlock.previousViewProjectionMatrix, previousFrame->viewProjectionMatrix, sizeof(matrix_t));
+	if (tr.temporalHistoryValid)
+		memcpy(tempBlock.previousViewProjectionMatrix, previousFrame->viewProjectionMatrix, sizeof(matrix_t));
+	else
+		memcpy(tempBlock.previousViewProjectionMatrix, frame->viewProjectionMatrix, sizeof(matrix_t));
 	tempBlock.previousTime = previousFrame->time;
 
 	if (r_smaa->integer == 2)
@@ -2681,7 +2688,7 @@ static void RB_UpdateEntityConstants(
 			frame->numCachedModelUboOffsets++;
 		}
 
-		if (!backEndData->previousFrame)
+		if (!backEndData->previousFrame || !tr.temporalHistoryValid)
 			continue;
 
 		float shortestDistance = 9999999.0f;
@@ -2771,7 +2778,7 @@ void RB_UpdateConstants(const trRefdef_t *refdef)
 
 	RB_UpdateCameraConstants(frame);
 	RB_UpdateSceneConstants(frame, refdef);
-	RB_UpdateTemporalConstants(frame, backEndData->previousFrame);
+	RB_UpdateTemporalConstants(frame, backEndData->previousFrame, refdef);
 	RB_UpdateLightsConstants(frame, refdef);
 	RB_UpdateFogsConstants(frame);
 	RB_UpdateGhoul2Constants(frame, refdef);
@@ -3000,6 +3007,117 @@ static const void	*RB_SwapBuffers( const void *data ) {
 
 /*
 =============
+RB_DynamicGlowPrepare
+
+Downscaled glow / bloom source for the dynamic glow composite
+=============
+*/
+static void RB_DynamicGlowPrepare(void)
+{
+	if (!r_dynamicGlow->integer)
+		return;
+
+	GL_Cull(CT_TWO_SIDED);
+	RB_BloomDownscale(tr.glowImage, tr.glowFboScaled[0]);
+
+	if (r_dynamicGlowBloom->value > 0.0f)
+	{
+		FBO_Bind(tr.glowFboScaled[0]);
+		GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
+		GL_SetViewportAndScissor(0, 0, tr.renderFbo->width, tr.renderFbo->height);
+
+		GLSL_BindProgram(&tr.highpassShader);
+		GL_BindToTMU(tr.renderImage, 0);
+		GLSL_SetUniformVec3(&tr.highpassShader, UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
+		GLSL_SetUniformFloat(&tr.highpassShader, UNIFORM_BLOOMSTRENGTH, r_dynamicGlowBloom->value);
+
+		// Draw fullscreen triangle
+		qglDrawArrays(GL_TRIANGLES, 0, 3);
+	}
+
+	int numPasses = Com_Clampi(1, ARRAY_LEN(tr.glowFboScaled), r_dynamicGlowPasses->integer);
+	for ( int i = 1; i < numPasses; i++ )
+		RB_BloomDownscale(tr.glowFboScaled[i - 1], tr.glowFboScaled[i]);
+
+	for ( int i = numPasses - 2; i >= 0; i-- )
+		RB_BloomUpscale(tr.glowFboScaled[i + 1], tr.glowFboScaled[i]);
+}
+
+/*
+=============
+RB_SMAAEdgesAndWeights
+
+SMAA edge detection and blending weights of tr.renderImage
+=============
+*/
+static void RB_SMAAEdgesAndWeights(void)
+{
+	GL_Cull(CT_TWO_SIDED);
+	GL_State(GLS_DEPTHTEST_DISABLE);
+	
+	FBO_Bind(tr.smaaEdgeFbo);
+	GL_SetViewportAndScissor(0, 0, tr.smaaEdgeFbo->width, tr.smaaEdgeFbo->height);
+	qglClearBufferfv(GL_COLOR, 0, colorBlack);
+	GLSL_BindProgram(&tr.smaaEdgeShader);
+	GL_BindToTMU(tr.renderImage, 0);
+	qglDrawArrays(GL_TRIANGLES, 0, 3);
+
+	FBO_Bind(tr.smaaBlendFbo);
+	GL_SetViewportAndScissor(0, 0, tr.smaaBlendFbo->width, tr.smaaBlendFbo->height);
+	qglClearBufferfv(GL_COLOR, 0, colorBlack);
+	GLSL_BindProgram(&tr.smaaBlendShader);
+	vec4_t subsamplesIndices;
+	if (r_smaa->integer == 1 || r_smaa->integer == 3)
+		VectorSet4(subsamplesIndices, 0.f, 0.f, 0.f, 0.f);
+	else if (r_smaa->integer == 2)
+	{
+		if (backEndData->realFrameNumber % 2 == 0)
+			VectorSet4(subsamplesIndices, 1.f, 1.f, 1.f, 0.f);
+		else
+			VectorSet4(subsamplesIndices, 2.f, 2.f, 2.f, 0.f);
+	}
+	GLSL_SetUniformVec4(&tr.smaaBlendShader, UNIFORM_VIEWINFO, subsamplesIndices);
+	GL_BindToTMU(tr.smaaEdgeImage, 0);
+	GL_BindToTMU(tr.smaaAreaImage, 1);
+	GL_BindToTMU(tr.smaaSearchImage, 2);
+	qglDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+/*
+=============
+RB_SMAATemporalResolve
+
+SMAA T2x: neighborhood blending, temporal resolve into srcFbo and history
+update. Needs RB_SMAAEdgesAndWeights first.
+=============
+*/
+static void RB_SMAATemporalResolve(FBO_t *srcFbo, vec4i_t dstBox)
+{
+	FBO_Bind(tr.smaaResolveFbo);
+	GL_SetViewportAndScissor(0, 0, tr.smaaResolveFbo->width, tr.smaaResolveFbo->height);
+	GLSL_BindProgram(&tr.smaaResolveShader);
+	GL_BindToTMU(tr.renderImage, 0);
+	GL_BindToTMU(tr.smaaBlendImage, 1);
+	GL_BindToTMU(tr.velocityImage, 2);
+	GLSL_SetUniformVec4(&tr.smaaResolveShader, UNIFORM_COLOR, colorWhite);
+	qglDrawArrays(GL_TRIANGLES, 0, 3);
+
+	FBO_Bind(srcFbo);
+	GL_SetViewportAndScissor(0, 0, srcFbo->width, srcFbo->height);
+	GLSL_BindProgram(&tr.smaaTemporalResolveShader);
+	GL_BindToTMU(tr.smaaResolveImage, 0);
+	// after a camera cut (motion blur history checks) the history is unrelated:
+	// resolve against the current frame only
+	GL_BindToTMU(tr.temporalHistoryValid ? tr.historyImage : tr.smaaResolveImage, 1);
+	GL_BindToTMU(tr.velocityImage, 2);
+	GLSL_SetUniformVec4(&tr.smaaResolveShader, UNIFORM_COLOR, colorWhite);
+	qglDrawArrays(GL_TRIANGLES, 0, 3);
+
+	FBO_FastBlitFromTexture(tr.renderImage, tr.historyFbo, dstBox, NULL, 0);
+}
+
+/*
+=============
 RB_PostProcess
 
 =============
@@ -3060,93 +3178,42 @@ const void *RB_PostProcess(const void *data)
 	}
 #endif
 
-	if (r_dynamicGlow->integer)
+	// With motion blur the SMAA T2x temporal resolve runs first (its history
+	// must stay sharp), then the blur, then bloom (from the blurred HDR scene)
+	// and the SMAA 1 edges (of the blurred scene). Without it the order is
+	// unchanged. See docs/rend2-motion-blur.md.
+	const qboolean motionBlur = RB_MotionBlurActive();
+
+	if (motionBlur)
 	{
-		GL_Cull(CT_TWO_SIDED);
-		RB_BloomDownscale(tr.glowImage, tr.glowFboScaled[0]);
-
-		if (r_dynamicGlowBloom->value > 0.0f)
+		if (r_smaa->integer == 2)
 		{
-			FBO_Bind(tr.glowFboScaled[0]);
-			GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
-			GL_SetViewportAndScissor(0, 0, tr.renderFbo->width, tr.renderFbo->height);
-
-			GLSL_BindProgram(&tr.highpassShader);
-			GL_BindToTMU(tr.renderImage, 0);
-			GLSL_SetUniformVec3(&tr.highpassShader, UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
-			GLSL_SetUniformFloat(&tr.highpassShader, UNIFORM_BLOOMSTRENGTH, r_dynamicGlowBloom->value);
-
-			// Draw fullscreen triangle
-			qglDrawArrays(GL_TRIANGLES, 0, 3);
+			RB_SMAAEdgesAndWeights();
+			RB_SMAATemporalResolve(srcFbo, dstBox);
 		}
 
-		int numPasses = Com_Clampi(1, ARRAY_LEN(tr.glowFboScaled), r_dynamicGlowPasses->integer);
-		for ( int i = 1; i < numPasses; i++ )
-			RB_BloomDownscale(tr.glowFboScaled[i - 1], tr.glowFboScaled[i]);
+		RB_MotionBlur(srcFbo);
+		RB_DynamicGlowPrepare();
 
-		for ( int i = numPasses - 2; i >= 0; i-- )
-			RB_BloomUpscale(tr.glowFboScaled[i + 1], tr.glowFboScaled[i]);
+		if (r_smaa->integer && r_smaa->integer != 2)
+			RB_SMAAEdgesAndWeights();
 	}
+	else
+	{
+		RB_DynamicGlowPrepare();
+
+		if (r_smaa->integer)
+		{
+			RB_SMAAEdgesAndWeights();
+			if (r_smaa->integer == 2)
+				RB_SMAATemporalResolve(srcFbo, dstBox);
+		}
+	}
+
 	srcBox[0] = backEnd.viewParms.viewportX;
 	srcBox[1] = backEnd.viewParms.viewportY;
 	srcBox[2] = backEnd.viewParms.viewportWidth;
 	srcBox[3] = backEnd.viewParms.viewportHeight;
-
-	if (r_smaa->integer)
-	{
-		GL_Cull(CT_TWO_SIDED);
-		GL_State(GLS_DEPTHTEST_DISABLE);
-		
-		FBO_Bind(tr.smaaEdgeFbo);
-		GL_SetViewportAndScissor(0, 0, tr.smaaEdgeFbo->width, tr.smaaEdgeFbo->height);
-		qglClearBufferfv(GL_COLOR, 0, colorBlack);
-		GLSL_BindProgram(&tr.smaaEdgeShader);
-		GL_BindToTMU(tr.renderImage, 0);
-		qglDrawArrays(GL_TRIANGLES, 0, 3);
-
-		FBO_Bind(tr.smaaBlendFbo);
-		GL_SetViewportAndScissor(0, 0, tr.smaaBlendFbo->width, tr.smaaBlendFbo->height);
-		qglClearBufferfv(GL_COLOR, 0, colorBlack);
-		GLSL_BindProgram(&tr.smaaBlendShader);
-		vec4_t subsamplesIndices;
-		if (r_smaa->integer == 1 || r_smaa->integer == 3)
-			VectorSet4(subsamplesIndices, 0.f, 0.f, 0.f, 0.f);
-		else if (r_smaa->integer == 2)
-		{
-			if (backEndData->realFrameNumber % 2 == 0)
-				VectorSet4(subsamplesIndices, 1.f, 1.f, 1.f, 0.f);
-			else
-				VectorSet4(subsamplesIndices, 2.f, 2.f, 2.f, 0.f);
-		}
-		GLSL_SetUniformVec4(&tr.smaaBlendShader, UNIFORM_VIEWINFO, subsamplesIndices);
-		GL_BindToTMU(tr.smaaEdgeImage, 0);
-		GL_BindToTMU(tr.smaaAreaImage, 1);
-		GL_BindToTMU(tr.smaaSearchImage, 2);
-		qglDrawArrays(GL_TRIANGLES, 0, 3);
-
-		if (r_smaa->integer == 2)
-		{
-			FBO_Bind(tr.smaaResolveFbo);
-			GL_SetViewportAndScissor(0, 0, tr.smaaResolveFbo->width, tr.smaaResolveFbo->height);
-			GLSL_BindProgram(&tr.smaaResolveShader);
-			GL_BindToTMU(tr.renderImage, 0);
-			GL_BindToTMU(tr.smaaBlendImage, 1);
-			GL_BindToTMU(tr.velocityImage, 2);
-			GLSL_SetUniformVec4(&tr.smaaResolveShader, UNIFORM_COLOR, colorWhite);
-			qglDrawArrays(GL_TRIANGLES, 0, 3);
-
-			FBO_Bind(srcFbo);
-			GL_SetViewportAndScissor(0, 0, srcFbo->width, srcFbo->height);
-			GLSL_BindProgram(&tr.smaaTemporalResolveShader);
-			GL_BindToTMU(tr.smaaResolveImage, 0);
-			GL_BindToTMU(tr.historyImage, 1);
-			GL_BindToTMU(tr.velocityImage, 2);
-			GLSL_SetUniformVec4(&tr.smaaResolveShader, UNIFORM_COLOR, colorWhite);
-			qglDrawArrays(GL_TRIANGLES, 0, 3);
-
-			FBO_FastBlitFromTexture(tr.renderImage, tr.historyFbo, dstBox, NULL, 0);
-		}
-	}
 
 	float exposure = r_cameraExposure->value + tr.overbrightBits;
 
@@ -3281,6 +3348,7 @@ const void *RB_PostProcess(const void *data)
 	}
 
 	RB_AODebugOverlay();
+	RB_MotionBlurDebugOverlay();
 
 	backEnd.framePostProcessed = qtrue;
 	FBO_Bind(NULL);

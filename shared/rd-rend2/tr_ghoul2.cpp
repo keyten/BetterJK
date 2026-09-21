@@ -3600,7 +3600,9 @@ void RB_TransformBones(const trRefEntity_t *ent, const trRefdef_t *refdef, int c
 		}
 
 		int foundCache = -1;
-		for (int c = 0; c < backEndData->previousFrame->numCachedGhoulUboOffsets; c++)
+		const int numPreviousCaches = tr.temporalHistoryValid ?
+			backEndData->previousFrame->numCachedGhoulUboOffsets : 0;
+		for (int c = 0; c < numPreviousCaches; c++)
 		{
 			ghoul2UboCache_t *currentCache = &backEndData->previousFrame->cachedGhoulUboOffsets[c];
 			if (currentCache->ghoulPointer != ent->e.ghoul2)
@@ -3616,8 +3618,9 @@ void RB_TransformBones(const trRefEntity_t *ent, const trRefdef_t *refdef, int c
 			break;
 		}
 
+		// -1: no previous bones, the current ones are used (tr_shade.cpp)
 		if (foundCache == -1)
-			bc->uboPreviousOffset = 0;
+			bc->uboPreviousOffset = -1;
 		else
 			bc->uboPreviousOffset = backEndData->previousFrame->cachedGhoulUboOffsets[foundCache].boneUboOffset;
 	}

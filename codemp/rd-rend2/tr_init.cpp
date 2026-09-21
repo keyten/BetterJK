@@ -168,6 +168,19 @@ cvar_t  *r_contactShadowSteps;
 cvar_t  *r_contactShadowThickness;
 cvar_t  *r_contactShadowStrength;
 
+cvar_t  *r_motionBlur;
+cvar_t  *r_motionBlurShutterAngle;
+cvar_t  *r_motionBlurReferenceFps;
+cvar_t  *r_motionBlurShutterScale;
+cvar_t  *r_motionBlurMaxPixels;
+cvar_t  *r_motionBlurQuality;
+cvar_t  *r_motionBlurSamples;
+cvar_t  *r_motionBlurViewModelScale;
+cvar_t  *r_motionBlurCutDistance;
+cvar_t  *r_motionBlurCutAngle;
+cvar_t  *r_motionBlurReset;
+cvar_t  *r_motionBlurDebug;
+
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
 cvar_t  *r_deluxeMapping;
@@ -1595,6 +1608,30 @@ void R_Register( void )
 	r_contactShadowStrength = ri.Cvar_Get( "r_contactShadowStrength", "0.85", CVAR_ARCHIVE, "Contact shadow strength" );
 	ri.Cvar_CheckRange( r_contactShadowStrength, 0.0f, 1.0f, qfalse );
 
+	r_motionBlur = ri.Cvar_Get( "r_motionBlur", "0", CVAR_ARCHIVE | CVAR_LATCH, "Velocity based camera and object motion blur (needs r_hdr)" );
+	ri.Cvar_CheckRange( r_motionBlur, 0, 1, qtrue );
+	r_motionBlurShutterAngle = ri.Cvar_Get( "r_motionBlurShutterAngle", "180", CVAR_ARCHIVE, "Motion blur shutter angle in degrees, relative to the r_motionBlurReferenceFps frame interval" );
+	ri.Cvar_CheckRange( r_motionBlurShutterAngle, 0.0f, 360.0f, qfalse );
+	r_motionBlurReferenceFps = ri.Cvar_Get( "r_motionBlurReferenceFps", "60", CVAR_ARCHIVE, "Frame rate the shutter angle refers to (frame rate independent exposure time), 0 = the actual frame interval" );
+	ri.Cvar_CheckRange( r_motionBlurReferenceFps, 0.0f, 1000.0f, qfalse );
+	r_motionBlurShutterScale = ri.Cvar_Get( "r_motionBlurShutterScale", "1", 0, "Motion blur exposure time multiplier for gameplay effects (e.g. Force Speed), set by game code" );
+	ri.Cvar_CheckRange( r_motionBlurShutterScale, 0.0f, 4.0f, qfalse );
+	r_motionBlurMaxPixels = ri.Cvar_Get( "r_motionBlurMaxPixels", "32", CVAR_ARCHIVE, "Maximum motion blur length in pixels at 1080p (scaled with the resolution)" );
+	ri.Cvar_CheckRange( r_motionBlurMaxPixels, 1.0f, 128.0f, qfalse );
+	r_motionBlurQuality = ri.Cvar_Get( "r_motionBlurQuality", "1", CVAR_ARCHIVE, "Motion blur quality: 0 = low, 1 = medium, 2 = high" );
+	ri.Cvar_CheckRange( r_motionBlurQuality, 0, 2, qtrue );
+	r_motionBlurSamples = ri.Cvar_Get( "r_motionBlurSamples", "0", CVAR_ARCHIVE, "Maximum motion blur samples per pixel, 0 = from r_motionBlurQuality" );
+	ri.Cvar_CheckRange( r_motionBlurSamples, 0, 32, qtrue );
+	r_motionBlurViewModelScale = ri.Cvar_Get( "r_motionBlurViewModelScale", "0.5", CVAR_ARCHIVE, "Motion blur strength on the first person view model" );
+	ri.Cvar_CheckRange( r_motionBlurViewModelScale, 0.0f, 1.0f, qfalse );
+	r_motionBlurCutDistance = ri.Cvar_Get( "r_motionBlurCutDistance", "256", CVAR_ARCHIVE, "Camera movement in one frame treated as a cut or teleport (resets the motion history)" );
+	ri.Cvar_CheckRange( r_motionBlurCutDistance, 16.0f, 16384.0f, qfalse );
+	r_motionBlurCutAngle = ri.Cvar_Get( "r_motionBlurCutAngle", "75", CVAR_ARCHIVE, "Camera rotation in degrees in one frame treated as a cut (resets the motion history)" );
+	ri.Cvar_CheckRange( r_motionBlurCutAngle, 1.0f, 180.0f, qfalse );
+	r_motionBlurReset = ri.Cvar_Get( "r_motionBlurReset", "0", 0, "Set to 1 by game code to reset the motion history (camera cut), cleared by the renderer" );
+	r_motionBlurDebug = ri.Cvar_Get( "r_motionBlurDebug", "0", CVAR_CHEAT, "Motion blur debug view: 1 = velocity, 2 = camera velocity, 3 = object velocity, 4 = sample count, 5 = blur contribution" );
+	ri.Cvar_CheckRange( r_motionBlurDebug, 0, 5, qtrue );
+
 	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );
 	r_deluxeMapping = ri.Cvar_Get( "r_deluxeMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable reading deluxemaps when compiled with q3map2" );
@@ -1850,7 +1887,7 @@ static void R_InitBackEndFrameData()
 		// || r_smaa->integer == 4
 		// || r_taa->integer
 		// || r_ssr->integer
-		// || r_motionBlur->integer
+		|| r_motionBlur->integer
 		);
 
 	if (reserveTemporalUbo)

@@ -574,6 +574,19 @@ void FBO_Init(void)
 		R_CheckFBO(tr.historyFbo);
 	}
 
+	// motion blur output (tr_motionblur.cpp)
+	tr.motionBlurFbo = NULL;
+	if (tr.motionBlurImage != NULL)
+	{
+		tr.motionBlurFbo = FBO_Create(
+			"_motionBlur", tr.motionBlurImage->width,
+			tr.motionBlurImage->height);
+		FBO_Bind(tr.motionBlurFbo);
+		FBO_AttachTextureImage(tr.motionBlurImage, 0);
+		FBO_SetupDrawBuffers();
+		R_CheckFBO(tr.motionBlurFbo);
+	}
+
 	if (r_drawSunRays->integer)
 	{
 		tr.sunRaysFbo = FBO_Create(

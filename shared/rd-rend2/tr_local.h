@@ -199,6 +199,19 @@ extern cvar_t  *r_contactShadowSteps;
 extern cvar_t  *r_contactShadowThickness;
 extern cvar_t  *r_contactShadowStrength;
 
+extern cvar_t  *r_motionBlur;
+extern cvar_t  *r_motionBlurShutterAngle;
+extern cvar_t  *r_motionBlurReferenceFps;
+extern cvar_t  *r_motionBlurShutterScale;
+extern cvar_t  *r_motionBlurMaxPixels;
+extern cvar_t  *r_motionBlurQuality;
+extern cvar_t  *r_motionBlurSamples;
+extern cvar_t  *r_motionBlurViewModelScale;
+extern cvar_t  *r_motionBlurCutDistance;
+extern cvar_t  *r_motionBlurCutAngle;
+extern cvar_t  *r_motionBlurReset;
+extern cvar_t  *r_motionBlurDebug;
+
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
@@ -1331,6 +1344,14 @@ enum
 
 enum
 {
+	MOTIONBLURDEF_DEFAULT	= 0,	// per sample velocity (reconstruction filter)
+	MOTIONBLURDEF_LOW		= 1,	// center velocity only, fewer fetches
+	MOTIONBLURDEF_DEBUG		= 2,	// r_motionBlurDebug views
+	MOTIONBLURDEF_COUNT
+};
+
+enum
+{
 	REFRACTIONDEF_USE_DEFORM_VERTEXES		= 0x0001,
 	REFRACTIONDEF_USE_TCGEN_AND_TCMOD		= 0x0002,
 	REFRACTIONDEF_USE_RGBAGEN				= 0x0004,
@@ -1562,6 +1583,12 @@ typedef enum
 	UNIFORM_AOSETTINGS,		// pass specific
 	UNIFORM_AOSETTINGS2,	// pass specific
 	UNIFORM_AOLIGHTDIR,		// view space direction to the sun
+
+	UNIFORM_MBINVVIEWPROJECTION,	// inverse of the current view projection
+	UNIFORM_MBPREVVIEWPROJECTION,	// previous frame view projection
+	UNIFORM_MBPARAMS,		// exposure scale, max length (px), max samples, velocity buffer valid
+	UNIFORM_MBPARAMS2,		// view model scale, P[14], P[10], legacy (display encoded) HDR buffer
+	UNIFORM_MBPARAMS3,		// debug view, quality, 0, 0
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2626,6 +2653,7 @@ typedef struct trGlobals_s {
 	image_t					*smaaEdgeImage;
 	image_t					*smaaBlendImage;
 	image_t					*smaaResolveImage;
+	image_t					*motionBlurImage;	// motion blur output (HDR), copied back into renderImage
 
 	FBO_t					*renderFbo;
 	FBO_t					*depthVelocityFbo;
@@ -2654,6 +2682,7 @@ typedef struct trGlobals_s {
 	FBO_t					*smaaResolveFbo;
 	FBO_t					*temporalResolveFbo;
 	FBO_t					*historyFbo;
+	FBO_t					*motionBlurFbo;
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -2722,6 +2751,7 @@ typedef struct trGlobals_s {
 	shaderProgram_t gtaoDenoiseShader;
 	shaderProgram_t aoCompositeShader;
 	shaderProgram_t aoDebugShader;
+	shaderProgram_t motionBlurShader[MOTIONBLURDEF_COUNT];
 	// Make sure staticUbo is right behind all shaderProgram_t or edit 
 	// R_ClearTr to make sure shaderPrograms are cached correctly
 
@@ -2747,6 +2777,11 @@ typedef struct trGlobals_s {
 	long previousEntityUboOffsets[REFENTITYNUM_WORLD + 1];
 	long animationBoneUboOffset;
 	long previousAnimationBoneUboOffset;
+
+	// false on the first frame after a map load, camera cut or teleport: the
+	// previous frame data must not be used (tr_motionblur.cpp). Always true
+	// when motion blur is off.
+	qboolean temporalHistoryValid;
 
 	// -----------------------------------------
 
@@ -3918,6 +3953,14 @@ struct gpuFrame_t
 	matrix_t viewProjectionMatrix;
 	float    time;
 
+	// main world view of scene 0, for the temporal history checks (tr_motionblur.cpp)
+	qboolean hasMainView;
+	vec3_t   viewOrigin;
+	vec3_t   viewForward;
+	float    fovX;
+	double   realTime;		// seconds
+	const void *world;
+
 	gpuTimer_t timers[MAX_GPU_TIMERS];
 	gpuTimedBlock_t timedBlocks[MAX_GPU_TIMERS / 2]; // Each block will need 2 timer queries.
 };
@@ -4044,6 +4087,13 @@ void RB_RenderScreenSpaceLighting(void);
 void RB_AOSceneParams(vec4_t aoParams, vec4_t aoParams2);
 qboolean RB_AODebugBypassesToneMap(void);
 void RB_AODebugOverlay(void);
+
+qboolean R_MotionBlurEnabled(void);
+void R_CreateMotionBlurImages(int width, int height, int hdrFormat);
+void RB_MotionBlurUpdateHistory(struct gpuFrame_t *frame, const struct gpuFrame_t *previousFrame, const trRefdef_t *refdef);
+qboolean RB_MotionBlurActive(void);
+void RB_MotionBlur(FBO_t *srcFbo);
+void RB_MotionBlurDebugOverlay(void);
 void R_SetMapColorGrading(const char *worldName);
 void R_UpdateColorGrading(void);
 
