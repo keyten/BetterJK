@@ -38,7 +38,67 @@ Requires `vid_restart`.
 
 ### LUTs
 
-Color correction.
+You can use LUTs to do color correction on maps, e.g. make Tatooine more yellow-and-bright-ish, and Coruscant more gloomy.
+
+- `r_colorGrading 0` - disable.
+- `r_colorGrading 1` - enable.
+- `r_colorGrading 2` - split-screen comparison.
+- `r_colorGradingIntensity 0.5` - intensity, value from 0 to 1.
+- `r_colorGradingLut luts/my_lut.cube`
+
+You can download `.cube` LUTs on the internet, it's a common format. Just put them in `base/luts`.
+
+### GTAO and contact shadows
+
+GTAO is improved shadowing mode, adds more shadows under objects, in wall-floor junctions and others.
+
+- `r_aoMode 0` - disabled
+- `r_aoMode 1` - legacy (SSAO)
+- `r_aoMode 2` - GTAO
+
+Controls:
+r_gtaoQuality
+r_gtaoRadius
+r_gtaoThickness
+r_gtaoPower
+r_gtaoDenoise
+
+Debugging:
+r_debugAO 0-10
+r_aoCompare - split-screen comparison, SSAO/GTAO.
+
+Contact shadows:
+r_contactShadows
+r_contactShadowLength
+r_contactShadowSteps
+r_contactShadowThickness
+r_contactShadowStrength
+
+### Motion blur
+
+- `r_motionBlur 0` - disable
+- `r_motionBlur 1` - enable
+
+r_motionBlurShutterAngle — 180.
+r_motionBlurReferenceFps — 60.
+r_motionBlurMaxPixels — 32 at 1080p.
+r_motionBlurQuality — 1.
+r_motionBlurSamples — 0 (from quality).
+r_motionBlurViewModelScale — 0.5, weakened for first-person view.
+r_motionBlurCutDistance — 256, r_motionBlurCutAngle — 75: thresholds for teleport/camera change.
+r_motionBlurDebug — 1-5:
+
+r_motionBlurShutterScale — multiplier for exposition;
+r_motionBlurReset — cgame sets 1 when camera changes, renderer resets to 0.
+
+### Screen-space Reflections
+
+Creates true reflections for glassy surfaces.
+
+- r_ssr 0/1
+- r_ssrQuality 0–3, r_ssrSteps, r_ssrRefineSteps, r_ssrMaxDistance, r_ssrThickness, r_ssrMaxRoughness, r_ssrEdgeFade, r_ssrHalfRes, r_ssrHiZ, r_ssrTemporal (latch), r_ssrTemporalWeight, r_ssrStrength.
+- compare: r_ssrCompare, r_ssrDebug 1–11.
+- support lightsaber and effects reflections: r_ssrEmitters 0/1, r_ssrEmitterIntensity, r_ssrEmitterMaxRoughness
 
 ## Map-specific scripts
 
