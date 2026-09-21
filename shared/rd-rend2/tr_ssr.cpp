@@ -679,6 +679,146 @@ static qboolean RB_SSRUpdateHistory( const ssrViewInfo_t& info )
 	return valid;
 }
 
+/*
+=================
+RB_SSRCollectEmitters
+
+Light saber blades and additive effect primitives (blaster bolts, muzzle
+flashes, lines, cylinders) are blended surfaces without depth, drawn after
+the SSR, and not in the cubemaps either. They are reflected analytically: the
+composite intersects the reflection ray with capsule / sphere proxies built
+here. As in a mirror, RF_FIRST_PERSON entities are left out and
+RF_THIRD_PERSON ones are included.
+
+Per emitter, 3 vec4 in SSR view space: (a, radius), (b, sphere), (color, 0).
+Returns the number of emitters.
+=================
+*/
+struct ssrEmitter_t
+{
+	vec3_t a;
+	vec3_t b;
+	float radius;
+	float sphere;
+	vec3_t color;
+	float importance;
+};
+
+static void RB_SSRTransformPoint( const matrix_t m, const vec3_t in, vec3_t out )
+{
+	out[0] = m[0] * in[0] + m[4] * in[1] + m[8]  * in[2] + m[12];
+	out[1] = m[1] * in[0] + m[5] * in[1] + m[9]  * in[2] + m[13];
+	out[2] = m[2] * in[0] + m[6] * in[1] + m[10] * in[2] + m[14];
+}
+
+static int RB_SSRCollectEmitters( const ssrViewInfo_t& info, vec4_t *out )
+{
+	if ( !r_ssrEmitters->integer || r_ssrEmitterIntensity->value <= 0.0f )
+		return 0;
+
+	ssrEmitter_t emitters[SSR_MAX_EMITTERS];
+	int numEmitters = 0;
+	const float intensity = r_ssrEmitterIntensity->value;
+	const float *viewOrigin = backEnd.viewParms.ori.origin;
+
+	for ( int i = 0; i < backEnd.refdef.num_entities; i++ )
+	{
+		const refEntity_t& e = backEnd.refdef.entities[i].e;
+		if ( e.renderfx & RF_FIRST_PERSON )
+			continue;
+
+		ssrEmitter_t emitter;
+		emitter.radius = e.radius;
+		emitter.sphere = 0.0f;
+		switch ( e.reType )
+		{
+			case RT_SABER_GLOW:
+				VectorCopy(e.origin, emitter.a);
+				VectorMA(e.origin, e.saberLength, e.axis[0], emitter.b);
+				break;
+			case RT_LINE:
+			case RT_ORIENTEDLINE:
+			case RT_ELECTRICITY:
+				VectorCopy(e.origin, emitter.a);
+				VectorCopy(e.oldorigin, emitter.b);
+				break;
+			case RT_CYLINDER:
+				VectorCopy(e.origin, emitter.a);
+				VectorCopy(e.oldorigin, emitter.b);
+				emitter.radius = Q_max(e.radius, e.rotation);
+				break;
+			case RT_SPRITE:
+				VectorCopy(e.origin, emitter.a);
+				VectorCopy(e.origin, emitter.b);
+				emitter.sphere = 1.0f;
+				break;
+			default:
+				continue;
+		}
+
+		if ( !e.customShader || emitter.radius <= 0.0f )
+			continue;
+
+		// additive shaders only: alpha blended smoke and sprites occlude
+		// rather than emit
+		const shader_t *shader = R_GetShaderByHandle(e.customShader);
+		if ( !shader || shader == tr.defaultShader )
+			continue;
+		const shaderStage_t *stage = shader->stages[0];
+		if ( !stage || !stage->active )
+			continue;
+		if ( (stage->stateBits & GLS_DSTBLEND_BITS) != GLS_DSTBLEND_ONE )
+			continue;
+
+		const image_t *image = stage->bundle[0].image[0];
+		float scale = intensity / 255.0f;
+		if ( (stage->stateBits & GLS_SRCBLEND_BITS) == GLS_SRCBLEND_SRC_ALPHA )
+			scale *= e.shaderRGBA[3] / 255.0f;
+		for ( int c = 0; c < 3; c++ )
+			emitter.color[c] = (image ? image->emissiveColor[c] : 0.5f) * e.shaderRGBA[c] * scale;
+
+		const float luma = 0.2126f * emitter.color[0] + 0.7152f * emitter.color[1] + 0.0722f * emitter.color[2];
+		if ( luma < 0.01f )
+			continue;
+
+		vec3_t mid;
+		VectorAdd(emitter.a, emitter.b, mid);
+		VectorScale(mid, 0.5f, mid);
+		emitter.importance = luma * (emitter.radius + Distance(emitter.a, emitter.b)) /
+			Q_max(64.0f, Distance(mid, viewOrigin));
+
+		// keep the most important ones
+		if ( numEmitters < SSR_MAX_EMITTERS )
+		{
+			emitters[numEmitters++] = emitter;
+		}
+		else
+		{
+			int weakest = 0;
+			for ( int j = 1; j < numEmitters; j++ )
+			{
+				if ( emitters[j].importance < emitters[weakest].importance )
+					weakest = j;
+			}
+			if ( emitter.importance > emitters[weakest].importance )
+				emitters[weakest] = emitter;
+		}
+	}
+
+	for ( int i = 0; i < numEmitters; i++ )
+	{
+		const ssrEmitter_t& emitter = emitters[i];
+		vec3_t a, b;
+		RB_SSRTransformPoint(info.worldToView, emitter.a, a);
+		RB_SSRTransformPoint(info.worldToView, emitter.b, b);
+		VectorSet4(out[i * 3 + 0], a[0], a[1], a[2], emitter.radius);
+		VectorSet4(out[i * 3 + 1], b[0], b[1], b[2], emitter.sphere);
+		VectorSet4(out[i * 3 + 2], emitter.color[0], emitter.color[1], emitter.color[2], 0.0f);
+	}
+
+	return numEmitters;
+}
+
 static void RB_SSRStoreHistory( const ssrViewInfo_t& info, int written )
 {
 	const viewParms_t& viewParms = backEnd.viewParms;
@@ -849,7 +989,7 @@ void RB_RenderSSR( void )
 	timer = RB_SSRBeginTimer("SSR composite");
 	{
 		const int debugView = r_ssrDebug->integer;
-		const qboolean sceneDebug = (qboolean)(debugView >= 7 && debugView <= 10);
+		const qboolean sceneDebug = (qboolean)(debugView >= 7 && debugView <= 11);
 		const float splitX = r_ssrCompare->integer ?
 			viewParms.viewportX + 0.5f * viewParms.viewportWidth : -1.0f;
 
@@ -861,7 +1001,19 @@ void RB_RenderSSR( void )
 		GLSL_BindProgram(sp);
 		RB_SSRBindMaterial();
 		GL_BindToTMU(finalImage, TB_SHADOWMAP);
+		GL_BindToTMU(tr.ssrTraceImage, TB_CUBEMAP);
 		RB_SSRSetViewUniforms(sp, info);
+
+		// light sabers and effects
+		vec4_t emitterData[SSR_MAX_EMITTERS * 3];
+		const int numEmitters = RB_SSRCollectEmitters(info, emitterData);
+		if ( numEmitters > 0 )
+			GLSL_SetUniformVec4N(sp, UNIFORM_SSREMITTERS, emitterData[0], numEmitters * 3);
+		vec4_t emitterParams, settings2;
+		VectorSet4(emitterParams, (float)numEmitters, 0.0f, r_ssrEmitterMaxRoughness->value, 0.0f);
+		VectorSet4(settings2, traceScale, maxDistance, 0.0f, 0.0f);
+		GLSL_SetUniformVec4(sp, UNIFORM_SSREMITTERPARAMS, emitterParams);
+		GLSL_SetUniformVec4(sp, UNIFORM_SSRSETTINGS2, settings2);
 
 		vec4_t settings;
 		const float strength = Com_Clamp(0.0f, 1.0f, r_ssrStrength->value);

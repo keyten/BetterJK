@@ -116,3 +116,14 @@ float SSRLuma(vec3 color)
 {
 	return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
+
+// tangent of the half angle of the reflection lobe: GGX alpha (roughness^2,
+// as in the cubemap prefilter) as a Phong lobe (power 2 / alpha^2 - 2),
+// angle holding most of its energy
+float SSRConeTangent(float roughness)
+{
+	float a = max(roughness * roughness, 1.0e-3);
+	float power = 2.0 / (a * a) - 2.0;
+	float cosAngle = pow(0.244, 1.0 / (power + 1.0));
+	return sqrt(max(1.0 - cosAngle * cosAngle, 0.0)) / cosAngle;
+}

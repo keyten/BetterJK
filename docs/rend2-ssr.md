@@ -158,6 +158,32 @@ the 3x3 neighborhood of the current frame, and its weight (`r_ssrTemporalWeight`
 Accumulation is optional; the SSR is stable without it (the jitter then just changes the sample positions each
 frame).
 
+## Light sabers and effects (analytic emitters)
+
+Saber blades, blaster bolts, muzzle flashes and similar effects are additive blended surfaces: they have no
+depth, are drawn after the SSR and are not in the cubemaps. They are reflected analytically instead
+(`RB_SSRCollectEmitters`, `ssr_composite.glsl`, `r_ssrEmitters 1`):
+
+- **Proxies.** Every scene entity of type `RT_SABER_GLOW` (the blade glow: `origin` to `origin + axis[0] *
+  saberLength`), `RT_LINE` (the blade core, bolt tails), `RT_ORIENTEDLINE`, `RT_ELECTRICITY` (`origin` to
+  `oldorigin`), `RT_CYLINDER` (radius = the larger of its two) and `RT_SPRITE` (a sphere) whose first shader stage
+  is additive (destination blend ONE) becomes a capsule or a sphere. Alpha blended sprites (smoke) are skipped. As
+  in a mirror, `RF_FIRST_PERSON` entities are left out and `RF_THIRD_PERSON` ones are included. At most 32, the
+  brightest / largest / closest ones.
+- **Color.** The "bright part" color of the stage's texture, computed once at load (`image_t::emissiveColor`, the
+  average weighted by luminance * alpha, linear for sRGB textures), times the entity color (and alpha for
+  SRC_ALPHA / ONE blending), times `r_ssrEmitterIntensity`.
+- **Reflection.** The composite intersects the reflection ray of each receiver with the proxies (closest approach
+  of the ray and the segment), with a smooth radial profile. The roughness cone of the SSR widens the proxy with
+  the distance and spreads its energy (`radius / effective radius`, squared for spheres). The result is weighted
+  by `W` like every other reflection and **added**: it is neither in `C` nor in the SSR scene, so nothing is
+  counted twice.
+- **Occlusion.** When the SSR ray of the pixel hit a surface closer than the emitter, the emitter is hidden by
+  that hit's confidence. Emitters farther than `r_ssrMaxDistance` fade out by twice that distance.
+- **Rough surfaces.** A saber also adds a dynamic light, whose specular highlight already shows on rough
+  surfaces; the emitter reflection fades out between 50% and 100% of `r_ssrEmitterMaxRoughness`.
+- Computed in the composite, after the temporal accumulation: fast saber swings do not smear.
+
 ## Cvars
 
 | cvar | default | |
@@ -177,10 +203,13 @@ frame).
 | `r_ssrStrength` | 1 | confidence scale. 0 = cubemap only (and no SSR work unless a debug view or the compare is on) |
 | `r_ssrCompare` | 0 | split screen: left half cubemap reflections only, right half hybrid |
 | `r_ssrDebug` | 0 | cheat, see below |
+| `r_ssrEmitters` | 1 | reflect light sabers and additive effects (analytic) |
+| `r_ssrEmitterIntensity` | 1 | brightness of those reflections |
+| `r_ssrEmitterMaxRoughness` | 0.35 | rougher surfaces do not reflect them |
 
 ## Debug views (`r_ssrDebug`)
 
-Non-receiver pixels are black. 1-6 are drawn over the final image without tone mapping, 7-10 replace the scene
+Non-receiver pixels are black. 1-6 are drawn over the final image without tone mapping, 7-11 replace the scene
 color of the view before the rest of the pass and go through the normal tone mapping.
 
 | | |
@@ -195,6 +224,7 @@ color of the view before the rest of the pass and go through the normal tone map
 | 8 | cubemap reflection C |
 | 9 | final hybrid reflection `C + c * (SSR * W - C)` |
 | 10 | replaced part `abs(c * (SSR * W - C))` |
+| 11 | light saber / effect reflections alone (9 includes them) |
 
 A/B: `r_ssr 0` is the previous renderer; `r_ssrCompare 1` shows cubemap-only and hybrid side by side in the same
 frame; `r_ssrDebug 8` vs `9` shows the reflection term alone. `build/ab/*-pressr.dll` (HEAD) vs `*-ssr.dll`.
@@ -219,16 +249,21 @@ To check in game (`r_ssr 1`, `r_ssrCompare 1`, `r_ssrDebug 4/6/9/10`):
 - polished metal (sharp, tinted by F0), rough metal (blurred, fades to the cubemap), painted metal and rough
   dielectrics (weak), glossy dielectric floors (strong at grazing angles only)
 - characters reflected in floors; moving doors and NPCs (with and without `r_ssrTemporal`)
-- saber / blaster: blended effects are not in the SSR (see limitations); the lit surfaces around them are
+- saber / blaster over a polished floor (`r_ssrDebug 11`): sharp blade line on mirrors, wider and dimmer on
+  glossy surfaces, gone on rough ones; saber behind a wall (hidden when the wall is on screen)
 - screen edges (fade, no hard cut), long corridors (Hi-Z vs linear, `r_ssrMaxDistance`)
 - vjun / wet looking maps: no double reflection where the confidence is high (`r_ssrDebug 10` vs `8`)
 - MSAA on/off, `r_hdr` on/off, `r_cubeMapping` on/off, different resolutions / FOV, weapon in view (no SSR on it)
 
 ## Known limitations
 
-- Screen space: only what is on screen and in the opaque part of the pass can be reflected. Particles, glass,
-  saber blades and other blended surfaces are not in the SSR scene and are not hit (no depth); they fall back to
-  the cubemap. Off-screen and occluded geometry too.
+- Screen space: only what is on screen and in the opaque part of the pass can be reflected. Glass, smoke and other
+  alpha blended surfaces are not in the SSR scene and are not hit (no depth); they fall back to the cubemap.
+  Off-screen and occluded geometry too.
+- Emitters: only effect entities (sabers, lines, cylinders, sprites) with an additive first stage, not additive
+  world surfaces, poly effects or oriented quads; shape and color are approximations (a capsule with the average
+  bright color of the texture). Their occlusion is only known on screen: an emitter behind an off-screen wall can
+  leak into a reflection. Rough surfaces show the saber's dynamic light highlight instead.
 - Only the fog of the receiver is applied (fog passes draw after the composite); fog along the reflected ray is not.
 - A multiplicative stage drawn after the PBR stage of the same shader (rare) is not included in `C`.
 - The depth buffer only has the front faces: thin objects are thickened by `r_ssrThickness`, which can produce
@@ -247,7 +282,8 @@ To check in game (`r_ssr 1`, `r_ssrCompare 1`, `r_ssrDebug 4/6/9/10`):
 - Reflection parallax aware reprojection (reproject the hit point), and stochastic GGX ray directions with
   temporal + spatial denoising for physically correct rough reflections instead of the cone blur.
 - Fog along the reflected ray; SSR for transparent surfaces (water, glass) in their own pass.
-- Include blended emissive effects (saber blades) through a separate emissive-only buffer.
+- A screen-space emissive layer for the remaining additive effects (exact look, on screen only), next to the
+  analytic emitters.
 - Pack the material buffer tighter (R11G11B10F for `C`), or reuse the prepass for the normal.
 - Depth pyramid shared with GTAO; compute shader tracing on GL 4.3+.
 - Screen-space specular occlusion from the trace for the cubemap part that remains.

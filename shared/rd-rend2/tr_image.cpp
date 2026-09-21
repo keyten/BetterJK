@@ -2364,6 +2364,7 @@ image_t *R_CreateImage( const char *name, byte *pic, int width, int height, imgT
 
 	image->width = width;
 	image->height = height;
+	VectorSet4(image->emissiveColor, 0.5f, 0.5f, 0.5f, 1.0f);
 	if (flags & IMGFLAG_CLAMPTOEDGE)
 		glWrapClampMode = GL_CLAMP_TO_EDGE;
 	else
@@ -3007,6 +3008,62 @@ static void R_CreateNormalMap ( const char *name, byte *pic, int width, int heig
 
 /*
 ===============
+R_ComputeEmissiveColor
+
+Color of the bright part of an 8 bit RGBA picture: the average weighted by
+luminance * alpha, so the black background of glow sprites does not darken
+it. Used by the SSR reflections of light sabers and effects (tr_ssr.cpp).
+===============
+*/
+static float R_SRGBToLinear( float c )
+{
+	return c <= 0.04045f ? c * (1.0f / 12.92f) : powf((c + 0.055f) * (1.0f / 1.055f), 2.4f);
+}
+
+static void R_ComputeEmissiveColor( const byte *pic, int width, int height, int flags, vec4_t out )
+{
+	const qboolean srgb = (qboolean)((flags & IMGFLAG_SRGB) != 0);
+	double sum[3] = { 0.0, 0.0, 0.0 };
+	double weightSum = 0.0;
+
+	// every 4th pixel of big pictures is plenty
+	const int step = (width * height > 256 * 256) ? 2 : 1;
+	for ( int y = 0; y < height; y += step )
+	{
+		const byte *row = pic + 4 * y * width;
+		for ( int x = 0; x < width; x += step )
+		{
+			const byte *p = row + 4 * x;
+			float c[3];
+			for ( int i = 0; i < 3; i++ )
+			{
+				c[i] = p[i] * (1.0f / 255.0f);
+				if ( srgb )
+					c[i] = R_SRGBToLinear(c[i]);
+			}
+			const float w = (0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2]) * (p[3] * (1.0f / 255.0f));
+			sum[0] += c[0] * w;
+			sum[1] += c[1] * w;
+			sum[2] += c[2] * w;
+			weightSum += w;
+		}
+	}
+
+	if ( weightSum <= 0.0 )
+	{
+		VectorSet4(out, 0.0f, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+
+	VectorSet4(out,
+		(float)(sum[0] / weightSum),
+		(float)(sum[1] / weightSum),
+		(float)(sum[2] / weightSum),
+		1.0f);
+}
+
+/*
+===============
 R_FindImageFile
 
 Finds or loads the given image.
@@ -3080,7 +3137,14 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, int flags )
 		}
 	}
 
+	// before the upload, which may modify the picture
+	vec4_t emissiveColor = { 0.5f, 0.5f, 0.5f, 1.0f };
+	if ( internalFormat == 0 && type == IMGTYPE_COLORALPHA )
+		R_ComputeEmissiveColor( pic, width, height, loadFlags, emissiveColor );
+
 	image = R_CreateImage( name, pic, width, height, type, loadFlags, internalFormat);
+	if ( image )
+		VectorCopy4( emissiveColor, image->emissiveColor );
 	Z_Free( pic );
 
 	return image;

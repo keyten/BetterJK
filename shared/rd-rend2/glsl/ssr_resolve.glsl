@@ -24,16 +24,6 @@ void main()
 
 out vec4 out_Color;
 
-// tangent of the half angle of the reflection lobe: GGX alpha as a Phong
-// lobe (power 2 / alpha^2 - 2), angle holding most of its energy
-float ConeTangent(float roughness)
-{
-	float a = max(roughness * roughness, 1.0e-3);
-	float power = 2.0 / (a * a) - 2.0;
-	float cosAngle = pow(0.244, 1.0 / (power + 1.0));
-	return sqrt(max(1.0 - cosAngle * cosAngle, 0.0)) / cosAngle;
-}
-
 vec3 HitRadiance(vec4 hit, float coneTangent)
 {
 	float hitDistance = hit.z * u_SSRSettings.y;
@@ -60,7 +50,7 @@ void main()
 	if (!SSRIsReceiver(pix, z, normalRoughness))
 		return;
 
-	float coneTangent = ConeTangent(normalRoughness.b);
+	float coneTangent = SSRConeTangent(normalRoughness.b);
 
 	if (u_SSRSettings.x < 1.5)
 	{

@@ -173,6 +173,8 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_SSRSettings3",			GLSL_VEC4, 1 },
 	{ "u_SSRWorldToView",		GLSL_MAT4x4, 1 },
 	{ "u_SSRReproject",			GLSL_MAT4x4, 1 },
+	{ "u_SSREmitters",			GLSL_VEC4, SSR_MAX_EMITTERS * 3 },
+	{ "u_SSREmitterParams",		GLSL_VEC4, 1 },
 };
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
@@ -1251,6 +1253,39 @@ void GLSL_SetUniformVec2N(shaderProgram_t *program, int uniformNum, const float 
 	memcpy(compare, v, sizeof(vec2_t) * numVec2s);
 
 	qglUniform2fv(uniforms[uniformNum], numVec2s, v);
+}
+
+void GLSL_SetUniformVec4N(shaderProgram_t *program, int uniformNum, const float *v, int numVec4s)
+{
+	GLint *uniforms = program->uniforms;
+	float *compare = (float *)(program->uniformBuffer + program->uniformBufferOffsets[uniformNum]);
+
+	if (uniforms[uniformNum] == -1)
+		return;
+
+	if (uniformsInfo[uniformNum].type != GLSL_VEC4)
+	{
+		ri.Printf(PRINT_WARNING, "GLSL_SetUniformVec4N: wrong type for uniform %i in program %s\n", uniformNum, program->name);
+		return;
+	}
+
+	if (uniformsInfo[uniformNum].size < numVec4s)
+	{
+		ri.Printf(PRINT_WARNING, "GLSL_SetUniformVec4N: uniform %i only has %d elements! Tried to set %d\n",
+			uniformNum,
+			uniformsInfo[uniformNum].size,
+			numVec4s);
+		return;
+	}
+
+	if (memcmp(compare, v, sizeof(vec4_t) * numVec4s) == 0)
+	{
+		return;
+	}
+
+	memcpy(compare, v, sizeof(vec4_t) * numVec4s);
+
+	qglUniform4fv(uniforms[uniformNum], numVec4s, v);
 }
 
 void GLSL_SetUniformVec3(shaderProgram_t *program, int uniformNum, const vec3_t v)

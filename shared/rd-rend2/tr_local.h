@@ -227,6 +227,9 @@ extern cvar_t  *r_ssrTemporalWeight;
 extern cvar_t  *r_ssrStrength;
 extern cvar_t  *r_ssrCompare;
 extern cvar_t  *r_ssrDebug;
+extern cvar_t  *r_ssrEmitters;
+extern cvar_t  *r_ssrEmitterIntensity;
+extern cvar_t  *r_ssrEmitterMaxRoughness;
 
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
@@ -465,6 +468,10 @@ typedef struct image_s {
 
 	struct image_s *next;
 	struct image_s *poolNext;
+
+	// color of the bright part of the picture (luminance weighted average,
+	// linear when sampled as sRGB), for SSR emitter reflections (tr_ssr.cpp)
+	vec4_t		emissiveColor;
 } image_t;
 
 typedef struct cubemap_s {
@@ -971,6 +978,9 @@ enum
 // pyramid (roughness blur) and of the closest depth pyramid (Hi-Z tracing)
 #define SSR_COLOR_MIPS 7
 #define SSR_HIZ_MIPS 7
+
+// light saber and effect primitives reflected analytically by SSR (tr_ssr.cpp)
+#define SSR_MAX_EMITTERS 32
 
 typedef enum
 {
@@ -1635,6 +1645,8 @@ typedef enum
 	UNIFORM_SSRSETTINGS3,	// pass specific
 	UNIFORM_SSRWORLDTOVIEW,	// world -> SSR view space (x right, y up, z forward)
 	UNIFORM_SSRREPROJECT,	// SSR view space -> previous frame clip space
+	UNIFORM_SSREMITTERS,	// SSR_MAX_EMITTERS * 3 vec4, see RB_SSRCollectEmitters
+	UNIFORM_SSREMITTERPARAMS,	// count, 0, max roughness, 0
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -3593,6 +3605,7 @@ void GLSL_SetUniformFloat(shaderProgram_t *program, int uniformNum, GLfloat valu
 void GLSL_SetUniformFloatN(shaderProgram_t *program, int uniformNum, const float *v, int numFloats);
 void GLSL_SetUniformVec2(shaderProgram_t *program, int uniformNum, const vec2_t v);
 void GLSL_SetUniformVec2N(shaderProgram_t *program, int uniformNum, const float *v, int numVec2s);
+void GLSL_SetUniformVec4N(shaderProgram_t *program, int uniformNum, const float *v, int numVec4s);
 void GLSL_SetUniformVec3(shaderProgram_t *program, int uniformNum, const vec3_t v);
 void GLSL_SetUniformVec4(shaderProgram_t *program, int uniformNum, const vec4_t v);
 void GLSL_SetUniformMatrix4x3(shaderProgram_t *program, int uniformNum, const float *matrix, int numElements = 1);
