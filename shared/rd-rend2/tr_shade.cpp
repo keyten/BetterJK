@@ -1816,6 +1816,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			vec4_t toneMapParams;
 			RB_GetToneMapParams(toneMapParams);
 			uniformDataWriter.SetUniformVec4(UNIFORM_TONEMAPPARAMS, toneMapParams);
+
+			image_t *colorGradingLut;
+			vec4_t colorGradingParams;
+			RB_GetColorGrading(&colorGradingLut, colorGradingParams);
+			uniformDataWriter.SetUniformVec4(UNIFORM_COLORGRADINGPARAMS, colorGradingParams);
+			samplerBindingsWriter.AddStaticImage(colorGradingLut, TB_COLORGRADINGLUT);
 		}
 
 #ifdef REND2_SP_GORE

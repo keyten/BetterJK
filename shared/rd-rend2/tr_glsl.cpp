@@ -125,6 +125,8 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_AutoExposureMinMax",  GLSL_VEC2, 1 },
 	{ "u_ToneMinAvgMaxLinear", GLSL_VEC3, 1 },
 	{ "u_ToneMapParams",       GLSL_VEC4, 1 },
+	{ "u_ColorGradingLut",     GLSL_INT,  1 },
+	{ "u_ColorGradingParams",  GLSL_VEC4, 1 },
 
 	{ "u_CubeMapInfo", GLSL_VEC4, 1 },
 
@@ -1831,6 +1833,7 @@ static int GLSL_LoadGPUProgramRefraction(
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_TEXTUREMAP, TB_COLORMAP);
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_LEVELSMAP, TB_LEVELSMAP);
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_SCREENDEPTHMAP, TB_SHADOWMAP);
+		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_COLORGRADINGLUT, TB_COLORGRADINGLUT);
 		qglUseProgram(0);
 
 		GLSL_FinishGPUShader(&tr.refractionShader[i]);
@@ -2270,6 +2273,7 @@ static int GLSL_LoadGPUProgramTonemap(
 		qglUseProgram(tr.tonemapShader[i].program);
 		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_TEXTUREMAP, TB_COLORMAP);
 		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_LEVELSMAP, TB_LEVELSMAP);
+		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_COLORGRADINGLUT, TB_COLORGRADINGLUT);
 		if (r_smaa->integer == 1)
 			GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_BLENDMAP, 2);
 

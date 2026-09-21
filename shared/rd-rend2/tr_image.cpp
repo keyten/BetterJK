@@ -2600,6 +2600,11 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 		dataFormat = GL_RGBA;
 		dataType = GL_HALF_FLOAT;
 	}
+	else if (internalFormat == GL_RGBA16)
+	{
+		dataFormat = GL_RGBA;
+		dataType = GL_UNSIGNED_SHORT;
+	}
 
 	image->type = IMGTYPE_COLORALPHA;
 	image->flags = IMGFLAG_3D;
@@ -3565,6 +3570,8 @@ void R_CreateBuiltinImages( void ) {
 			"*fixedLevels", (byte *)p, 1, 1, IMGTYPE_COLORALPHA,
 			IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, hdrFormat);
 	}
+
+	R_CreateColorGradingImages();
 
 	for (x = 0; x < 2; x++)
 	{

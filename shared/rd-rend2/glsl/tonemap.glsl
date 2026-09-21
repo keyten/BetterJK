@@ -59,6 +59,8 @@ uniform vec4 u_Color;
 uniform vec2 u_AutoExposureMinMax;
 uniform vec3 u_ToneMinAvgMaxLinear;
 uniform vec4 u_ToneMapParams;
+uniform sampler3D u_ColorGradingLut;
+uniform vec4 u_ColorGradingParams;
 
 in vec2 var_TexCoords;
 
@@ -139,7 +141,8 @@ void main()
 	// see output_transform.glsl
 	vec3 minAvgMax = texture(u_LevelsMap, var_TexCoords).rgb;
 	color.rgb = OutputTransform(color.rgb, minAvgMax, u_AutoExposureMinMax,
-		u_ToneMinAvgMaxLinear, u_ToneMapParams, gl_FragCoord.x);
+		u_ToneMinAvgMaxLinear, u_ToneMapParams, u_ColorGradingLut, u_ColorGradingParams,
+		gl_FragCoord.x);
 
 	out_Color = clamp(color, 0.0, 1.0);
 }

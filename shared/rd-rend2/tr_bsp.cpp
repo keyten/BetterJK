@@ -4616,6 +4616,7 @@ void RE_LoadWorldMap( const char *name ) {
 	tr.world = world;
 
 	R_UpdateFixedExposureLevel();
+	R_SetMapColorGrading(tr.worldName);
 
 	R_PushDebugGroup(AL_SCENE, "World loading");
 	R_PushDebugGroup(AL_VIEW, "Weather depth");

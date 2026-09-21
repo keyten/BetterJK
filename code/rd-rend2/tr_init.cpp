@@ -147,6 +147,9 @@ cvar_t  *r_toneMapMode;
 cvar_t  *r_toneMapDebug;
 cvar_t  *r_exposureCompensation;
 cvar_t  *r_linearLighting;
+cvar_t  *r_colorGrading;
+cvar_t  *r_colorGradingLut;
+cvar_t  *r_colorGradingIntensity;
 
 cvar_t  *r_depthPrepass;
 cvar_t  *r_ssao;
@@ -1567,6 +1570,11 @@ void R_Register( void )
 	r_exposureCompensation = ri_Cvar_Get_NoComm( "r_exposureCompensation", "0", CVAR_ARCHIVE, "Exposure compensation in EV stops, applied in linear light before tone mapping" );
 	ri.Cvar_CheckRange( r_exposureCompensation, -4.0f, 4.0f, qfalse );
 	r_linearLighting = ri_Cvar_Get_NoComm( "r_linearLighting", "0", CVAR_ARCHIVE | CVAR_LATCH, "Light maps without HDR lightmaps in linear light (experimental, needs r_hdr 1 and r_toneMap 1)" );
+	r_colorGrading = ri_Cvar_Get_NoComm( "r_colorGrading", "1", CVAR_ARCHIVE, "Color grading with a 3D LUT: 0 = off, 1 = on, 2 = split screen, original on the left" );
+	ri.Cvar_CheckRange( r_colorGrading, 0, 2, qtrue );
+	r_colorGradingLut = ri_Cvar_Get_NoComm( "r_colorGradingLut", "", CVAR_ARCHIVE, "Color grading LUT (.cube, or *identity). Overrides the LUT of the map (maps/<map>.cube), empty uses it" );
+	r_colorGradingIntensity = ri_Cvar_Get_NoComm( "r_colorGradingIntensity", "1", CVAR_ARCHIVE, "Color grading strength: 0 = none, 1 = full LUT" );
+	ri.Cvar_CheckRange( r_colorGradingIntensity, 0.0f, 1.0f, qfalse );
 
 	r_depthPrepass = ri_Cvar_Get_NoComm( "r_depthPrepass", "1", CVAR_ARCHIVE, "" );
 	r_ssao = ri_Cvar_Get_NoComm( "r_ssao", "0", CVAR_LATCH | CVAR_ARCHIVE, "" );

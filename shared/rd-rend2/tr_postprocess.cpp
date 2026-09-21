@@ -46,6 +46,33 @@ void RB_GetToneMapParams(vec4_t params)
 	params[3] = powf(2.0f, ev);
 }
 
+/*
+=============
+RB_GetColorGrading
+
+LUT and u_ColorGradingParams for the shared output transform. Without a LUT
+the identity LUT is bound and grading is off.
+=============
+*/
+void RB_GetColorGrading(image_t **lut, vec4_t params)
+{
+	image_t *image = tr.colorGradingLutImage;
+	const float intensity = r_colorGradingIntensity->value;
+
+	if (!image || !r_colorGrading->integer || intensity <= 0.0f)
+	{
+		*lut = tr.identityLutImage;
+		VectorSet4(params, 0.0f, 0.0f, 2.0f, 0.0f);
+		return;
+	}
+
+	*lut = image;
+	params[0] = (float)r_colorGrading->integer;
+	params[1] = intensity;
+	params[2] = (float)image->width;
+	params[3] = 0.0f;
+}
+
 void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, int autoExposure)
 {
 	vec4i_t srcBox, dstBox;
@@ -112,6 +139,11 @@ void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, in
 	vec4_t toneMapParams;
 	RB_GetToneMapParams(toneMapParams);
 
+	image_t *colorGradingLut;
+	vec4_t colorGradingParams;
+	RB_GetColorGrading(&colorGradingLut, colorGradingParams);
+	GL_BindToTMU(colorGradingLut, TB_COLORGRADINGLUT);
+
 	bool srgbTransform = tr.linearLight == qtrue;
 	shaderProgram_t *shader = srgbTransform ? &tr.tonemapShader[1] : &tr.tonemapShader[0];
 
@@ -128,6 +160,7 @@ void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, in
 	GLSL_SetUniformVec2(shader, UNIFORM_AUTOEXPOSUREMINMAX, tr.refdef.autoExposureMinMax);
 	GLSL_SetUniformVec3(shader, UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
 	GLSL_SetUniformVec4(shader, UNIFORM_TONEMAPPARAMS, toneMapParams);
+	GLSL_SetUniformVec4(shader, UNIFORM_COLORGRADINGPARAMS, colorGradingParams);
 	RB_InstantTriangle();
 }
 

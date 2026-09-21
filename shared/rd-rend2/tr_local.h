@@ -174,6 +174,9 @@ extern cvar_t  *r_toneMapMode;
 extern cvar_t  *r_toneMapDebug;
 extern cvar_t  *r_exposureCompensation;
 extern cvar_t  *r_linearLighting;
+extern cvar_t  *r_colorGrading;
+extern cvar_t  *r_colorGradingLut;
+extern cvar_t  *r_colorGradingIntensity;
 
 extern cvar_t  *r_depthPrepass;
 extern cvar_t  *r_ssao;
@@ -900,6 +903,7 @@ enum
 	TB_COLORMAP2   = 1,
 	TB_NORMALMAP   = 2,
 	TB_DELUXEMAP   = 3,
+	TB_COLORGRADINGLUT = 3, // tone map and refraction programs only
 	TB_SPECULARMAP = 4,
 	TB_ORMSMAP     = 4,
 	TB_SHADOWMAP   = 5,
@@ -1509,6 +1513,8 @@ typedef enum
 	UNIFORM_AUTOEXPOSUREMINMAX,
 	UNIFORM_TONEMINAVGMAXLINEAR,
 	UNIFORM_TONEMAPPARAMS, // operator, debug view, legacy EV gain, scene-linear EV gain
+	UNIFORM_COLORGRADINGLUT,
+	UNIFORM_COLORGRADINGPARAMS, // mode, intensity, LUT size
 
 	UNIFORM_CUBEMAPINFO,
 
@@ -2563,6 +2569,10 @@ typedef struct trGlobals_s {
 	image_t					*calcLevelsImage;
 	image_t					*targetLevelsImage;
 	image_t					*fixedLevelsImage;
+	image_t					*identityLutImage;
+	image_t					*colorGradingLutImage;	// NULL when no LUT is used
+	char					colorGradingLutName[MAX_QPATH];
+	char					mapColorGradingLut[MAX_QPATH];
 	image_t					*sunShadowArrayImage;
 	image_t					*pointShadowArrayImage;
 	image_t                 *screenSsaoImage;
@@ -3960,6 +3970,11 @@ qhandle_t RE_RegisterShaderNoMip( const char *name );
 const char		*RE_ShaderNameFromIndex(int index);
 image_t *R_CreateImage( const char *name, byte *pic, int width, int height, imgType_t type, int flags, int internalFormat );
 image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, int depth, int internalFormat);
+image_t *R_GetLoadedImage(const char *name, int flags);
+
+void R_CreateColorGradingImages(void);
+void R_SetMapColorGrading(const char *worldName);
+void R_UpdateColorGrading(void);
 
 float ProjectRadius( float r, vec3_t location );
 void RE_RegisterModels_StoreShaderRequest(const char *psModelFileName, const char *psShaderName, int *piShaderIndexPoke);

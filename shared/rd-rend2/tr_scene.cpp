@@ -574,6 +574,9 @@ void RE_RenderScene( const refdef_t *fd )
 		return;
 	}
 
+	// Picks up changes of r_colorGrading* and of the map LUT
+	R_UpdateColorGrading();
+
 	startTime = ri.Milliseconds();
 
 	if (backEndData->currentFrame->currentScene >= MAX_SCENES) {

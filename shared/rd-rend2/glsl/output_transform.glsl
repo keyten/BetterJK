@@ -251,6 +251,32 @@ vec3 ExposureFalseColor(vec3 exposed, float exposureTarget, vec3 display)
 }
 
 //
+// Color grading with a 3D LUT. The LUT maps display-encoded sRGB values to display-encoded sRGB
+// values (domain [0, 1], red along the width of the texture), like common .cube files.
+// params: x = mode (0 off, 1 on, 2 split with the original on the left), y = intensity, z = LUT size
+//
+vec3 ApplyColorGrading(vec3 display, sampler3D lut, vec4 params, float fragX)
+{
+	if (params.x < 0.5)
+		return display;
+
+	if (params.x > 1.5)
+	{
+		if (abs(fragX - 0.5 * r_FBufScale.x) < 1.0)
+			return vec3(0.5);
+
+		if (fragX < 0.5 * r_FBufScale.x)
+			return display;
+	}
+
+	// Sample at texel centers, so 0 and 1 hit the first and last entries
+	vec3 coord = clamp(display, 0.0, 1.0) * ((params.z - 1.0) / params.z) + 0.5 / params.z;
+	vec3 graded = texture(lut, coord).rgb;
+
+	return mix(display, graded, params.y);
+}
+
+//
 // Output transform entry point.
 //
 // color:               HDR buffer multiplied by the buffer gain (u_Color)
@@ -259,11 +285,14 @@ vec3 ExposureFalseColor(vec3 exposed, float exposureTarget, vec3 display)
 // params:              u_ToneMapParams: x = operator (TONEMAP_*), y = debug view (TONEMAP_DEBUG_*),
 //                      z = exposure compensation gain for the legacy operator (buffer domain),
 //                      w = exposure compensation gain in scene-linear light
+// colorGradingLut:     3D LUT, applied after the display encoding (see ApplyColorGrading)
+// colorGradingParams:  u_ColorGradingParams
 // fragX:               gl_FragCoord.x, used by the split screen comparisons
 //
 // Returns display-encoded values, not clamped yet.
 //
-vec3 OutputTransform(vec3 color, vec3 levels, vec2 autoExposureMinMax, vec3 toneMinAvgMaxLinear, vec4 params, float fragX)
+vec3 OutputTransform(vec3 color, vec3 levels, vec2 autoExposureMinMax, vec3 toneMinAvgMaxLinear, vec4 params,
+	sampler3D colorGradingLut, vec4 colorGradingParams, float fragX)
 {
 	int toneMapMode = int(params.x + 0.5);
 	int debugView = int(params.y + 0.5);
@@ -289,7 +318,10 @@ vec3 OutputTransform(vec3 color, vec3 levels, vec2 autoExposureMinMax, vec3 tone
 	float logAvgLum = GetLogAverageLuminance(levels, autoExposureMinMax);
 
 	if (toneMapMode != TONEMAP_ACES && toneMapMode != TONEMAP_AGX && debugView < TONEMAP_DEBUG_RAW)
-		return LegacyToneMap(color * params.z, exp2(logAvgLum), toneMinAvgMaxLinear);
+	{
+		vec3 legacy = LegacyToneMap(color * params.z, exp2(logAvgLum), toneMinAvgMaxLinear);
+		return ApplyColorGrading(legacy, colorGradingLut, colorGradingParams, fragX);
+	}
 
 	vec3 sceneLinear = GetSceneLinear(color);
 	if (debugView == TONEMAP_DEBUG_RAW)
@@ -310,5 +342,5 @@ vec3 OutputTransform(vec3 color, vec3 levels, vec2 autoExposureMinMax, vec3 tone
 	if (debugView == TONEMAP_DEBUG_FALSE_COLOR)
 		return ExposureFalseColor(exposed, GetExposureTarget(toneMinAvgMaxLinear.y), display);
 
-	return display;
+	return ApplyColorGrading(display, colorGradingLut, colorGradingParams, fragX);
 }
