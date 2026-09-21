@@ -649,6 +649,9 @@ void RB_BeginDrawingView (void) {
 
 	FBO_Bind(targetFBO);
 
+	// no screen-space AO until the depth prepass of this view computes it
+	backEnd.screenAoImage = tr.whiteImage;
+
 	// we will only draw a sun if there was sky rendered in this view
 	backEnd.skyRenderedThisView = qfalse;
 	backEnd.skyNumber = 1;
@@ -2106,50 +2109,6 @@ static const void *RB_PrefilterEnvMap(const void *data) {
 }
 
 
-static void RB_RenderSSAO()
-{
-	const float zmax = backEnd.viewParms.zFar;
-	const float zmin = r_znear->value;
-	const vec4_t viewInfo = { zmax / zmin, zmax, 0.0f, 0.0f };
-
-	FBO_Bind(tr.quarterFbo[0]);
-
-	GL_SetViewportAndScissor(0, 0, tr.quarterFbo[0]->width, tr.quarterFbo[0]->height);
-
-	GL_State( GLS_DEPTHTEST_DISABLE );
-
-	GLSL_BindProgram(&tr.ssaoShader);
-
-	GL_BindToTMU(tr.hdrDepthImage, TB_COLORMAP);
-	GLSL_SetUniformVec4(&tr.ssaoShader, UNIFORM_VIEWINFO, viewInfo);
-
-	RB_InstantTriangle();
-
-	FBO_Bind(tr.quarterFbo[1]);
-
-	GL_SetViewportAndScissor(0, 0, tr.quarterFbo[1]->width, tr.quarterFbo[1]->height);
-
-	GLSL_BindProgram(&tr.depthBlurShader[0]);
-
-	GL_BindToTMU(tr.quarterImage[0],  TB_COLORMAP);
-	GL_BindToTMU(tr.hdrDepthImage, TB_LIGHTMAP);
-	GLSL_SetUniformVec4(&tr.depthBlurShader[0], UNIFORM_VIEWINFO, viewInfo);
-
-	RB_InstantTriangle();
-
-	FBO_Bind(tr.screenSsaoFbo);
-
-	GL_SetViewportAndScissor(0, 0, tr.screenSsaoFbo->width, tr.screenSsaoFbo->height);
-
-	GLSL_BindProgram(&tr.depthBlurShader[1]);
-
-	GL_BindToTMU(tr.quarterImage[1],  TB_COLORMAP);
-	GL_BindToTMU(tr.hdrDepthImage, TB_LIGHTMAP);
-	GLSL_SetUniformVec4(&tr.depthBlurShader[1], UNIFORM_VIEWINFO, viewInfo);
-
-	RB_InstantTriangle();
-}
-
 static void RB_RenderDepthOnly( drawSurf_t *drawSurfs, int numDrawSurfs )
 {
 	backEnd.depthFill = qtrue;
@@ -2204,17 +2163,6 @@ static void RB_RenderDepthOnly( drawSurf_t *drawSurfs, int numDrawSurfs )
 			GL_DEPTH_COMPONENT24, 0,
 			0, glConfig.vidWidth,
 			glConfig.vidHeight, 0);
-	}
-
-	if (r_ssao->integer &&
-		!(backEnd.viewParms.flags & VPF_DEPTHSHADOW) &&
-		!(tr.viewParms.isSkyPortal))
-	{
-		// need the depth in a texture we can do GL_LINEAR sampling on, so
-		// copy it to an HDR image
-		FBO_t *oldFbo = glState.currentFBO;
-		FBO_FastBlitFromTexture(tr.renderDepthImage, tr.hdrDepthFbo, NULL, NULL, 0);
-		FBO_Bind(oldFbo);
 	}
 }
 
@@ -2277,12 +2225,8 @@ static void RB_RenderAllDepthRelatedPasses( drawSurf_t *drawSurfs, int numDrawSu
 
 	RB_RenderDepthOnly(drawSurfs, numDrawSurfs);
 
-	if (r_ssao->integer &&
-		!(backEnd.viewParms.flags & VPF_DEPTHSHADOW) &&
-		!(tr.viewParms.isSkyPortal))
-	{
-		RB_RenderSSAO();
-	}
+	// SSAO / GTAO / contact shadows for the main pass of this view (tr_ao.cpp)
+	RB_RenderScreenSpaceLighting();
 
 	// reset viewport and scissor
 	FBO_Bind(oldFbo);
@@ -2372,6 +2316,7 @@ static void RB_UpdateSceneConstants(gpuFrame_t *frame, const trRefdef_t *refdef)
 		sceneBlock.globalFogIndex = -1;
 	sceneBlock.currentTime = refdef->floatTime;
 	sceneBlock.frameTime = refdef->frameTime;
+	RB_AOSceneParams(sceneBlock.aoParams, sceneBlock.aoParams2);
 	frame->time = refdef->floatTime;
 
 	tr.sceneUboOffset = RB_AppendConstantsData(
@@ -3207,7 +3152,12 @@ const void *RB_PostProcess(const void *data)
 
 	if (srcFbo)
 	{
-		if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
+		if (RB_AODebugBypassesToneMap())
+		{
+			// r_debugAO 7-9 write visibility values, show them unmodified
+			FBO_FastBlit(srcFbo, srcBox, NULL, dstBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		}
+		else if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
 		{
 			autoExposure = (qboolean)(r_autoExposure->integer || r_forceAutoExposure->integer);
 			RB_ToneMap(srcFbo, srcBox, NULL, dstBox, autoExposure);
@@ -3255,7 +3205,7 @@ const void *RB_PostProcess(const void *data)
 		FBO_FastBlit(srcFbo, srcBox, NULL, dstBox, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 	}
 
-	if (r_drawSunRays->integer)
+	if (r_drawSunRays->integer && !RB_AODebugBypassesToneMap())
 		RB_SunRays(NULL, srcBox, NULL, dstBox);
 
 #if 0
@@ -3268,7 +3218,7 @@ const void *RB_PostProcess(const void *data)
 		FBO_BlitFromTexture(tr.weatherDepthImage, NULL, NULL, NULL, nullptr, NULL, NULL, 0);
 	}
 
-	if (r_ssao->integer == 2)
+	if (r_ssao->integer == 2 && tr.screenSsaoImage)
 	{
 		vec4i_t dstBox;
 		VectorSet4(dstBox, 0, glConfig.vidHeight, 512, -512);
@@ -3301,7 +3251,7 @@ const void *RB_PostProcess(const void *data)
 	}
 #endif
 
-	if (r_dynamicGlow->integer != 0)
+	if (r_dynamicGlow->integer != 0 && !RB_AODebugBypassesToneMap())
 	{
 		// Composite the glow/bloom texture
 		int blendFunc = 0;
@@ -3329,6 +3279,8 @@ const void *RB_PostProcess(const void *data)
 
 		FBO_FastBlitFromTexture(tr.glowFboScaled[0]->colorImage[0], NULL, dstBox, color, blendFunc);
 	}
+
+	RB_AODebugOverlay();
 
 	backEnd.framePostProcessed = qtrue;
 	FBO_Bind(NULL);

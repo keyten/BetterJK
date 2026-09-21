@@ -68,4 +68,9 @@ vec4 depthGaussian1D(sampler2D imageMap, sampler2D depthMap, vec2 tex, float zFa
 void main()
 {
 	out_Color = depthGaussian1D(u_ScreenImageMap, u_ScreenDepthMap, var_ScreenTex, u_ViewInfo.x, u_ViewInfo.y);
+#if defined(USE_VERTICAL_BLUR)
+	// final pass into the legacy SSAO map (r = AO): lightall reads g as the
+	// sun contact shadow visibility, none here
+	out_Color.g = 1.0;
+#endif
 }

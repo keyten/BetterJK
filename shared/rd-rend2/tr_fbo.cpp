@@ -688,7 +688,7 @@ void FBO_Init(void)
 		R_CheckFBO(tr.quarterFbo[i]);
 	}
 
-	if (r_ssao->integer)
+	if (R_AOResourcesEnabled())
 	{
 		tr.hdrDepthFbo = FBO_Create(
 			"_hdrDepth", tr.hdrDepthImage->width, tr.hdrDepthImage->height);
@@ -708,6 +708,44 @@ void FBO_Init(void)
 		FBO_SetupDrawBuffers();
 
 		R_CheckFBO(tr.screenSsaoFbo);
+
+		// GTAO linear depth chain, one FBO per mip level
+		for (i = 0; i < AO_DEPTH_MIPS; i++)
+		{
+			const int w = Q_max(1, tr.aoDepthImage->width >> i);
+			const int h = Q_max(1, tr.aoDepthImage->height >> i);
+			tr.aoDepthFbo[i] = FBO_Create(va("_aoDepth%d", i), w, h);
+
+			FBO_Bind(tr.aoDepthFbo[i]);
+			qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+				GL_TEXTURE_2D, tr.aoDepthImage->texnum, i);
+			glState.currentFBO->colorImage[0] = tr.aoDepthImage;
+			glState.currentFBO->colorBuffers[0] = tr.aoDepthImage->texnum;
+			FBO_SetupDrawBuffers();
+
+			R_CheckFBO(tr.aoDepthFbo[i]);
+		}
+
+		for (i = 0; i < 2; i++)
+		{
+			tr.gtaoFbo[i] = FBO_Create(
+				va("_gtao%d", i), tr.gtaoImage[i]->width, tr.gtaoImage[i]->height);
+
+			FBO_Bind(tr.gtaoFbo[i]);
+			FBO_AttachTextureImage(tr.gtaoImage[i], 0);
+			FBO_SetupDrawBuffers();
+
+			R_CheckFBO(tr.gtaoFbo[i]);
+		}
+
+		tr.screenAoFbo = FBO_Create(
+			"_screenAo", tr.screenAoImage->width, tr.screenAoImage->height);
+
+		FBO_Bind(tr.screenAoFbo);
+		FBO_AttachTextureImage(tr.screenAoImage, 0);
+		FBO_SetupDrawBuffers();
+
+		R_CheckFBO(tr.screenAoFbo);
 	}
 
 	if (tr.renderCubeImage != NULL)

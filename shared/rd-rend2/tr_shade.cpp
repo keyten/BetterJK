@@ -2037,10 +2037,15 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 						uniformDataWriter.SetUniformVec4(UNIFORM_CUBEMAPINFO, vec);
 					}
 
-					if (r_ssao->integer && tr.world && backEnd.framePostProcessed == qfalse)
-						samplerBindingsWriter.AddStaticImage(tr.screenSsaoImage, TB_SSAOMAP);
-					else if (r_ssao->integer)
-						samplerBindingsWriter.AddStaticImage(tr.whiteImage, TB_SSAOMAP);
+					// screen-space AO (r) and sun contact shadow (g) of this
+					// view, see RB_RenderScreenSpaceLighting
+					if (R_AOResourcesEnabled())
+					{
+						image_t *aoImage = tr.whiteImage;
+						if (tr.world && backEnd.framePostProcessed == qfalse && backEnd.screenAoImage)
+							aoImage = backEnd.screenAoImage;
+						samplerBindingsWriter.AddStaticImage(aoImage, TB_SSAOMAP);
+					}
 
 				}
 			}

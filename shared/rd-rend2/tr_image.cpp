@@ -3588,15 +3588,8 @@ void R_CreateBuiltinImages( void ) {
 			GL_RGBA8);
 	}
 
-	if (r_ssao->integer)
-	{
-		tr.screenSsaoImage = R_CreateImage(
-			"*screenSsao", NULL, width / 2, height / 2, IMGTYPE_COLORALPHA,
-			IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_R8);
-		tr.hdrDepthImage = R_CreateImage(
-			"*hdrDepth", NULL, width, height, IMGTYPE_COLORALPHA,
-			IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_R32F);
-	}
+	// legacy SSAO, GTAO and contact shadow targets (tr_ao.cpp)
+	R_CreateAOImages(width, height);
 
 	if (r_shadows->integer == 4)
 	{

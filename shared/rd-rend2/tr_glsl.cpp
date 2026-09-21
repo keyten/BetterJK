@@ -138,6 +138,17 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_RandomOffset",			GLSL_VEC4, 1 },
 	{ "u_ChunkParticles",		GLSL_INT, 1 },
 	{ "u_BloomStrength",		GLSL_FLOAT, 1 },
+
+	{ "u_AODepthMap",			GLSL_INT, 1 },
+	{ "u_AOMap",				GLSL_INT, 1 },
+	{ "u_LegacyAOMap",			GLSL_INT, 1 },
+	{ "u_AOProjection",			GLSL_VEC4, 1 },
+	{ "u_AODepthParams",		GLSL_VEC4, 1 },
+	{ "u_AOViewport",			GLSL_VEC4, 1 },
+	{ "u_AOTexelSize",			GLSL_VEC4, 1 },
+	{ "u_AOSettings",			GLSL_VEC4, 1 },
+	{ "u_AOSettings2",			GLSL_VEC4, 1 },
+	{ "u_AOLightDir",			GLSL_VEC3, 1 },
 };
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
@@ -394,7 +405,8 @@ static size_t GLSL_GetShaderHeader(
 
 	Q_strcat(dest, size, "#define USE_ALPHA_TEST\n");
 
-	if (r_ssao->integer)
+	// screen-space AO / contact shadow map (u_SSAOMap), tr_ao.cpp
+	if (R_AOResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSAO\n");
 
 	if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
@@ -2365,6 +2377,87 @@ static int GLSL_LoadGPUProgramSSAO(
 	return 1;
 }
 
+// GTAO, AO composite / contact shadows and AO debug views (tr_ao.cpp)
+static int GLSL_LoadGPUProgramScreenSpaceAO(
+	ShaderProgramBuilder& builder,
+	Allocator& scratchAlloc )
+{
+	if (!R_AOResourcesEnabled())
+		return 0;
+
+	int numPrograms = 0;
+	for (int i = 0; i < 2; i++)
+	{
+		shaderProgram_t *sp = &tr.gtaoDepthShader[i];
+		GLSL_LoadGPUProgramBasicWithDefinitions(
+			builder,
+			scratchAlloc,
+			sp,
+			"gtao_depth",
+			fallback_gtao_depthProgram,
+			i == 0 ? "#define LINEARIZE\n" : nullptr);
+
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENDEPTHMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_AODEPTHMAP, TB_COLORMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	{
+		shaderProgram_t *sp = &tr.gtaoShader;
+		GLSL_LoadGPUProgramBasic(builder, scratchAlloc, sp, "gtao", fallback_gtaoProgram);
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_AODEPTHMAP, TB_COLORMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	{
+		shaderProgram_t *sp = &tr.gtaoDenoiseShader;
+		GLSL_LoadGPUProgramBasic(builder, scratchAlloc, sp, "gtao_denoise", fallback_gtao_denoiseProgram);
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_AOMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_AODEPTHMAP, TB_LIGHTMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	{
+		shaderProgram_t *sp = &tr.aoCompositeShader;
+		GLSL_LoadGPUProgramBasic(builder, scratchAlloc, sp, "ao_composite", fallback_ao_compositeProgram);
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_AOMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENDEPTHMAP, TB_LIGHTMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_AODEPTHMAP, TB_NORMALMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_LEGACYAOMAP, TB_DELUXEMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	{
+		shaderProgram_t *sp = &tr.aoDebugShader;
+		GLSL_LoadGPUProgramBasic(builder, scratchAlloc, sp, "ao_debug", fallback_ao_debugProgram);
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENIMAGEMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_AODEPTHMAP, TB_LIGHTMAP);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	}
+
+	return numPrograms;
+}
+
 static int GLSL_LoadGPUProgramPrefilterEnvMap(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc)
@@ -2842,6 +2935,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramCalcLuminanceLevel(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramHighPass(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramSSAO(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramScreenSpaceAO(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDepthBlur(builder, allocator);
@@ -2902,6 +2996,13 @@ void GLSL_ShutdownGPUShaders(void)
 
 	GLSL_DeleteGPUShader(&tr.highpassShader);
 	GLSL_DeleteGPUShader(&tr.ssaoShader);
+
+	for ( i = 0; i < 2; i++)
+		GLSL_DeleteGPUShader(&tr.gtaoDepthShader[i]);
+	GLSL_DeleteGPUShader(&tr.gtaoShader);
+	GLSL_DeleteGPUShader(&tr.gtaoDenoiseShader);
+	GLSL_DeleteGPUShader(&tr.aoCompositeShader);
+	GLSL_DeleteGPUShader(&tr.aoDebugShader);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);

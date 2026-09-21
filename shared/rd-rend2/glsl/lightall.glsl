@@ -371,6 +371,12 @@ layout(std140) uniform Scene
 	float u_PrimaryLightRadius;
 	float u_frameTime;
 	float u_deltaTime;
+	// screen-space AO (tr_ao.cpp, RB_AOSceneParams)
+	// x = application: 0 legacy, 1 indirect-only, 2 split (legacy left of w)
+	// y = fraction of baked (lightmap/vertex) light treated as indirect
+	// z = multi-bounce approximation, w = split position in window pixels
+	vec4 u_AOParams;
+	vec4 u_AOParams2; // x = r_debugAO
 };
 
 layout(std140) uniform Camera
@@ -1050,6 +1056,25 @@ vec3 CalcIBLContribution(
 #endif
 }
 
+#if defined(PER_PIXEL_LIGHTING) && defined(USE_SSAO)
+// Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indirect
+// Occlusion": multi-bounce fit, bright albedo loses less light in creases
+vec3 AOMultiBounce(float visibility, vec3 albedo)
+{
+	vec3 a =  2.0404 * albedo - 0.3324;
+	vec3 b = -4.7951 * albedo + 0.6417;
+	vec3 c =  2.7552 * albedo + 0.6903;
+	return max(vec3(visibility), ((visibility * a + b) * visibility + c) * visibility);
+}
+
+// Lagarde & de Rousiers 2014, "Moving Frostbite to PBR": specular occlusion
+// from ambient occlusion
+float SpecularOcclusion(float NE, float visibility, float roughness)
+{
+	return clamp(pow(NE + visibility, exp2(-16.0 * roughness - 1.0)) - 1.0 + visibility, 0.0, 1.0);
+}
+#endif
+
 vec3 CalcNormal( in vec3 vertexNormal, in vec4 vertexTangent, in vec2 texCoords )
 {
 #if defined(USE_NORMALMAP)
@@ -1143,11 +1168,24 @@ void main()
 	N = CalcNormal(vertexNormal, var_Tangent, texCoords);
 	L /= sqrt(sqrLightDist);
 
+	// screen-space AO (r) and sun contact shadow (g) of this view
+	float AO = 1.0;
+	float contactShadow = 1.0;
+	#if defined (USE_SSAO)
+	vec2 windowTex = gl_FragCoord.xy / r_FBufScale;
+	vec2 screenAO = texture(u_SSAOMap, windowTex).rg;
+	AO = screenAO.r;
+	contactShadow = screenAO.g;
+	#endif
+	float cascadeShadow = 1.0;
+
   #if defined(USE_SHADOWMAP)
 	vec3 primaryLightDir = normalize(u_PrimaryLightOrigin.xyz);
 	float NPL = clamp(dot(N, primaryLightDir), 0.0, 1.0);
 	vec3 normalBias = vertexNormal * (1.0 - NPL);
-	float shadowValue = sunShadow(u_ViewOrigin, viewDir, normalBias, u_ShadowMap) * NPL;
+	cascadeShadow = sunShadow(u_ViewOrigin, viewDir, normalBias, u_ShadowMap);
+	// contact shadows only refine the near field of the cascaded shadow map
+	float shadowValue = cascadeShadow * contactShadow * NPL;
 
     #if defined(SHADOWMAP_MODULATE)
 	vec3 ambientScale = mix(vec3(1.0), u_PrimaryLightAmbient, u_EnableTextures.z);
@@ -1178,12 +1216,6 @@ void main()
 	// We dont compute it because cloth diffuse is dependent on NL
 	// So we just skip this. Reconsider this again when more BRDFS are added
 
-	float AO = 1.0;
-	#if defined (USE_SSAO)
-	vec2 windowTex = gl_FragCoord.xy / r_FBufScale;
-	AO = texture(u_SSAOMap, windowTex).r;
-	#endif
-
 	vec4 specular = vec4(1.0);
 	float roughness = 0.99;
   #if defined(USE_SPECULARMAP)
@@ -1202,6 +1234,28 @@ void main()
 	roughness = mix(1.0, 0.01, specular.a * (1.0 - u_SpecularScale.w));
   #endif
   #endif
+
+	vec3 specularAO = specular.rgb * AO;
+#if defined(USE_SSAO)
+	vec3 ambientVisibility = vec3(AO);
+	bool indirectOnlyAO = u_AOParams.x == 1.0 ||
+		(u_AOParams.x == 2.0 && gl_FragCoord.x >= u_AOParams.w);
+	if (indirectOnlyAO)
+	{
+		// AO is the loss of indirect light: it attenuates ambient light, the
+		// share of baked lighting that is indirect, and (as specular
+		// occlusion) the environment reflections, never real-time direct
+		// light (sun, dynamic lights, light grid directed light)
+		if (u_AOParams.z > 0.0)
+			ambientVisibility = AOMultiBounce(AO, diffuse.rgb);
+		ambientColor *= ambientVisibility;
+    #if defined(USE_LIGHTMAP) || defined(USE_LIGHT_VERTEX)
+		lightColor *= mix(vec3(1.0), ambientVisibility, u_AOParams.y);
+    #endif
+		specularAO = specular.rgb * SpecularOcclusion(abs(dot(N, E)) + 1e-5, AO, roughness);
+	}
+	else
+#endif
 	ambientColor *= AO;
 
 	vec3  H  = normalize(L + E);
@@ -1232,7 +1286,7 @@ void main()
 	out_Color.rgb += ambientColor * diffuse.rgb;
 
 	out_Color.rgb += CalcDynamicLightContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, diffuse.rgb, specular.rgb, vertexNormal);
-	out_Color.rgb += CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specular.rgb * AO, lightColor + ambientColor);
+	out_Color.rgb += CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specularAO, lightColor + ambientColor);
 
   #if defined(USE_PRIMARY_LIGHT)
 	vec3  L2   = normalize(u_PrimaryLightOrigin.xyz);
@@ -1250,6 +1304,22 @@ void main()
     #endif
 
 	out_Color.rgb += lightColor * reflectance * NL2;
+  #endif
+
+  #if defined(USE_SSAO)
+	// r_debugAO 7-9, written unlit (tone mapping is bypassed for these)
+	if (u_AOParams2.x >= 7.0)
+	{
+		if (u_AOParams2.x == 7.0)
+			out_Color.rgb = vec3(cascadeShadow);
+		else if (u_AOParams2.x == 8.0)
+			out_Color.rgb = vec3(cascadeShadow * contactShadow);
+		else
+			out_Color.rgb = indirectOnlyAO ? ambientVisibility : vec3(AO);
+		out_Color.a = diffuse.a;
+		out_Glow = vec4(0.0, 0.0, 0.0, out_Color.a);
+		return;
+	}
   #endif
 #else
 	lightColor = var_Color.rgb;

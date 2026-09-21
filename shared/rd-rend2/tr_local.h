@@ -180,6 +180,24 @@ extern cvar_t  *r_colorGradingIntensity;
 
 extern cvar_t  *r_depthPrepass;
 extern cvar_t  *r_ssao;
+extern cvar_t  *r_aoMode;
+extern cvar_t  *r_aoApply;
+extern cvar_t  *r_aoCompare;
+extern cvar_t  *r_aoMultiBounce;
+extern cvar_t  *r_aoLightmapFraction;
+extern cvar_t  *r_debugAO;
+extern cvar_t  *r_gtaoQuality;
+extern cvar_t  *r_gtaoHalfRes;
+extern cvar_t  *r_gtaoRadius;
+extern cvar_t  *r_gtaoFalloff;
+extern cvar_t  *r_gtaoThickness;
+extern cvar_t  *r_gtaoPower;
+extern cvar_t  *r_gtaoDenoise;
+extern cvar_t  *r_contactShadows;
+extern cvar_t  *r_contactShadowLength;
+extern cvar_t  *r_contactShadowSteps;
+extern cvar_t  *r_contactShadowThickness;
+extern cvar_t  *r_contactShadowStrength;
 
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
@@ -765,6 +783,9 @@ struct SceneBlock
 	float currentTime;
 	float frameTime;
 	float pad0[2];
+	// screen-space AO application, see RB_AOSceneParams (tr_ao.cpp)
+	vec4_t aoParams;	// application mode, lightmap fraction, multi-bounce, split x
+	vec4_t aoParams2;	// debug view, unused, unused, unused
 };
 
 struct LightsBlock
@@ -913,6 +934,9 @@ enum
 	TB_SSAOMAP     = 9,
 	NUM_TEXTURE_BUNDLES = 10
 };
+
+// linear depth mip levels of the GTAO depth chain (tr_ao.cpp)
+#define AO_DEPTH_MIPS 4
 
 typedef enum
 {
@@ -1527,6 +1551,17 @@ typedef enum
 	UNIFORM_CHUNK_PARTICLES,
 
 	UNIFORM_BLOOMSTRENGTH,
+
+	UNIFORM_AODEPTHMAP,
+	UNIFORM_AOMAP,
+	UNIFORM_LEGACYAOMAP,
+	UNIFORM_AOPROJECTION,	// P[0], P[5], P[8], P[9] of the view projection
+	UNIFORM_AODEPTHPARAMS,	// P[14], P[10], zFar, sky depth threshold
+	UNIFORM_AOVIEWPORT,		// view rectangle in texture coordinates
+	UNIFORM_AOTEXELSIZE,	// 1 / source size, 1 / destination size
+	UNIFORM_AOSETTINGS,		// pass specific
+	UNIFORM_AOSETTINGS2,	// pass specific
+	UNIFORM_AOLIGHTDIR,		// view space direction to the sun
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2503,6 +2538,7 @@ typedef struct {
 	qboolean    framePostProcessed;
 	qboolean    depthFill;
 	qboolean    refractionFill;
+	image_t    *screenAoImage;	// AO / contact shadow map lightall samples in this view (TB_SSAOMAP)
 } backEndState_t;
 
 /*
@@ -2575,8 +2611,11 @@ typedef struct trGlobals_s {
 	char					mapColorGradingLut[MAX_QPATH];
 	image_t					*sunShadowArrayImage;
 	image_t					*pointShadowArrayImage;
-	image_t                 *screenSsaoImage;
+	image_t                 *screenSsaoImage;	// legacy SSAO: r = AO, g = 1
 	image_t					*hdrDepthImage;
+	image_t					*aoDepthImage;		// GTAO: linear view depth, AO_DEPTH_MIPS levels
+	image_t					*gtaoImage[2];		// GTAO: r = visibility, gba = view normal
+	image_t					*screenAoImage;		// final: r = AO, g = sun contact shadow
 	image_t                 *renderCubeImage;
 	image_t                 *renderCubeDepthImage;
 	image_t					*envBrdfImage;
@@ -2604,6 +2643,9 @@ typedef struct trGlobals_s {
 	FBO_t					*sunShadowFbo[3];
 	FBO_t					*screenSsaoFbo;
 	FBO_t					*hdrDepthFbo;
+	FBO_t					*aoDepthFbo[AO_DEPTH_MIPS];
+	FBO_t					*gtaoFbo[2];
+	FBO_t					*screenAoFbo;
 	FBO_t                   *renderCubeFbo[6];
 	FBO_t                   *filterCubeFbo;
 	FBO_t					*weatherDepthFbo;
@@ -2675,6 +2717,11 @@ typedef struct trGlobals_s {
 	shaderProgram_t smaaBlendShader;
 	shaderProgram_t smaaResolveShader;
 	shaderProgram_t smaaTemporalResolveShader;
+	shaderProgram_t gtaoDepthShader[2];		// 0 = linearize, 1 = downsample mip
+	shaderProgram_t gtaoShader;
+	shaderProgram_t gtaoDenoiseShader;
+	shaderProgram_t aoCompositeShader;
+	shaderProgram_t aoDebugShader;
 	// Make sure staticUbo is right behind all shaderProgram_t or edit 
 	// R_ClearTr to make sure shaderPrograms are cached correctly
 
@@ -3973,6 +4020,30 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 image_t *R_GetLoadedImage(const char *name, int flags);
 
 void R_CreateColorGradingImages(void);
+
+/*
+============================================================
+
+SCREEN-SPACE AO AND CONTACT SHADOWS, tr_ao.cpp
+
+============================================================
+*/
+
+typedef enum
+{
+	AO_MODE_OFF,
+	AO_MODE_LEGACY,
+	AO_MODE_GTAO
+} aoMode_t;
+
+qboolean R_AOResourcesEnabled(void);
+int R_AOMode(void);
+void R_CreateAOImages(int width, int height);
+void R_CreateAOFBOs(void);
+void RB_RenderScreenSpaceLighting(void);
+void RB_AOSceneParams(vec4_t aoParams, vec4_t aoParams2);
+qboolean RB_AODebugBypassesToneMap(void);
+void RB_AODebugOverlay(void);
 void R_SetMapColorGrading(const char *worldName);
 void R_UpdateColorGrading(void);
 

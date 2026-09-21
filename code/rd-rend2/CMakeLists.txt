@@ -26,6 +26,7 @@ set(SPRend2Files
 	"${SharedDir}/rd-rend2/tr_allocator.cpp"
 	"${SharedDir}/rd-rend2/tr_allocator.h"
 	"${SharedDir}/rd-rend2/tr_animation.cpp"
+	"${SharedDir}/rd-rend2/tr_ao.cpp"
 	"${SharedDir}/rd-rend2/tr_backend.cpp"
 	"${SharedDir}/rd-rend2/tr_bsp.cpp"
 	"${SharedDir}/rd-rend2/tr_cache.cpp"
