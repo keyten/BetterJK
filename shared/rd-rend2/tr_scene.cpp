@@ -407,6 +407,18 @@ void RE_BeginScene(const refdef_t *fd)
 			VectorCopy4(lightCol, tr.refdef.sunCol);
 			VectorScale4(lightCol, 0.2f, tr.refdef.sunAmbCol);
 		}
+
+		// r_linearLighting: these scale gamma space lighting, convert them
+		// for linear light
+		if (tr.forcedLinearLight)
+		{
+			tr.refdef.colorScale = powf(tr.refdef.colorScale, 2.2f);
+			for (int i = 0; i < 3; i++)
+			{
+				tr.refdef.sunCol[i] = (float)sRGBtoRGB(tr.refdef.sunCol[i]);
+				tr.refdef.sunAmbCol[i] = (float)sRGBtoRGB(tr.refdef.sunAmbCol[i]);
+			}
+		}
 	}
 
 	if (r_forceAutoExposure->integer)
@@ -431,6 +443,18 @@ void RE_BeginScene(const refdef_t *fd)
 		tr.refdef.toneMinAvgMaxLinear[0] = pow(2, tr.toneMinAvgMaxLevel[0]);
 		tr.refdef.toneMinAvgMaxLinear[1] = pow(2, tr.toneMinAvgMaxLevel[1]);
 		tr.refdef.toneMinAvgMaxLinear[2] = pow(2, tr.toneMinAvgMaxLevel[2]);
+	}
+
+	// r_linearLighting: the tone parameters were chosen for a display-encoded
+	// buffer. Convert them to linear light, so exposure and the legacy curve
+	// behave the same on the linear buffer (see also R_UpdateFixedExposureLevel)
+	if (tr.forcedLinearLight)
+	{
+		tr.refdef.autoExposureMinMax[0] *= 2.2f;
+		tr.refdef.autoExposureMinMax[1] *= 2.2f;
+		tr.refdef.toneMinAvgMaxLinear[0] = powf(tr.refdef.toneMinAvgMaxLinear[0], 2.2f);
+		tr.refdef.toneMinAvgMaxLinear[1] = powf(tr.refdef.toneMinAvgMaxLinear[1], 2.2f);
+		tr.refdef.toneMinAvgMaxLinear[2] = powf(tr.refdef.toneMinAvgMaxLinear[2], 2.2f);
 	}
 
 	// Makro - copy exta info if present

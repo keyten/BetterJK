@@ -143,6 +143,11 @@ cvar_t  *r_forceAutoExposure;
 cvar_t  *r_forceAutoExposureMin;
 cvar_t  *r_forceAutoExposureMax;
 
+cvar_t  *r_toneMapMode;
+cvar_t  *r_toneMapDebug;
+cvar_t  *r_exposureCompensation;
+cvar_t  *r_linearLighting;
+
 cvar_t  *r_depthPrepass;
 cvar_t  *r_ssao;
 
@@ -1554,6 +1559,14 @@ void R_Register( void )
 	r_smaa_quality = ri_Cvar_Get_NoComm("r_smaa_quality", "2", CVAR_ARCHIVE | CVAR_LATCH, "0: LOW | 1: MEDIUM | 2: HIGH | 3: ULTRA");
 
 	r_cameraExposure = ri_Cvar_Get_NoComm( "r_cameraExposure", "0", CVAR_CHEAT, "" );
+
+	r_toneMapMode = ri_Cvar_Get_NoComm( "r_toneMapMode", "0", CVAR_ARCHIVE, "Tone mapping operator: 0 = legacy Rend2 filmic, 1 = ACES (fitted approximation), 2 = AgX-like (approximation)" );
+	ri.Cvar_CheckRange( r_toneMapMode, 0, 2, qtrue );
+	r_toneMapDebug = ri_Cvar_Get_NoComm( "r_toneMapDebug", "0", CVAR_CHEAT, "Tone mapping debug view: 1 = legacy | r_toneMapMode split, 2 = legacy | ACES | AgX split, 3 = raw scene-linear, 4 = exposure-adjusted, 5 = exposure false color" );
+	ri.Cvar_CheckRange( r_toneMapDebug, 0, 5, qtrue );
+	r_exposureCompensation = ri_Cvar_Get_NoComm( "r_exposureCompensation", "0", CVAR_ARCHIVE, "Exposure compensation in EV stops, applied in linear light before tone mapping" );
+	ri.Cvar_CheckRange( r_exposureCompensation, -4.0f, 4.0f, qfalse );
+	r_linearLighting = ri_Cvar_Get_NoComm( "r_linearLighting", "0", CVAR_ARCHIVE | CVAR_LATCH, "Light maps without HDR lightmaps in linear light (experimental, needs r_hdr 1 and r_toneMap 1)" );
 
 	r_depthPrepass = ri_Cvar_Get_NoComm( "r_depthPrepass", "1", CVAR_ARCHIVE, "" );
 	r_ssao = ri_Cvar_Get_NoComm( "r_ssao", "0", CVAR_LATCH | CVAR_ARCHIVE, "" );

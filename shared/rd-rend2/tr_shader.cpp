@@ -2131,7 +2131,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		const char *filename = { va("%s/lm_", tr.worldName) };
 		if (!Q_strncmp(filename, bufferBaseColorTextureName, sizeof(filename)))
 		{
-			if (shader.isHDRLit)
+			if (shader.isHDRLit && tr.hdrLighting)
 			{
 				image_t *hdrImage = R_FindImageFile(bufferBaseColorTextureName, IMGTYPE_COLORALPHA, IMGFLAG_NOLIGHTSCALE | IMGFLAG_HDR | IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE);
 				if (hdrImage)
@@ -2368,6 +2368,8 @@ static void ParseSkyParms( const char **text ) {
 
 	if (tr.hdrLighting == qtrue)
 		imgFlags |= IMGFLAG_SRGB | IMGFLAG_HDR | IMGFLAG_NOLIGHTSCALE; // srgb or hdr are requested. If hdr is found, the srgb flag will be ignored
+	else if (tr.forcedLinearLight)
+		imgFlags |= IMGFLAG_SRGB;
 
 	// outerbox
 	token = COM_ParseExt( text, qfalse );
@@ -2789,7 +2791,7 @@ static qboolean ParseShader( const char **text )
 				return qfalse;
 			}
 
-			if (tr.hdrLighting)
+			if (tr.linearLight)
 			{
 				shader.fogParms.color[0] = sRGBtoRGB(shader.fogParms.color[0]);
 				shader.fogParms.color[1] = sRGBtoRGB(shader.fogParms.color[1]);
@@ -4578,7 +4580,7 @@ shader_t *R_FindShader( const char *name, const int *lightmapIndexes, const byte
 	}
 	default:
 	{
-		shader.isHDRLit = tr.hdrLighting;
+		shader.isHDRLit = tr.linearLight;
 		break;
 	}
 	}
@@ -4769,7 +4771,7 @@ qhandle_t RE_RegisterShaderFromImage(const char *name, const int *lightmapIndexe
 	//
 	// create the default shading commands
 	//
-	shader.isHDRLit = tr.hdrLighting;
+	shader.isHDRLit = tr.linearLight;
 	if ( shader.lightmapIndex[0] == LIGHTMAP_NONE ) {
 		// dynamic colors at vertexes
 		stages[0].bundle[0].image[0] = image;

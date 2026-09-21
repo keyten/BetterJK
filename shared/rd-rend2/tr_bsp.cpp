@@ -168,6 +168,60 @@ static void R_ColorShiftLightingFloats(float in[4], float out[4], float scale, b
 	out[3] = in[3];
 }
 
+/*
+===============
+R_LinearizeLightingColor
+
+With r_linearLighting, lighting data of maps without HDR lightmaps
+(lightmaps, vertex colors, light grid) is sRGB encoded. Decode it.
+===============
+*/
+static void R_LinearizeLightingColor(float color[3])
+{
+	if (!tr.forcedLinearLight)
+		return;
+
+	color[0] = (float)sRGBtoRGB(color[0]);
+	color[1] = (float)sRGBtoRGB(color[1]);
+	color[2] = (float)sRGBtoRGB(color[2]);
+}
+
+/*
+===============
+R_SetupLinearLighting
+
+Decides whether the map is lit in linear light, before any of its
+lighting data or shaders are loaded
+===============
+*/
+static void R_SetupLinearLighting(void)
+{
+	tr.hdrLighting = qfalse;
+	tr.linearLight = qfalse;
+	tr.forcedLinearLight = qfalse;
+
+	if (!r_linearLighting->integer)
+		return;
+
+	// Linear values need the float render target, and the sRGB encoding
+	// done by the tone map pass
+	if (!r_hdr->integer || !r_toneMap->integer)
+	{
+		ri.Printf(PRINT_WARNING, "WARNING: r_linearLighting needs r_hdr 1 and r_toneMap 1, ignored\n");
+		return;
+	}
+
+	// Overbright bits scale lighting in gamma space
+	if (tr.overbrightBits)
+	{
+		ri.Printf(PRINT_WARNING, "WARNING: r_linearLighting needs r_overBrightBits 0, ignored\n");
+		return;
+	}
+
+	tr.linearLight = qtrue;
+	tr.forcedLinearLight = qtrue;
+}
+
 void ColorToRGBA16F(const vec3_t color, unsigned short rgba16f[4])
 {
 	rgba16f[0] = FloatToHalf(color[0]);
@@ -197,7 +251,7 @@ static	void R_LoadLightmaps( world_t *worldData, lump_t *l, lump_t *surfs ) {
 	bool hdr_capable = glRefConfig.floatLightmap && r_hdr->integer;
 
 	tr.lightmapSize = DEFAULT_LIGHTMAP_SIZE;
-	tr.hdrLighting = qfalse;
+	R_SetupLinearLighting();
 	tr.worldInternalLightmapping = qfalse;
 
 	len = l->filelen;
@@ -307,6 +361,8 @@ static	void R_LoadLightmaps( world_t *worldData, lump_t *l, lump_t *surfs ) {
 
 	if (hdr_capable)
 		textureInternalFormat = GL_RGBA16F;
+	else if (tr.forcedLinearLight)
+		textureInternalFormat = GL_SRGB8_ALPHA8; // decoded by the hardware
 	else
 		textureInternalFormat = GL_RGBA8;
 
@@ -408,6 +464,8 @@ static	void R_LoadLightmaps( world_t *worldData, lump_t *l, lump_t *surfs ) {
 				{
 					hdrL = (float *)externalLightmap;
 					tr.hdrLighting = qtrue;
+					tr.linearLight = qtrue;
+					tr.forcedLinearLight = qfalse;
 				}
 				else
 				{
@@ -468,6 +526,7 @@ static	void R_LoadLightmaps( world_t *worldData, lump_t *l, lump_t *surfs ) {
 						color[3] = 1.0f;
 
 						R_ColorShiftLightingFloats(color, color, 1.0f / 255.0f, true);
+						R_LinearizeLightingColor(color);
 
 						ColorToRGBA16F(color, (unsigned short *)(&image[j * 8]));
 					}
@@ -935,6 +994,8 @@ static void ParseFace( const world_t *worldData, dsurface_t *ds, drawVert_t *ver
 			color[3] = verts[i].color[j][3] / 255.0f;
 
 			R_ColorShiftLightingFloats( color, cv->verts[i].vertexColors[j], scale, hdrVertColors == NULL );
+			if ( hdrVertColors == NULL )
+				R_LinearizeLightingColor( cv->verts[i].vertexColors[j] );
 		}
 	}
 
@@ -1084,6 +1145,8 @@ static void ParseMesh ( const world_t *worldData, dsurface_t *ds, drawVert_t *ve
 			color[3] = verts[i].color[j][3] / 255.0f;
 
 			R_ColorShiftLightingFloats( color, points[i].vertexColors[j], scale, hdrVertColors == NULL );
+			if ( hdrVertColors == NULL )
+				R_LinearizeLightingColor( points[i].vertexColors[j] );
 		}
 	}
 
@@ -1214,6 +1277,8 @@ static void ParseTriSurf( const world_t *worldData, dsurface_t *ds, drawVert_t *
 			color[3] = verts[i].color[j][3] / 255.0f;
 
 			R_ColorShiftLightingFloats( color, cv->verts[i].vertexColors[j], scale, hdrVertColors == NULL );
+			if ( hdrVertColors == NULL )
+				R_LinearizeLightingColor( cv->verts[i].vertexColors[j] );
 		}
 	}
 
@@ -1287,6 +1352,8 @@ static void ParseFlare( const world_t *worldData, dsurface_t *ds, drawVert_t *ve
 		flare->color[i] = LittleFloat( ds->lightmapVecs[0][i] );
 		flare->normal[i] = LittleFloat( ds->lightmapVecs[2][i] );
 	}
+
+	R_LinearizeLightingColor( flare->color );
 }
 
 
@@ -4270,7 +4337,7 @@ static void R_BuildLightGridTexture(world_t *world)
 				world->lightGridBounds[0],
 				world->lightGridBounds[1],
 				world->lightGridBounds[2],
-				GL_RGB8);
+				tr.forcedLinearLight ? GL_SRGB8 : GL_RGB8);
 		}
 	}
 	else
@@ -4471,6 +4538,31 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 
 /*
 =================
+R_UpdateFixedExposureLevel
+
+Fixed exposure (r_autoExposure 0) uses the log2 average luminance stored in
+fixedLevelsImage, -1 by default. Under r_linearLighting the tone parameters
+are converted to linear light (see RE_BeginScene), so convert it as well.
+=================
+*/
+static void R_UpdateFixedExposureLevel(void)
+{
+	if (!tr.fixedLevelsImage || tr.fixedLevelsImage->internalFormat != GL_RGBA16F)
+		return;
+
+	const float logAvgLum = tr.forcedLinearLight ? -2.2f : -1.0f;
+	uint16_t levels[4] = {
+		FloatToHalf(0.0f),
+		FloatToHalf((logAvgLum + 10.0f) / 20.0f),
+		FloatToHalf(1.0f),
+		FloatToHalf(1.0f)
+	};
+
+	R_UpdateSubImage(tr.fixedLevelsImage, (byte *)levels, 0, 0, 1, 1);
+}
+
+/*
+=================
 RE_LoadWorldMap
 
 Called directly from cgame
@@ -4522,6 +4614,8 @@ void RE_LoadWorldMap( const char *name ) {
 
 	tr.worldMapLoaded = qtrue;
 	tr.world = world;
+
+	R_UpdateFixedExposureLevel();
 
 	R_PushDebugGroup(AL_SCENE, "World loading");
 	R_PushDebugGroup(AL_VIEW, "Weather depth");

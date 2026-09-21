@@ -22,6 +22,30 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "tr_local.h"
 
+/*
+=============
+RB_GetToneMapParams
+
+u_ToneMapParams for the shared output transform (glsl/output_transform.glsl),
+used by the tone map pass and by refractive surfaces.
+=============
+*/
+void RB_GetToneMapParams(vec4_t params)
+{
+	const float ev = r_exposureCompensation->value;
+
+	params[0] = (float)r_toneMapMode->integer;
+	params[1] = (float)r_toneMapDebug->integer;
+
+	// The legacy operator works directly on the HDR buffer, which holds
+	// display-encoded values unless the map is lit in linear light, so convert
+	// the stops to a gain in that domain. Exactly 1.0 when ev is 0.
+	params[2] = powf(2.0f, tr.linearLight ? ev : ev / 2.2f);
+
+	// Gain in scene-linear light for the scene-referred operators
+	params[3] = powf(2.0f, ev);
+}
+
 void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, int autoExposure)
 {
 	vec4i_t srcBox, dstBox;
@@ -85,7 +109,10 @@ void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, in
 	else
 		GL_BindToTMU(tr.fixedLevelsImage, TB_LEVELSMAP);
 
-	bool srgbTransform = tr.hdrLighting == qtrue;
+	vec4_t toneMapParams;
+	RB_GetToneMapParams(toneMapParams);
+
+	bool srgbTransform = tr.linearLight == qtrue;
 	shaderProgram_t *shader = srgbTransform ? &tr.tonemapShader[1] : &tr.tonemapShader[0];
 
 	if (r_smaa->integer == 1)
@@ -100,6 +127,7 @@ void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, in
 	GLSL_SetUniformVec4(shader, UNIFORM_COLOR, color);
 	GLSL_SetUniformVec2(shader, UNIFORM_AUTOEXPOSUREMINMAX, tr.refdef.autoExposureMinMax);
 	GLSL_SetUniformVec3(shader, UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
+	GLSL_SetUniformVec4(shader, UNIFORM_TONEMAPPARAMS, toneMapParams);
 	RB_InstantTriangle();
 }
 

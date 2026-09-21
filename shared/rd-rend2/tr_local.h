@@ -170,6 +170,11 @@ extern cvar_t  *r_forceAutoExposure;
 extern cvar_t  *r_forceAutoExposureMin;
 extern cvar_t  *r_forceAutoExposureMax;
 
+extern cvar_t  *r_toneMapMode;
+extern cvar_t  *r_toneMapDebug;
+extern cvar_t  *r_exposureCompensation;
+extern cvar_t  *r_linearLighting;
+
 extern cvar_t  *r_depthPrepass;
 extern cvar_t  *r_ssao;
 
@@ -1503,6 +1508,7 @@ typedef enum
 	UNIFORM_INVTEXRES,
 	UNIFORM_AUTOEXPOSUREMINMAX,
 	UNIFORM_TONEMINAVGMAXLINEAR,
+	UNIFORM_TONEMAPPARAMS, // operator, debug view, legacy EV gain, scene-linear EV gain
 
 	UNIFORM_CUBEMAPINFO,
 
@@ -2615,6 +2621,8 @@ typedef struct trGlobals_s {
 	image_t					**deluxemaps;
 
 	qboolean				hdrLighting;
+	qboolean				linearLight;		// the scene is lit in linear light: HDR lightmaps or r_linearLighting
+	qboolean				forcedLinearLight;	// r_linearLighting on a map without HDR lightmaps, its sRGB lighting data gets decoded
 
 	vec2i_t					lightmapAtlasSize;
 	vec2i_t					lightmapsPerAtlasSide;

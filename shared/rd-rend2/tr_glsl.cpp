@@ -124,6 +124,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_InvTexRes",           GLSL_VEC2, 1 },
 	{ "u_AutoExposureMinMax",  GLSL_VEC2, 1 },
 	{ "u_ToneMinAvgMaxLinear", GLSL_VEC3, 1 },
+	{ "u_ToneMapParams",       GLSL_VEC4, 1 },
 
 	{ "u_CubeMapInfo", GLSL_VEC4, 1 },
 
@@ -248,6 +249,7 @@ static void GLSL_PrintShaderSource(GLuint shader)
 static size_t GLSL_GetShaderHeader(
 	GLenum shaderType,
 	const GLcharARB *extra,
+	const GPUShaderDesc *library,
 	int firstLineNumber,
 	char *dest,
 	size_t size)
@@ -401,10 +403,21 @@ static size_t GLSL_GetShaderHeader(
 		Q_strcat(dest, size, extra);
 	}
 
-	// OK we added a lot of stuff but if we do something bad in the GLSL
-	// shaders then we want the proper line so we have to reset the line
-	// counting
-	Q_strcat(dest, size, va("\n#line %d\n", firstLineNumber - 1));
+	if (library)
+	{
+		// Shared functions (see GLSL_LoadGPUShader). Errors in them are
+		// reported as source string 1 with the line numbers of their file.
+		Q_strcat(dest, size, va("\n#line %d 1\n", library->firstLineNumber - 1));
+		Q_strcat(dest, size, library->source);
+		Q_strcat(dest, size, va("\n#line %d 0\n", firstLineNumber - 1));
+	}
+	else
+	{
+		// OK we added a lot of stuff but if we do something bad in the GLSL
+		// shaders then we want the proper line so we have to reset the line
+		// counting
+		Q_strcat(dest, size, va("\n#line %d\n", firstLineNumber - 1));
+	}
 
 	return strlen(dest);
 }
@@ -668,7 +681,7 @@ class ShaderProgramBuilder
 			const char *name,
 			const uint32_t attribs,
 			const uint32_t xfbVariables);
-		bool AddShader(const GPUShaderDesc& shaderDesc, const char *extra);
+		bool AddShader(const GPUShaderDesc& shaderDesc, const char *extra, const GPUShaderDesc *library);
 		bool Build(shaderProgram_t *program);
 
 	private:
@@ -715,10 +728,21 @@ void ShaderProgramBuilder::Start(
 	this->xfbVariables = xfbVariables;
 }
 
-bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const char *extra )
+bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const char *extra, const GPUShaderDesc *library )
 {
 	static const int MAX_ATTEMPTS = 3;
 	const GLenum apiShader = ToGLShaderType(shaderDesc.type);
+
+	if ( library )
+	{
+		// A header that doesn't fit is silently truncated, only a failed
+		// source load below grows the buffer. Make room for the library.
+		const size_t minSize = strlen(library->source) + MAX_SHADER_SOURCE_LEN;
+		if ( shaderSource.size() < minSize )
+		{
+			shaderSource.resize(minSize);
+		}
+	}
 
 	size_t sourceLen = 0;
 	size_t headerLen = 0;
@@ -728,6 +752,7 @@ bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const cha
 		headerLen = GLSL_GetShaderHeader(
 			apiShader,
 			extra,
+			library,
 			shaderDesc.firstLineNumber,
 			&shaderSource[0],
 			shaderSource.size());
@@ -811,6 +836,9 @@ void ShaderProgramBuilder::ReleaseShaders()
 	numShaderNames = 0;
 }
 
+// fragmentLibrary: optional block of shared GLSL functions (e.g. the fragment
+// block of output_transform.glsl) inserted into the fragment shader after the
+// defines, so several programs can use the same code.
 static bool GLSL_LoadGPUShader(
 	ShaderProgramBuilder& builder,
 	shaderProgram_t *program,
@@ -818,13 +846,16 @@ static bool GLSL_LoadGPUShader(
 	const uint32_t attribs,
 	const uint32_t xfbVariables,
 	const GLcharARB *extra,
-	const GPUProgramDesc& programDesc)
+	const GPUProgramDesc& programDesc,
+	const GPUShaderDesc *fragmentLibrary = nullptr)
 {
 	builder.Start(name, attribs, xfbVariables);
 	for ( size_t i = 0; i < programDesc.numShaders; ++i )
 	{
 		const GPUShaderDesc& shaderDesc = programDesc.shaders[i];
-		if ( !builder.AddShader(shaderDesc, extra) )
+		const GPUShaderDesc *library =
+			(shaderDesc.type == GPUSHADER_FRAGMENT) ? fragmentLibrary : nullptr;
+		if ( !builder.AddShader(shaderDesc, extra, library) )
 		{
 			return false;
 		}
@@ -1440,6 +1471,24 @@ static const GPUProgramDesc *LoadProgramSource(
 	return result;
 }
 
+// Shared exposure/tone mapping functions (glsl/output_transform.glsl) used by
+// the tone map and refraction programs
+static const GPUShaderDesc *LoadOutputTransformLibrary( Allocator& allocator )
+{
+	const GPUProgramDesc *programDesc =
+		LoadProgramSource("output_transform", allocator, fallback_output_transformProgram);
+	for ( size_t i = 0; i < programDesc->numShaders; ++i )
+	{
+		if ( programDesc->shaders[i].type == GPUSHADER_FRAGMENT )
+		{
+			return &programDesc->shaders[i];
+		}
+	}
+
+	ri.Error(ERR_FATAL, "Could not load output_transform shader library!");
+	return nullptr;
+}
+
 static int GLSL_LoadGPUProgramGeneric(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
@@ -1721,6 +1770,7 @@ static int GLSL_LoadGPUProgramRefraction(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("refraction", allocator, fallback_refractionProgram);
+	const GPUShaderDesc *outputTransform = LoadOutputTransformLibrary(allocator);
 	for (int i = 0; i < REFRACTIONDEF_COUNT; i++)
 	{
 		uint32_t attribs = ATTR_POSITION | ATTR_TEXCOORD0 | ATTR_NORMAL | ATTR_COLOR;
@@ -1770,7 +1820,7 @@ static int GLSL_LoadGPUProgramRefraction(
 		}
 
 		if (!GLSL_LoadGPUShader(builder, &tr.refractionShader[i], name, attribs, NO_XFB_VARS,
-			extradefines, *programDesc))
+			extradefines, *programDesc, outputTransform))
 		{
 			ri.Error(ERR_FATAL, "Could not load refraction shader!");
 		}
@@ -2185,6 +2235,7 @@ static int GLSL_LoadGPUProgramTonemap(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("tonemap", allocator, fallback_tonemapProgram);
+	const GPUShaderDesc *outputTransform = LoadOutputTransformLibrary(allocator);
 	const uint32_t attribs = ATTR_POSITION | ATTR_TEXCOORD0;
 
 	extradefines[0] = '\0';
@@ -2201,14 +2252,14 @@ static int GLSL_LoadGPUProgramTonemap(
 	}
 
 	if (!GLSL_LoadGPUShader(builder, &tr.tonemapShader[0], "tonemap", attribs, NO_XFB_VARS,
-		extradefines, *programDesc))
+		extradefines, *programDesc, outputTransform))
 	{
 		ri.Error(ERR_FATAL, "Could not load tonemap shader!");
 	}
 
 	Q_strcat(extradefines, sizeof(extradefines), "#define USE_LINEAR_LIGHT\n");
 	if (!GLSL_LoadGPUShader(builder, &tr.tonemapShader[1], "tonemap_SRGB", attribs, NO_XFB_VARS,
-		extradefines, *programDesc))
+		extradefines, *programDesc, outputTransform))
 	{
 		ri.Error(ERR_FATAL, "Could not load tonemap shader!");
 	}

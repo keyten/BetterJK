@@ -398,6 +398,24 @@ static void ComputeShaderColors( shaderStage_t *pStage, vec4_t baseColor, vec4_t
 			break;
 	}
 
+	// r_linearLighting: colors of map and model shaders are authored for gamma
+	// space lighting. Vertex and fog colors are already decoded on load.
+	if (tr.forcedLinearLight && tess.shader && tess.shader->isHDRLit)
+	{
+		switch ( rgbGen )
+		{
+			case CGEN_CONST:
+			case CGEN_WAVEFORM:
+			case CGEN_LIGHTMAPSTYLE:
+				baseColor[0] = (float)sRGBtoRGB(baseColor[0]);
+				baseColor[1] = (float)sRGBtoRGB(baseColor[1]);
+				baseColor[2] = (float)sRGBtoRGB(baseColor[2]);
+				break;
+			default:
+				break;
+		}
+	}
+
 	//
 	// alphaGen
 	//
@@ -1356,7 +1374,7 @@ static shaderProgram_t *SelectShaderProgram( int stageIndex, shaderStage_t *stag
 			index |= REFRACTIONDEF_USE_ALPHA_TEST;
 		}*/
 
-		if (tr.hdrLighting == qtrue)
+		if (tr.linearLight == qtrue)
 			index |= REFRACTIONDEF_USE_SRGB_TRANSFORM;
 
 		return &tr.refractionShader[index];
@@ -1794,6 +1812,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			uniformDataWriter.SetUniformVec4(UNIFORM_COLOR, color);
 			uniformDataWriter.SetUniformVec2(UNIFORM_AUTOEXPOSUREMINMAX, tr.refdef.autoExposureMinMax);
 			uniformDataWriter.SetUniformVec3(UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
+
+			vec4_t toneMapParams;
+			RB_GetToneMapParams(toneMapParams);
+			uniformDataWriter.SetUniformVec4(UNIFORM_TONEMAPPARAMS, toneMapParams);
 		}
 
 #ifdef REND2_SP_GORE

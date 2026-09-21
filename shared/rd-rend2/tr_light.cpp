@@ -411,6 +411,17 @@ void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent ) {
 		}
 	}
 
+	// r_linearLighting: the light grid is sRGB encoded like the lightmaps.
+	// Decode after the gamma space minimum light and clamp above.
+	if (tr.forcedLinearLight && !(refdef->rdflags & RDF_NOWORLDMODEL))
+	{
+		for (i = 0; i < 3; i++)
+		{
+			ent->ambientLight[i] = 255.0f * (float)sRGBtoRGB(ent->ambientLight[i] / 255.0f);
+			ent->directedLight[i] = 255.0f * (float)sRGBtoRGB(ent->directedLight[i] / 255.0f);
+		}
+	}
+
 	if ( r_debugLight->integer ) {
 		LogLight( ent );
 	}

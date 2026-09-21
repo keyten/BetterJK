@@ -139,11 +139,13 @@ GPUProgramDesc ParseProgramSource( Allocator& allocator, const char *text )
 
 	GPUProgramDesc theProgram = {};
 	const Block *parsedBlocks[GPUSHADER_TYPE_COUNT] = {};
-	for ( const auto& shaderBlockName : shaderBlockNames )
+	GPUShaderType parsedTypes[GPUSHADER_TYPE_COUNT] = {};
+	for ( int type = 0; type < GPUSHADER_TYPE_COUNT; ++type )
 	{
-		Block *block = FindBlock(shaderBlockName, blocks, numBlocks);
+		Block *block = FindBlock(shaderBlockNames[type], blocks, numBlocks);
 		if ( block )
 		{
+			parsedTypes[theProgram.numShaders] = static_cast<GPUShaderType>(type);
 			parsedBlocks[theProgram.numShaders++] = block;
 		}
 	}
@@ -170,7 +172,7 @@ GPUProgramDesc ParseProgramSource( Allocator& allocator, const char *text )
 			block->blockTextLength);
 
 		GPUShaderDesc& shaderDesc = theProgram.shaders[shaderIndex];
-		shaderDesc.type = static_cast<GPUShaderType>(shaderType);
+		shaderDesc.type = parsedTypes[shaderType];
 		shaderDesc.source = source;
 		shaderDesc.firstLineNumber = block->blockTextFirstLine;
 		++shaderIndex;

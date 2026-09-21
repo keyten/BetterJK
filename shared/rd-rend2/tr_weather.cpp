@@ -588,7 +588,7 @@ void R_LoadWeatherImages()
 	// Image flags and type
 	imgType_t type = IMGTYPE_COLORALPHA;
 	int flags = IMGFLAG_CLAMPTOEDGE;
-	if (tr.hdrLighting)
+	if (tr.linearLight)
 		flags |= IMGFLAG_SRGB;
 
 	if (tr.weatherSystem->weatherSlots[WEATHER_RAIN].active)
