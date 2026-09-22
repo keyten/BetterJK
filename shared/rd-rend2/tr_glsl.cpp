@@ -38,6 +38,7 @@ const uniformBlockInfo_t uniformBlocksInfo[UNIFORM_BLOCK_COUNT] = {
 	{ 8, "PreviousBones", sizeof(SkeletonBoneMatricesBlock) },
 	{ 9, "TemporalInfo", sizeof(TemporalBlock) },
 	{ 10, "SurfaceSprite", sizeof(SurfaceSpriteBlock) },
+	{ 11, "VolumetricFog", sizeof(VolumetricFogBlock) },
 };
 
 typedef struct uniformInfo_s
@@ -175,6 +176,17 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_SSRReproject",			GLSL_MAT4x4, 1 },
 	{ "u_SSREmitters",			GLSL_VEC4, SSR_MAX_EMITTERS * 3 },
 	{ "u_SSREmitterParams",		GLSL_VEC4, 1 },
+
+	{ "u_FroxelFogMode",		GLSL_INT, 1 },
+	{ "u_FroxelVolume",			GLSL_INT, 1 },
+	{ "u_FroxelTail",			GLSL_INT, 1 },
+	{ "u_FroxelSource",			GLSL_INT, 1 },
+	{ "u_FroxelHistory",		GLSL_INT, 1 },
+	{ "u_FroxelDynamic",		GLSL_INT, 1 },
+	{ "u_FroxelCarry",			GLSL_INT, 1 },
+	{ "u_VolumetricStaticGrid",	GLSL_INT, 1 },
+	{ "u_VolumetricSunGrid",	GLSL_INT, 1 },
+	{ "u_FroxelSlice",			GLSL_INT, 1 },
 };
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
@@ -422,6 +434,11 @@ static size_t GLSL_GetShaderHeader(
 
 	if (r_volumetricFog->integer)
 		Q_strcat(dest, size, va("#define r_volumetricFogSamples %i\n", r_volumetricFogSamples->integer));
+
+	// froxel volumetric fog (tr_volumetric.cpp): also enables the froxel
+	// lookup of the fog pass, generic and surface sprite programs
+	if (R_VolumetricFroxelEnabled())
+		Q_strcat(dest, size, "#define USE_FROXEL_FOG\n");
 
 	if (r_cubeMapping->integer)
 	{
@@ -1569,6 +1586,35 @@ static const GPUShaderDesc *LoadOutputTransformLibrary( Allocator& allocator )
 	return nullptr;
 }
 
+// Froxel volumetric fog functions (glsl/volumetric_common.glsl), inserted into
+// the volumetric programs and, with r_volumetricFog 2 only, into the programs
+// with a legacy fog path. nullptr otherwise: the other modes keep their source.
+static const GPUShaderDesc *LoadVolumetricLibrary( Allocator& allocator )
+{
+	if ( !R_VolumetricFroxelEnabled() )
+		return nullptr;
+
+	const GPUProgramDesc *programDesc =
+		LoadProgramSource("volumetric_common", allocator, fallback_volumetric_commonProgram);
+	for ( size_t i = 0; i < programDesc->numShaders; ++i )
+	{
+		if ( programDesc->shaders[i].type == GPUSHADER_FRAGMENT )
+		{
+			return &programDesc->shaders[i];
+		}
+	}
+
+	ri.Error(ERR_FATAL, "Could not load volumetric_common shader library!");
+	return nullptr;
+}
+
+// texture units of the froxel volume lookup (FroxelFog)
+static void GLSL_SetFroxelLookupUnits( shaderProgram_t *program )
+{
+	GLSL_SetUniformInt(program, UNIFORM_FROXELVOLUME, TB_CUBEMAP);
+	GLSL_SetUniformInt(program, UNIFORM_FROXELTAIL, TB_ENVBRDFMAP);
+}
+
 static int GLSL_LoadGPUProgramGeneric(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
@@ -1582,6 +1628,7 @@ static int GLSL_LoadGPUProgramGeneric(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("generic", allocator, fallback_genericProgram);
+	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
 	for ( int i = 0; i < GENERICDEF_COUNT; i++ )
 	{
 		if (!GLSL_IsValidPermutationForGeneric(i))
@@ -1645,7 +1692,7 @@ static int GLSL_LoadGPUProgramGeneric(
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_ALPHA_TEST\n");*/
 
 		if (!GLSL_LoadGPUShader(builder, &tr.genericShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc))
+				extradefines, *programDesc, volumetricLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load generic shader!");
 		}
@@ -1657,6 +1704,7 @@ static int GLSL_LoadGPUProgramGeneric(
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_LIGHTMAP,   TB_LIGHTMAP);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_VOLUMETRICLIGHTMAP, 2);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_SCREENDEPTHMAP, TB_SHADOWMAP);
+		GLSL_SetFroxelLookupUnits(&tr.genericShader[i]);
 		qglUseProgram(0);
 
 		GLSL_FinishGPUShader(&tr.genericShader[i]);
@@ -1680,6 +1728,7 @@ static int GLSL_LoadGPUProgramFogPass(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("fogpass", allocator, fallback_fogpassProgram);
+	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
 	for (int i = 0; i < FOGDEF_COUNT; i++)
 	{
 		if (!GLSL_IsValidPermutationForFog(i))
@@ -1727,7 +1776,7 @@ static int GLSL_LoadGPUProgramFogPass(
 		}
 
 		if (!GLSL_LoadGPUShader(builder, &tr.fogShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc))
+				extradefines, *programDesc, volumetricLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load fogpass shader!");
 		}
@@ -1738,6 +1787,7 @@ static int GLSL_LoadGPUProgramFogPass(
 		//if (i & FOGDEF_USE_ALPHA_TEST)
 		GLSL_SetUniformInt(&tr.fogShader[i], UNIFORM_DIFFUSEMAP, 0);
 		GLSL_SetUniformInt(&tr.fogShader[i], UNIFORM_VOLUMETRICLIGHTMAP, 2);
+		GLSL_SetFroxelLookupUnits(&tr.fogShader[i]);
 
 		qglUseProgram(0);
 
@@ -2629,6 +2679,56 @@ static int GLSL_LoadGPUProgramSSR(
 	return numPrograms;
 }
 
+// Froxel volumetric fog (tr_volumetric.cpp). Every program gets the fragment
+// block of volumetric_common.glsl.
+static int GLSL_LoadGPUProgramVolumetric(
+	ShaderProgramBuilder& builder,
+	Allocator& scratchAlloc )
+{
+	if (!R_VolumetricFroxelEnabled())
+		return 0;
+
+	Allocator allocator(scratchAlloc.Base(), scratchAlloc.GetSize());
+	const GPUShaderDesc *common = LoadVolumetricLibrary(allocator);
+	const uint32_t attribs = ATTR_POSITION | ATTR_TEXCOORD0;
+	int numPrograms = 0;
+
+	auto load = [&]( shaderProgram_t *sp, const char *name, const GPUProgramDesc& fallback )
+	{
+		const GPUProgramDesc *programDesc =
+			LoadProgramSource(name, allocator, fallback);
+		if ( !GLSL_LoadGPUShader(builder, sp, name, attribs, NO_XFB_VARS,
+				"", *programDesc, common) )
+		{
+			ri.Error(ERR_FATAL, "Could not load %s shader!", name);
+		}
+
+		GLSL_InitUniforms(sp);
+		qglUseProgram(sp->program);
+		// every sampler on its own unit, see RB_VolumetricBuild / RB_VolumetricComposite
+		GLSL_SetUniformInt(sp, UNIFORM_FROXELHISTORY, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_FROXELSOURCE, sp == &tr.volumetricDebugShader ? TB_LIGHTMAP : TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SCREENDEPTHMAP, TB_COLORMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_FROXELCARRY, TB_LIGHTMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_VOLUMETRICSTATICGRID, TB_LIGHTMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_VOLUMETRICSUNGRID, TB_NORMALMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_FROXELDYNAMIC, TB_NORMALMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SHADOWMAP, TB_SHADOWMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SHADOWMAP2, TB_SHADOWMAPARRAY);
+		GLSL_SetFroxelLookupUnits(sp);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(sp);
+		++numPrograms;
+	};
+
+	load(&tr.volumetricInjectShader, "volumetric_inject", fallback_volumetric_injectProgram);
+	load(&tr.volumetricIntegrateShader, "volumetric_integrate", fallback_volumetric_integrateProgram);
+	load(&tr.volumetricCompositeShader, "volumetric_composite", fallback_volumetric_compositeProgram);
+	load(&tr.volumetricDebugShader, "volumetric_debug", fallback_volumetric_debugProgram);
+
+	return numPrograms;
+}
+
 static int GLSL_LoadGPUProgramPrefilterEnvMap(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc)
@@ -2777,6 +2877,7 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("surface_sprites", allocator, fallback_surface_spritesProgram);
+	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
 	const uint32_t attribs = ATTR_POSITION | ATTR_POSITION2 | ATTR_NORMAL | ATTR_COLOR;
 	for ( int i = 0; i < SSDEF_COUNT; ++i )
 	{
@@ -2837,7 +2938,7 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 		}
 		shaderProgram_t *program = tr.spriteShader + i;
 		if (!GLSL_LoadGPUShader(builder, program, name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc))
+				extradefines, *programDesc, volumetricLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load surface sprites shader!");
 		}
@@ -2846,6 +2947,7 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 		qglUseProgram(program->program);
 		GLSL_SetUniformInt(program, UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
 		GLSL_SetUniformInt(program, UNIFORM_VOLUMETRICLIGHTMAP, 2);
+		GLSL_SetFroxelLookupUnits(program);
 		qglUseProgram(0);
 		GLSL_FinishGPUShader(program);
 		++numPrograms;
@@ -3109,6 +3211,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramScreenSpaceAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramMotionBlur(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramSSR(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramVolumetric(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDepthBlur(builder, allocator);
@@ -3179,6 +3282,11 @@ void GLSL_ShutdownGPUShaders(void)
 
 	for ( i = 0; i < MOTIONBLURDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.motionBlurShader[i]);
+
+	GLSL_DeleteGPUShader(&tr.volumetricInjectShader);
+	GLSL_DeleteGPUShader(&tr.volumetricIntegrateShader);
+	GLSL_DeleteGPUShader(&tr.volumetricCompositeShader);
+	GLSL_DeleteGPUShader(&tr.volumetricDebugShader);
 
 	GLSL_DeleteGPUShader(&tr.ssrDownsampleShader);
 	for ( i = 0; i < 2; i++)

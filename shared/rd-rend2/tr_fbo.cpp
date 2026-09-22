@@ -581,6 +581,9 @@ void FBO_Init(void)
 	// screen-space reflection targets (tr_ssr.cpp)
 	R_CreateSSRFBOs();
 
+	// froxel volumetric fog (tr_volumetric.cpp)
+	R_CreateVolumetricFBOs();
+
 	// motion blur output (tr_motionblur.cpp)
 	tr.motionBlurFbo = NULL;
 	if (tr.motionBlurImage != NULL)

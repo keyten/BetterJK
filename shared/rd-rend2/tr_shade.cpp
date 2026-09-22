@@ -1168,6 +1168,12 @@ Blends a fog texture on top of everything else
 */
 static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *vertexArrays )
 {
+	// froxel volumetric fog (tr_volumetric.cpp): the composite after the
+	// SS_FOG layer fogs this surface
+	const int froxelFogMode = RB_VolumetricFogMode(input->shader->sort);
+	if (froxelFogMode == 2)
+		return;
+
 	cullType_t cullType = RB_GetCullType(&backEnd.viewParms, backEnd.currentEntity, input->shader->cullType);
 
 	vertexAttribute_t attribs[ATTR_INDEX_MAX] = {};
@@ -1244,10 +1250,12 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 		GetShaderInstanceBlockUniformBinding(
 			backEnd.currentEntity, input->shader),
 		GetBonesBlockUniformBinding(),
-		GetSceneBlockUniformBinding()
+		GetSceneBlockUniformBinding(),
+		RB_GetVolumetricFogBlockUniformBinding()
 	};
 
 	SamplerBindingsWriter samplerBindingsWriter;
+	RB_VolumetricSetupFogDraw(froxelFogMode, uniformDataWriter, samplerBindingsWriter);
 	if (input->numPasses > 0)
 	{
 		if (input->xstages[0]->alphaTestType != ALPHA_TEST_NONE && tess.shader->fogPass != FP_EQUAL)
@@ -1291,8 +1299,9 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 
 	RB_AddDrawItem(backEndData->currentPass, key, item);
 
-	// invert fog planes and render global fog into them
-	if (input->fogNum != tr.world->globalFogIndex && tr.world->globalFogIndex != -1)
+	// invert fog planes and render global fog into them. The froxel volume
+	// already holds every fog along the ray.
+	if (froxelFogMode == 0 && input->fogNum != tr.world->globalFogIndex && tr.world->globalFogIndex != -1)
 	{
 		// only invert render fog planes
 		if (input->shader->sort != SS_FOG)
@@ -1309,6 +1318,7 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 		UniformDataWriter uniformDataWriterBack;
 		uniformDataWriterBack.Start(sp);
 		uniformDataWriterBack.SetUniformInt(UNIFORM_FOGINDEX, tr.world->globalFogIndex - 1);
+		uniformDataWriterBack.SetUniformInt(UNIFORM_FROXELFOGMODE, 0);
 
 		// Fog planes shouldn't have any form of blending or alpha testing
 		if (r_volumetricFog->integer)
@@ -1747,6 +1757,19 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 		uniformDataWriter.Start(sp);
 
+		// froxel volumetric fog (tr_volumetric.cpp): the in-shader fog of the
+		// generic programs, set for every stage (the value stays in the program)
+		const bool stageFog = input->fogNum
+			&& pStage->glslShaderGroup != tr.lightallShader
+			&& !backEnd.depthFill
+			&& !input->shader->fogPass;
+		{
+			const int froxelFogMode = RB_VolumetricFogMode(input->shader->sort);
+			RB_VolumetricSetupFogDraw(
+				stageFog ? froxelFogMode : (froxelFogMode == 0 ? 0 : 2),
+				uniformDataWriter, samplerBindingsWriter);
+		}
+
 		if ( input->fogNum
 			 && pStage->glslShaderGroup != tr.lightallShader
 			 && !backEnd.depthFill 
@@ -2124,7 +2147,8 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				backEnd.currentEntity, input->shader),
 			GetBonesBlockUniformBinding(),
 			GetPreviousBonesBlockUniformBinding(),
-			GetTemporalBlockUniformBinding()
+			GetTemporalBlockUniformBinding(),
+			RB_GetVolumetricFogBlockUniformBinding()
 		};
 
 		DrawItem item = {};

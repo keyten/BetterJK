@@ -2648,6 +2648,7 @@ static qboolean ParseShader( const char **text )
 			tr.sunLight[2] = atof( token );
 
 			VectorNormalize( tr.sunLight );
+			tr.sunParsed = qtrue;
 
 			token = COM_ParseExt( text, qfalse );
 			a = atof( token );

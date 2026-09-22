@@ -457,6 +457,17 @@ void main()
 			discard;
 	}
 #endif
+#if defined(USE_FROXEL_FOG)
+	// froxel volume of the main view (r_volumetricFog 2): in-scattering and
+	// transmittance up to this fragment, all fog volumes along the ray
+	if (u_FroxelFogMode == 1)
+	{
+		vec4 froxelFog = FroxelFog(var_WSPosition);
+		out_Color = vec4(froxelFog.rgb, 1.0 - froxelFog.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, out_Color.a);
+		return;
+	}
+#endif
 	Fog fog = u_Fogs[u_FogIndex];
 	out_Color = CalcFog(u_ViewOrigin, var_WSPosition, fog);
 	out_Glow = vec4(0.0, 0.0, 0.0, out_Color.a);

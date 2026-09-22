@@ -384,6 +384,24 @@ void main()
 #endif
 
 #if defined(USE_FOG)
+#if defined(USE_FROXEL_FOG)
+	// froxel volume of the main view (r_volumetricFog 2): transmittance and
+	// in-scattering up to the sprite, or none when the composite applies it
+	if (u_FroxelFogMode != 0)
+	{
+		if (u_FroxelFogMode == 1)
+		{
+			vec4 froxelFog = FroxelFog(var_WSPosition);
+	#if defined(ADDITIVE_BLEND)
+			out_Color.rgb *= froxelFog.a;
+	#else
+			out_Color.rgb = out_Color.rgb * froxelFog.a + froxelFog.rgb;
+	#endif
+		}
+	}
+	else
+	{
+#endif
 	Fog fog = u_Fogs[u_FogIndex];
 	vec4 fogColorOpacity = CalcFog(u_ViewOrigin, var_WSPosition, fog);
 #if defined(ADDITIVE_BLEND)
@@ -394,6 +412,9 @@ void main()
 #else
 	out_Color.rgb = mix(out_Color.rgb, fogColorOpacity.rgb, fogColorOpacity.a);
 #endif
+#endif
+#if defined(USE_FROXEL_FOG)
+	}
 #endif
 #endif
 

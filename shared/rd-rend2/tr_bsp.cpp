@@ -4478,6 +4478,8 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 	R_LoadWeatherImages();
 	R_GenerateSurfaceSprites(worldData, worldIndex + 1);
 	R_BuildLightGridTexture(worldData);
+	if (bspIndex == nullptr)
+		R_BuildVolumetricLightGrid(worldData);
 
 	// load cubemaps
 	if (r_cubeMapping->integer && bspIndex == nullptr)
@@ -4591,6 +4593,7 @@ void RE_LoadWorldMap( const char *name ) {
 	tr.sunDirection[2] = 0.9f;
 
 	VectorNormalize(tr.sunDirection);
+	tr.sunParsed = qfalse;
 
 	// set default autoexposure settings
 	tr.autoExposureMinMax[0] = -3.0f;

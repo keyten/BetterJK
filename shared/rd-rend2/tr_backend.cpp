@@ -639,6 +639,9 @@ void RB_BeginDrawingView (void) {
 	// screen-space reflections of this view: clears the SSR attachments
 	RB_SSRBeginView();
 
+	// froxel volumetric fog of this view (tr_volumetric.cpp)
+	RB_VolumetricBeginView();
+
 	if ( ( backEnd.refdef.rdflags & RDF_HYPERSPACE ) )
 	{
 		RB_Hyperspace();
@@ -1440,7 +1443,9 @@ static void RB_SubmitRenderPass(
 		return sortKeys[a] < sortKeys[b];
 	});
 
-	if (!RB_SSRActive())
+	const qboolean ssr = RB_SSRActive();
+	const qboolean froxelFog = RB_VolumetricCompositeActive();
+	if (!ssr && !froxelFog)
 	{
 		RB_DrawItems(renderPass.numDrawItems, renderPass.drawItems, drawOrder);
 		return;
@@ -1450,22 +1455,48 @@ static void RB_SubmitRenderPass(
 	// the opaque surfaces: draw the opaque sort (without its fog passes),
 	// trace and composite, then decals, fog and everything blended on top.
 	// See RB_CreateSortKey for the key layout.
-	uint32_t numOpaqueItems = numDrawItems;
-	for ( uint32_t i = 0; i < numDrawItems; ++i )
+	uint32_t numOpaqueItems = 0;
+	if (ssr)
 	{
-		const uint32_t key = sortKeys[drawOrder[i]];
-		const uint32_t layer = key >> 28;
-		const uint32_t stage = (key >> 24) & 0xf;
-		if ( layer > SS_OPAQUE || (layer == SS_OPAQUE && stage >= 14) )
+		numOpaqueItems = numDrawItems;
+		for ( uint32_t i = 0; i < numDrawItems; ++i )
 		{
-			numOpaqueItems = i;
-			break;
+			const uint32_t key = sortKeys[drawOrder[i]];
+			const uint32_t layer = key >> 28;
+			const uint32_t stage = (key >> 24) & 0xf;
+			if ( layer > SS_OPAQUE || (layer == SS_OPAQUE && stage >= 14) )
+			{
+				numOpaqueItems = i;
+				break;
+			}
+		}
+	}
+
+	// The froxel fog composite (tr_volumetric.cpp) fogs everything up to the
+	// SS_FOG layer from the depth buffer, the transparent layers after it
+	// look up the volume themselves (RB_VolumetricFogMode).
+	uint32_t numFoggedItems = numOpaqueItems;
+	if (froxelFog)
+	{
+		numFoggedItems = numDrawItems;
+		for ( uint32_t i = numOpaqueItems; i < numDrawItems; ++i )
+		{
+			const uint32_t layer = sortKeys[drawOrder[i]] >> 28;
+			if ( layer > SS_FOG )
+			{
+				numFoggedItems = i;
+				break;
+			}
 		}
 	}
 
 	RB_DrawItems(numOpaqueItems, renderPass.drawItems, drawOrder);
-	RB_RenderSSR();
-	RB_DrawItems(numDrawItems - numOpaqueItems, renderPass.drawItems, drawOrder + numOpaqueItems);
+	if (ssr)
+		RB_RenderSSR();
+	RB_DrawItems(numFoggedItems - numOpaqueItems, renderPass.drawItems, drawOrder + numOpaqueItems);
+	if (froxelFog)
+		RB_VolumetricComposite();
+	RB_DrawItems(numDrawItems - numFoggedItems, renderPass.drawItems, drawOrder + numFoggedItems);
 }
 
 /*
@@ -1537,6 +1568,7 @@ static void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs )
 			&& !(backEnd.viewParms.isSkyPortal)
 			&& tr.world->globalFog
 			&& backEnd.framePostProcessed == qfalse
+			&& !backEnd.volumetricView
 			)
 		{
 			RB_EndSurface();
@@ -2264,6 +2296,9 @@ static void RB_RenderAllDepthRelatedPasses( drawSurf_t *drawSurfs, int numDrawSu
 	// SSAO / GTAO / contact shadows for the main pass of this view (tr_ao.cpp)
 	RB_RenderScreenSpaceLighting();
 
+	// froxel volumetric fog of the main view (tr_volumetric.cpp)
+	RB_VolumetricBuild();
+
 	// reset viewport and scissor
 	FBO_Bind(oldFbo);
 	SetViewportAndScissor();
@@ -2817,6 +2852,7 @@ void RB_UpdateConstants(const trRefdef_t *refdef)
 	RB_UpdateTemporalConstants(frame, backEndData->previousFrame, refdef);
 	RB_UpdateLightsConstants(frame, refdef);
 	RB_UpdateFogsConstants(frame);
+	RB_UpdateVolumetricConstants(frame, refdef);
 	RB_UpdateGhoul2Constants(frame, refdef);
 	RB_UpdateEntityConstants(frame, refdef);
 
@@ -3387,6 +3423,7 @@ const void *RB_PostProcess(const void *data)
 	RB_AODebugOverlay();
 	RB_MotionBlurDebugOverlay();
 	RB_SSRDebugOverlay();
+	RB_VolumetricDebugOverlay();
 
 	backEnd.framePostProcessed = qtrue;
 	FBO_Bind(NULL);

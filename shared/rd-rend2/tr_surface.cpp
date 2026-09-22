@@ -2658,6 +2658,14 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 	SamplerBindingsWriter samplerBindingsWriter;
 	samplerBindingsWriter.AddAnimatedImage(&firstStage->bundle[0], TB_COLORMAP);
 
+	// froxel volumetric fog (tr_volumetric.cpp)
+	{
+		const int froxelFogMode = RB_VolumetricFogMode(surf->shader->sort);
+		RB_VolumetricSetupFogDraw(
+			(shaderFlags & SSDEF_USE_FOG) ? froxelFogMode : (froxelFogMode == 0 ? 0 : 2),
+			uniformDataWriter, samplerBindingsWriter);
+	}
+
 	if (surf->fogIndex != -1 && r_volumetricFog->integer)
 	{
 		if (tr.world && tr.world->lightGridData)
@@ -2678,7 +2686,8 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		{ currentFrameUbo, (size_t)tr.sceneUboOffset, UNIFORM_BLOCK_SCENE },
 		{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA },
 		{ currentFrameUbo, (size_t)tr.fogsUboOffset, UNIFORM_BLOCK_FOGS },
-		{ currentFrameUbo, (size_t)tr.temporalInfoUboOffset, UNIFORM_BLOCK_TEMPORAL_INFO }
+		{ currentFrameUbo, (size_t)tr.temporalInfoUboOffset, UNIFORM_BLOCK_TEMPORAL_INFO },
+		RB_GetVolumetricFogBlockUniformBinding()
 	};
 
 	uint32_t numBindings;

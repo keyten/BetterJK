@@ -664,8 +664,24 @@ void main()
 #endif
 
 #if defined(USE_FOG)
+#if defined(USE_FROXEL_FOG)
+	// froxel volume of the main view (r_volumetricFog 2), or no fog here when
+	// the composite after the opaque layers applies it
+	vec4 fogColorOpacity = vec4(0.0);
+	if (u_FroxelFogMode == 1)
+	{
+		vec4 froxelFog = FroxelFog(var_WSPosition);
+		fogColorOpacity = vec4(froxelFog.rgb, 1.0 - froxelFog.a);
+	}
+	else if (u_FroxelFogMode == 0)
+	{
+		Fog fog = u_Fogs[u_FogIndex];
+		fogColorOpacity = CalcFog(u_ViewOrigin, var_WSPosition, fog);
+	}
+#else
 	Fog fog = u_Fogs[u_FogIndex];
 	vec4 fogColorOpacity = CalcFog(u_ViewOrigin, var_WSPosition, fog);
+#endif
 #if defined(USE_VOLUMETRIC_FOG)
 	color.rgb *= 1.0 - u_FogColorMask.a * fogColorOpacity.a;
 	color.rgb += u_FogColorMask.a * fogColorOpacity.rgb;

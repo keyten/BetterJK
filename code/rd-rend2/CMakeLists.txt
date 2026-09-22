@@ -29,6 +29,7 @@ set(SPRend2Files
 	"${SharedDir}/rd-rend2/tr_ao.cpp"
 	"${SharedDir}/rd-rend2/tr_motionblur.cpp"
 	"${SharedDir}/rd-rend2/tr_ssr.cpp"
+	"${SharedDir}/rd-rend2/tr_volumetric.cpp"
 	"${SharedDir}/rd-rend2/tr_backend.cpp"
 	"${SharedDir}/rd-rend2/tr_bsp.cpp"
 	"${SharedDir}/rd-rend2/tr_cache.cpp"

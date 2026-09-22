@@ -136,6 +136,21 @@ extern cvar_t	*r_volumetricFog;
 extern cvar_t	*r_volumetricFogDefaultScale;
 extern cvar_t	*r_volumetricFogSamples;
 extern cvar_t	*r_volumetricFogScale;
+extern cvar_t	*r_volumetricFogQuality;
+extern cvar_t	*r_volumetricFogGridScale;
+extern cvar_t	*r_volumetricFogSlices;
+extern cvar_t	*r_volumetricFogFar;
+extern cvar_t	*r_volumetricFogAnisotropy;
+extern cvar_t	*r_volumetricFogTemporal;
+extern cvar_t	*r_volumetricFogHistoryWeight;
+extern cvar_t	*r_volumetricFogSunScale;
+extern cvar_t	*r_volumetricFogDlightScale;
+extern cvar_t	*r_volumetricFogStaticScale;
+extern cvar_t	*r_volumetricFogDlightShadows;
+extern cvar_t	*r_volumetricFogBloom;
+extern cvar_t	*r_volumetricFogReset;
+extern cvar_t	*r_volumetricFogDebug;
+extern cvar_t	*r_volumetricFogFreeze;
 
 extern cvar_t	*r_allowExtensions;
 
@@ -908,6 +923,38 @@ struct TemporalBlock
 	float pad0[3];
 };
 
+// Froxel volumetric fog (r_volumetricFog 2, tr_volumetric.cpp). Same layout
+// as the VolumetricFog block of glsl/volumetric_common.glsl (std140).
+struct VolumetricFogBlock
+{
+	matrix_t viewProjection;		// froxel camera: main view without jitter
+	matrix_t invViewProjection;		// rendered (jittered) main view, depth reconstruction
+	matrix_t prevViewProjection;	// froxel camera of the history volume
+	vec4_t viewOrigin;				// xyz, w: 1 = volume built this frame
+	vec4_t viewForward;				// xyz unit forward
+	vec4_t rayForward;				// froxel ray = rayForward + ndc.x * rayRight + ndc.y * rayUp
+	vec4_t rayRight;
+	vec4_t rayUp;
+	vec4_t viewport;				// view rectangle in render target texture coordinates
+	vec4_t sliceParams;				// near, far, log2(far / near), sky distance
+	vec4_t gridSize;				// froxels x, y, z, frame index
+	vec4_t jitter;					// jitter in froxel units, w: temporal accumulation
+	vec4_t temporalParams;			// history weight, history valid, unused, radiance clamp ratio
+	vec4_t lightParams;				// anisotropy g, sun scale, dlight scale, static scale
+	vec4_t sunColor;				// realtime sun radiance, w: cascaded shadow maps available
+	vec4_t sunDirection;			// towards the sun, w: split light grid available
+	vec4_t gridOrigin;				// light grid sample origin, w: vertical cell size
+	vec4_t gridScale;				// world to light grid texture coordinates, w: horizontal cell size
+	vec4_t shadowParams;			// cascade far distance, shadow map size, dlight shadows, bias
+	vec4_t debugParams;				// debug view, bloom, unused, unused
+	int numFogs;
+	int pad0[3];
+	vec4_t fogColor[MAX_GPU_FOGS];	// rgb albedo (fog color), a: extinction per unit
+	vec4_t fogPlane[MAX_GPU_FOGS];	// as the Fogs block
+	vec4_t fogMins[MAX_GPU_FOGS];	// w: has plane
+	vec4_t fogMaxs[MAX_GPU_FOGS];
+};
+
 struct surfaceSprite_t
 {
 	surfaceSpriteType_t type;
@@ -1472,6 +1519,7 @@ enum uniformBlock_t
 	UNIFORM_BLOCK_PREVIOUS_BONES,
 	UNIFORM_BLOCK_TEMPORAL_INFO,
 	UNIFORM_BLOCK_SURFACESPRITE,
+	UNIFORM_BLOCK_VOLUMETRIC_FOG,
 	UNIFORM_BLOCK_COUNT
 };
 
@@ -1647,6 +1695,17 @@ typedef enum
 	UNIFORM_SSRREPROJECT,	// SSR view space -> previous frame clip space
 	UNIFORM_SSREMITTERS,	// SSR_MAX_EMITTERS * 3 vec4, see RB_SSRCollectEmitters
 	UNIFORM_SSREMITTERPARAMS,	// count, 0, max roughness, 0
+
+	UNIFORM_FROXELFOGMODE,	// 0 = legacy fog, 1 = froxel volume lookup, 2 = none (composited), tr_volumetric.cpp
+	UNIFORM_FROXELVOLUME,	// integrated scattering / transmittance volume
+	UNIFORM_FROXELTAIL,		// extinction and radiance of the last slice
+	UNIFORM_FROXELSOURCE,	// injected (filtered) scattering volume
+	UNIFORM_FROXELHISTORY,	// previous frame injected volume
+	UNIFORM_FROXELDYNAMIC,	// dynamic light in-scattering volume (current frame only)
+	UNIFORM_FROXELCARRY,	// integration state of the previous slice
+	UNIFORM_VOLUMETRICSTATICGRID,	// baked light grid without the sun
+	UNIFORM_VOLUMETRICSUNGRID,		// baked sun part of the light grid
+	UNIFORM_FROXELSLICE,	// slice rendered by the injection / integration pass
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2250,6 +2309,12 @@ typedef struct {
 	int			numGridArrayElements;
 
 	image_t		*volumetricLightMaps[MAXLIGHTMAPS];
+	// froxel volumetric fog (r_volumetricFog 2): light grid split by the sun
+	// direction, see R_BuildVolumetricLightGrid (tr_volumetric.cpp)
+	image_t		*volumetricStaticGrid;	// baked light without the sun (rgb), sun fraction (a)
+	image_t		*volumetricSunGrid;		// baked sun part
+	vec3_t		volumetricSunRadiance;	// realtime sun radiance estimated from the sunlit cells
+	qboolean	volumetricHasSunCells;
 
 	int			skyboxportal;
 	int			numClusters;
@@ -2626,6 +2691,8 @@ typedef struct {
 	qboolean    refractionFill;
 	image_t    *screenAoImage;	// AO / contact shadow map lightall samples in this view (TB_SSAOMAP)
 	qboolean    ssrView;		// this view writes the SSR material attachments, see RB_SSRBeginView
+	qboolean    volumetricView;	// this view uses the froxel volume, see RB_VolumetricBeginView
+	qboolean    volumetricComposited;	// the froxel fog composite of this view ran
 } backEndState_t;
 
 /*
@@ -2714,6 +2781,11 @@ typedef struct trGlobals_s {
 	image_t					*smaaBlendImage;
 	image_t					*smaaResolveImage;
 	image_t					*motionBlurImage;	// motion blur output (HDR), copied back into renderImage
+	image_t					*froxelInjectImage[2];	// froxel fog: injected + temporally filtered media (history ping-pong)
+	image_t					*froxelDynamicImage;	// froxel fog: dynamic light in-scattering of this frame (no history)
+	image_t					*froxelIntegratedImage;	// froxel fog: integrated in-scattering (rgb), transmittance (a)
+	image_t					*froxelCarryImage[2];	// froxel fog: integration state between slices
+	image_t					*froxelTailImage;	// froxel fog: last slice radiance (rgb) and extinction (a)
 	// screen-space reflections (tr_ssr.cpp)
 	image_t					*ssrNormalImage;	// rg = octahedral world normal, b = roughness, a = receiver
 	image_t					*ssrSpecularImage;	// rgb = sqrt(specular IBL weight)
@@ -2753,6 +2825,9 @@ typedef struct trGlobals_s {
 	FBO_t					*temporalResolveFbo;
 	FBO_t					*historyFbo;
 	FBO_t					*motionBlurFbo;
+	FBO_t					*froxelInjectFbo;		// layers attached per slice
+	FBO_t					*froxelIntegrateFbo;	// layers attached per slice
+	FBO_t					*froxelCompositeFbo;	// color + glow of renderFbo, no depth
 	FBO_t					*ssrColorFbo[SSR_COLOR_MIPS];
 	FBO_t					*ssrHiZFbo[SSR_HIZ_MIPS];
 	FBO_t					*ssrTraceFbo;
@@ -2828,6 +2903,10 @@ typedef struct trGlobals_s {
 	shaderProgram_t aoCompositeShader;
 	shaderProgram_t aoDebugShader;
 	shaderProgram_t motionBlurShader[MOTIONBLURDEF_COUNT];
+	shaderProgram_t volumetricInjectShader;
+	shaderProgram_t volumetricIntegrateShader;
+	shaderProgram_t volumetricCompositeShader;
+	shaderProgram_t volumetricDebugShader;
 	shaderProgram_t ssrDownsampleShader;
 	shaderProgram_t ssrHiZShader[2];		// 0 = linearize, 1 = downsample mip
 	shaderProgram_t ssrTraceShader[SSRDEF_COUNT];
@@ -2855,6 +2934,7 @@ typedef struct trGlobals_s {
 	long temporalInfoUboOffset;
 	long lightsUboOffset;
 	long fogsUboOffset;
+	long volumetricFogUboOffset;
 	long skyEntityUboOffset;
 	long entityUboOffsets[REFENTITYNUM_WORLD + 1];
 	long previousEntityUboOffsets[REFENTITYNUM_WORLD + 1];
@@ -2891,6 +2971,7 @@ typedef struct trGlobals_s {
 	float                   sunShadowScale;
 
 	qboolean                sunShadows;
+	qboolean                sunParsed;		// a sky shader of this level set the sun (sun, q3map_sun, ...)
 	vec3_t					sunLight;			// from the sky shader for this level
 	vec3_t					sunDirection;
 
@@ -4178,6 +4259,32 @@ void RB_MotionBlurUpdateHistory(struct gpuFrame_t *frame, const struct gpuFrame_
 qboolean RB_MotionBlurActive(void);
 void RB_MotionBlur(FBO_t *srcFbo);
 void RB_MotionBlurDebugOverlay(void);
+
+/*
+============================================================
+
+FROXEL VOLUMETRIC FOG, tr_volumetric.cpp
+
+============================================================
+*/
+
+class UniformDataWriter;
+class SamplerBindingsWriter;
+struct UniformBlockBinding;
+
+qboolean R_VolumetricFroxelEnabled(void);
+void R_CreateVolumetricImages(int width, int height);
+void R_CreateVolumetricFBOs(void);
+void R_BuildVolumetricLightGrid(world_t *world);
+void RB_UpdateVolumetricConstants(struct gpuFrame_t *frame, const trRefdef_t *refdef);
+UniformBlockBinding RB_GetVolumetricFogBlockUniformBinding(void);
+void RB_VolumetricBeginView(void);
+int RB_VolumetricFogMode(float sort);
+void RB_VolumetricSetupFogDraw(int mode, UniformDataWriter& uniforms, SamplerBindingsWriter& samplers);
+void RB_VolumetricBuild(void);
+qboolean RB_VolumetricCompositeActive(void);
+void RB_VolumetricComposite(void);
+void RB_VolumetricDebugOverlay(void);
 
 /*
 ============================================================

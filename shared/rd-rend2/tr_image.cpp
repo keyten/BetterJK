@@ -2596,7 +2596,7 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 
 	int dataFormat = GL_RGBA;
 	int dataType = GL_UNSIGNED_BYTE;
-	if (internalFormat == GL_RGB16F)
+	if (internalFormat == GL_RGB16F || internalFormat == GL_RGBA16F)
 	{
 		dataFormat = GL_RGBA;
 		dataType = GL_HALF_FLOAT;
@@ -3578,6 +3578,9 @@ void R_CreateBuiltinImages( void ) {
 
 	// screen-space reflection targets (tr_ssr.cpp)
 	R_CreateSSRImages(width, height, hdrFormat);
+
+	// froxel volumetric fog volumes (tr_volumetric.cpp)
+	R_CreateVolumetricImages(width, height);
 
 	bool needVelocityBuffer = (
 		r_smaa->integer == 2
