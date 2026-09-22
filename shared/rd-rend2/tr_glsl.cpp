@@ -58,6 +58,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_DeluxeMap",   GLSL_INT, 1 },
 	{ "u_SpecularMap", GLSL_INT, 1 },
 	{ "u_SSAOMap",     GLSL_INT, 1 },
+	{ "u_EmissiveMap", GLSL_INT, 1 },
 
 	{ "u_TextureMap", GLSL_INT, 1 },
 	{ "u_LevelsMap",  GLSL_INT, 1 },
@@ -86,6 +87,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_ShadowMvp3", GLSL_MAT4x4, 1 },
 
 	{ "u_EnableTextures", GLSL_VEC4, 1 },
+	{ "u_EmissiveParams", GLSL_VEC4, 1 },
 
 	{ "u_DiffuseTexMatrix",  GLSL_VEC4, 1 },
 	{ "u_DiffuseTexOffTurb", GLSL_VEC4, 1 },
@@ -188,6 +190,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_VolumetricSunGrid",	GLSL_INT, 1 },
 	{ "u_FroxelSlice",			GLSL_INT, 1 },
 };
+
+static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
+	"uniformsInfo must stay in sync with uniform_t");
 
 static void GLSL_PrintProgramInfoLog(GLuint object, qboolean developerOnly)
 {
@@ -1707,6 +1712,7 @@ static int GLSL_LoadGPUProgramGeneric(
 		qglUseProgram(tr.genericShader[i].program);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_LIGHTMAP,   TB_LIGHTMAP);
+		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_VOLUMETRICLIGHTMAP, 2);
 		GLSL_SetUniformInt(&tr.genericShader[i], UNIFORM_SCREENDEPTHMAP, TB_SHADOWMAP);
 		GLSL_SetFroxelLookupUnits(&tr.genericShader[i]);
@@ -2167,6 +2173,7 @@ static int GLSL_LoadGPUProgramLightAll(
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENVBRDFMAP,  TB_ENVBRDFMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SSAOMAP,     TB_SSAOMAP);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
 		qglUseProgram(0);
 
 		GLSL_FinishGPUShader(&tr.lightallShader[i]);

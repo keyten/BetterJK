@@ -1634,6 +1634,21 @@ void RB_ShadowTessEnd(shaderCommands_t *input, const VertexArraysProperties *ver
 	RB_AddDrawItem(backEndData->currentPass, key, item);
 }
 
+static void BindEmissiveStage( shaderStage_t *stage, UniformDataWriter& uniforms,
+	SamplerBindingsWriter& samplers )
+{
+	vec4_t params = {};
+	if (stage->emissive)
+	{
+		VectorScale(stage->emissiveColor, stage->emissiveIntensity, params);
+		// The emission itself is linear. A negative marker tells the shader to
+		// encode it into the legacy display-encoded scene buffer before adding.
+		params[3] = tr.linearLight ? 1.0f : -1.0f;
+		samplers.AddAnimatedImage(&stage->bundle[TB_EMISSIVEMAP], TB_EMISSIVEMAP);
+	}
+	uniforms.SetUniformVec4(UNIFORM_EMISSIVEPARAMS, params);
+}
+
 static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArraysProperties *vertexArrays )
 {
 	Allocator& frameAllocator = *backEndData->perFrameMemory;
@@ -2112,6 +2127,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				}
 			}
 
+			BindEmissiveStage(pStage, uniformDataWriter, samplerBindingsWriter);
 			uniformDataWriter.SetUniformVec4(UNIFORM_ENABLETEXTURES, enableTextures);
 		}
 		else if ( pStage->bundle[1].image[0] != 0 )
@@ -2121,6 +2137,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 			vec4_t enableTextures = {};
 			enableTextures[0] = (float)pStage->glow;
+			BindEmissiveStage(pStage, uniformDataWriter, samplerBindingsWriter);
 			uniformDataWriter.SetUniformVec4(UNIFORM_ENABLETEXTURES, enableTextures);
 		}
 		else
@@ -2131,6 +2148,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			samplerBindingsWriter.AddAnimatedImage(&pStage->bundle[0], 0);
 			vec4_t enableTextures = {};
 			enableTextures[0] = (float)pStage->glow;
+			BindEmissiveStage(pStage, uniformDataWriter, samplerBindingsWriter);
 			uniformDataWriter.SetUniformVec4(UNIFORM_ENABLETEXTURES, enableTextures);
 		}
 

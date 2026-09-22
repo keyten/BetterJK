@@ -548,12 +548,15 @@ layout(std140) uniform Entity
 };
 
 uniform sampler2D u_DiffuseMap;
+uniform sampler2D u_EmissiveMap;
 #if defined(USE_ALPHA_TEST)
 uniform int u_AlphaTestType;
 #endif
 
 // x = glow out, y = deluxe, z = screen shadow, w = cube
 uniform vec4 u_EnableTextures;
+// rgb = linear HDR emission scale; w = 0 disabled, +1 linear scene, -1 legacy encoded scene
+uniform vec4 u_EmissiveParams;
 
 in vec2 var_DiffuseTex;
 in vec4 var_Color;
@@ -563,6 +566,21 @@ in vec3 var_WSPosition;
 
 out vec4 out_Color;
 out vec4 out_Glow;
+
+vec3 EmissiveLinearToLegacyScene(in vec3 color)
+{
+	vec3 lo = 12.92 * color;
+	vec3 hi = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+	return mix(lo, hi, greaterThanEqual(color, vec3(0.0031308)));
+}
+
+vec3 EmissiveLegacySceneToLinear(in vec3 color)
+{
+	color = max(color, vec3(0.0));
+	vec3 lo = color * (1.0 / 12.92);
+	vec3 hi = pow((color + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
+}
 
 
 #if defined(USE_FOG)
@@ -635,6 +653,7 @@ void main()
 {
 	vec4 color  = texture(u_DiffuseMap, var_DiffuseTex);
 	color *= var_Color;
+	vec3 emissive = vec3(0.0);
 #if defined(USE_ALPHA_TEST)
 	if (u_AlphaTestType == ALPHA_TEST_GT0)
 	{
@@ -663,6 +682,24 @@ void main()
 	}
 #endif
 
+	if (u_EmissiveParams.w != 0.0)
+	{
+		vec3 emissiveLinear = texture(u_EmissiveMap, var_DiffuseTex).rgb * u_EmissiveParams.rgb;
+		if (u_EmissiveParams.w > 0.0)
+		{
+			emissive = emissiveLinear;
+			color.rgb += emissiveLinear;
+		}
+		else
+		{
+			// Legacy maps store display-encoded scene values. Decode the reflected
+			// result so the actual addition still happens in linear HDR.
+			emissive = EmissiveLinearToLegacyScene(emissiveLinear);
+			color.rgb = EmissiveLinearToLegacyScene(
+				EmissiveLegacySceneToLinear(color.rgb) + emissiveLinear);
+		}
+	}
+
 #if defined(USE_FOG)
 #if defined(USE_FROXEL_FOG)
 	// froxel volume of the main view (r_volumetricFog 2), or no fog here when
@@ -686,11 +723,14 @@ void main()
 	color.rgb *= 1.0 - u_FogColorMask.a * fogColorOpacity.a;
 	color.rgb += u_FogColorMask.a * fogColorOpacity.rgb;
 	color.rgb *= vec3(1.0) - u_FogColorMask.rgb * fogColorOpacity.a;
+	emissive *= 1.0 - u_FogColorMask.a * fogColorOpacity.a;
+	emissive *= vec3(1.0) - u_FogColorMask.rgb * fogColorOpacity.a;
 #else
 	color *= vec4(1.0) - u_FogColorMask * fogColorOpacity.a;
+	emissive *= vec3(1.0) - u_FogColorMask.rgb * fogColorOpacity.a;
 #endif
 #endif
 
 	out_Color = color;
-	out_Glow = mix(vec4(0.0, 0.0, 0.0, color.a), color, u_EnableTextures.x);
+	out_Glow = mix(vec4(emissive, color.a), color, u_EnableTextures.x);
 }

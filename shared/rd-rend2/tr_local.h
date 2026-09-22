@@ -1033,7 +1033,8 @@ enum
 	TB_ENVBRDFMAP  = 7,
 	TB_SHADOWMAPARRAY  = 8,
 	TB_SSAOMAP     = 9,
-	NUM_TEXTURE_BUNDLES = 10
+	TB_EMISSIVEMAP = 10,
+	NUM_TEXTURE_BUNDLES = 11
 };
 
 // linear depth mip levels of the GTAO depth chain (tr_ao.cpp)
@@ -1089,6 +1090,7 @@ typedef struct {
 	qboolean		active;
 	qboolean		isDetail;
 	qboolean		glow;
+	qboolean		emissive;
 	qboolean		cloth;
 
 	AlphaTestType	alphaTestType;
@@ -1116,6 +1118,8 @@ typedef struct {
 
 	vec4_t normalScale;
 	vec4_t specularScale;
+	vec3_t emissiveColor;
+	float  emissiveIntensity;
 	float  parallaxBias;
 
 	surfaceSprite_t	*ss;
@@ -1594,6 +1598,7 @@ typedef enum
 	UNIFORM_DELUXEMAP,
 	UNIFORM_SPECULARMAP,
 	UNIFORM_SSAOMAP,
+	UNIFORM_EMISSIVEMAP,
 
 	UNIFORM_TEXTUREMAP,
 	UNIFORM_LEVELSMAP,
@@ -1622,6 +1627,7 @@ typedef enum
 	UNIFORM_SHADOWMVP3,
 
 	UNIFORM_ENABLETEXTURES,
+	UNIFORM_EMISSIVEPARAMS, // rgb = linear emission scale, w = scene domain (-1 legacy, +1 linear, 0 disabled)
 
 	UNIFORM_DIFFUSETEXMATRIX,
 	UNIFORM_DIFFUSETEXOFFTURB,

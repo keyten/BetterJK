@@ -431,6 +431,8 @@ uniform sampler2D u_DiffuseMap;
 uniform sampler2D u_LightMap;
 #endif
 
+uniform sampler2D u_EmissiveMap;
+
 #if defined(PER_PIXEL_LIGHTING)
 #if defined(USE_NORMALMAP)
 uniform sampler2D u_NormalMap;
@@ -470,6 +472,8 @@ uniform sampler2D u_EnvBrdfMap;
 
 // x = glow out, y = deluxe, z = screen shadow, w = cube
 uniform vec4 u_EnableTextures;
+// rgb = linear HDR emission scale; w = 0 disabled, +1 linear scene, -1 legacy encoded scene
+uniform vec4 u_EmissiveParams;
 
 uniform vec4 u_NormalScale;
 uniform vec4 u_SpecularScale;
@@ -499,6 +503,21 @@ in vec3 var_Normal;
 out vec4 out_Color;
 out vec4 out_Glow;
 
+vec3 EmissiveLinearToLegacyScene(in vec3 color)
+{
+	vec3 lo = 12.92 * color;
+	vec3 hi = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+	return mix(lo, hi, greaterThanEqual(color, vec3(0.0031308)));
+}
+
+vec3 EmissiveLegacySceneToLinear(in vec3 color)
+{
+	color = max(color, vec3(0.0));
+	vec3 lo = color * (1.0 / 12.92);
+	vec3 hi = pow((color + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
+}
+
 #if defined(USE_SSR)
 // Material attachments of renderFbo for screen-space reflections (tr_ssr.cpp,
 // ssr_*.glsl). Only written by opaque stages, the others have them masked.
@@ -524,7 +543,7 @@ void SSRWriteNone(in vec3 worldPosition)
 }
 #endif
 
-#if defined(USE_SHADOWMAP)
+#if defined(USE_SHADOWMAP) && defined(PER_PIXEL_LIGHTING)
 // Legacy depth is GL_DEPTH_COMPONENT16; modern raw depth is 24-bit.
 #define DEPTH_MAX_ERROR 0.0000152587890625
 
@@ -1720,5 +1739,23 @@ void main()
 #endif
 
 	out_Color.a = diffuse.a;
-	out_Glow = mix(vec4(0.0, 0.0, 0.0, out_Color.a), out_Color, u_EnableTextures.x);
+	vec3 emissive = vec3(0.0);
+	if (u_EmissiveParams.w != 0.0)
+	{
+		vec3 emissiveLinear = texture(u_EmissiveMap, texCoords).rgb * u_EmissiveParams.rgb;
+		if (u_EmissiveParams.w > 0.0)
+		{
+			emissive = emissiveLinear;
+			out_Color.rgb += emissiveLinear;
+		}
+		else
+		{
+			emissive = EmissiveLinearToLegacyScene(emissiveLinear);
+			out_Color.rgb = EmissiveLinearToLegacyScene(
+				EmissiveLegacySceneToLinear(out_Color.rgb) + emissiveLinear);
+		}
+	}
+	// Legacy glow still exports the complete stage color. New emissive stages
+	// export only their masked emission when the legacy keyword is absent.
+	out_Glow = mix(vec4(emissive, out_Color.a), out_Color, u_EnableTextures.x);
 }

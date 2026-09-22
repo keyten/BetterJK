@@ -1214,6 +1214,8 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 
 	stage->active = qtrue;
 	stage->specularType = SPEC_NONE;
+	VectorSet(stage->emissiveColor, 1.0f, 1.0f, 1.0f);
+	stage->emissiveIntensity = 1.0f;
 
 	while ( 1 )
 	{
@@ -1342,6 +1344,100 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 			}
 
 			VectorSet4(stage->normalScale, r_baseNormalX->value, r_baseNormalY->value, 1.0f, r_baseParallax->value);
+		}
+		//
+		// emissiveMap <name>
+		//
+		else if (!Q_stricmp(token, "emissiveMap"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for 'emissiveMap' keyword in shader '%s'\n", shader.name);
+				return qfalse;
+			}
+
+			if (!Q_stricmp(token, "$whiteimage"))
+			{
+				stage->bundle[TB_EMISSIVEMAP].image[0] = tr.whiteImage;
+			}
+			else
+			{
+				int flags = IMGFLAG_NOLIGHTSCALE | IMGFLAG_SRGB;
+				if (!shader.noMipMaps)
+					flags |= IMGFLAG_MIPMAP;
+				if (!shader.noPicMip)
+					flags |= IMGFLAG_PICMIP;
+				if (shader.noTC)
+					flags |= IMGFLAG_NO_COMPRESSION;
+
+				stage->bundle[TB_EMISSIVEMAP].image[0] = R_FindImageFile(token, IMGTYPE_COLORALPHA, flags);
+				if (!stage->bundle[TB_EMISSIVEMAP].image[0])
+				{
+					ri.Printf(PRINT_WARNING, "WARNING: R_FindImageFile could not find emissiveMap '%s' in shader '%s'\n", token, shader.name);
+					return qfalse;
+				}
+			}
+			stage->emissive = qtrue;
+		}
+		//
+		// emissiveColor <r> <g> <b>
+		//
+		else if (!Q_stricmp(token, "emissiveColor"))
+		{
+			for (int i = 0; i < 3; ++i)
+			{
+				token = COM_ParseExt(text, qfalse);
+				if (!token[0])
+				{
+					ri.Printf(PRINT_WARNING, "WARNING: emissiveColor requires three parameters in shader '%s'\n", shader.name);
+					return qfalse;
+				}
+				stage->emissiveColor[i] = atof(token);
+				if (stage->emissiveColor[i] < 0.0f)
+					stage->emissiveColor[i] = 0.0f;
+			}
+			if (!stage->bundle[TB_EMISSIVEMAP].image[0])
+				stage->bundle[TB_EMISSIVEMAP].image[0] = tr.whiteImage;
+			stage->emissive = qtrue;
+		}
+		//
+		// emissiveScale <intensity> or emissiveScale <r> <g> <b>
+		//
+		else if (!Q_stricmp(token, "emissiveScale"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for 'emissiveScale' keyword in shader '%s'\n", shader.name);
+				return qfalse;
+			}
+
+			float first = atof(token);
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				stage->emissiveIntensity = first < 0.0f ? 0.0f : first;
+			}
+			else
+			{
+				float second = atof(token);
+				token = COM_ParseExt(text, qfalse);
+				if (!token[0])
+				{
+					ri.Printf(PRINT_WARNING, "WARNING: RGB emissiveScale requires three parameters in shader '%s'\n", shader.name);
+					return qfalse;
+				}
+				float third = atof(token);
+				VectorSet(stage->emissiveColor,
+					first < 0.0f ? 0.0f : first,
+					second < 0.0f ? 0.0f : second,
+					third < 0.0f ? 0.0f : third);
+				stage->emissiveIntensity = 1.0f;
+			}
+			if (!stage->bundle[TB_EMISSIVEMAP].image[0])
+				stage->bundle[TB_EMISSIVEMAP].image[0] = tr.whiteImage;
+			stage->emissive = qtrue;
 		}
 		//
 		// specMap <name> || specularMap <name>
