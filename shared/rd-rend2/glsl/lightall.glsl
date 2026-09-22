@@ -413,6 +413,13 @@ layout(std140) uniform Lights
 	uniform mat4 u_ShadowMvp;
 	uniform mat4 u_ShadowMvp2;
 	uniform mat4 u_ShadowMvp3;
+	vec4 u_ShadowSplits;
+	vec4 u_ShadowBlend;
+	vec4 u_ShadowTexelSize;
+	vec4 u_ShadowDepthSpan;
+	vec4 u_ShadowBias;
+	vec4 u_ShadowPcss;
+	vec4 u_ShadowDebug;
 	int u_NumLights;
 	Light u_Lights[32];
 };
@@ -438,7 +445,11 @@ uniform sampler2D u_SpecularMap;
 #endif
 
 #if defined(USE_SHADOWMAP)
+#if defined(USE_SHADOWS2)
+uniform sampler2DArray u_ShadowMap;
+#else
 uniform sampler2DArrayShadow u_ShadowMap;
+#endif
 #endif
 
 #if defined(USE_SSAO)
@@ -514,9 +525,276 @@ void SSRWriteNone(in vec3 worldPosition)
 #endif
 
 #if defined(USE_SHADOWMAP)
-// depth is GL_DEPTH_COMPONENT16
-// so the maximum error is 1.0 / 2^16
+// Legacy depth is GL_DEPTH_COMPONENT16; modern raw depth is 24-bit.
 #define DEPTH_MAX_ERROR 0.0000152587890625
+
+#if defined(USE_SHADOWS2)
+
+struct SunCascadeResult
+{
+	float visibility;
+	float rawDepth;
+	float fixedPcf;
+	float blockerDepth;
+	float penumbraWorld;
+	float biasWorld;
+	float cascade;
+};
+
+float ShadowCascadeValue(in vec4 v, in int cascade)
+{
+	return cascade == 0 ? v.x : (cascade == 1 ? v.y : v.z);
+}
+
+vec3 ShadowProject(in mat4 m, in vec3 p)
+{
+	vec4 q = m * vec4(p, 1.0);
+	return q.xyz / q.w * 0.5 + 0.5;
+}
+
+// dz / d(shadow uv), solved from screen-space derivatives. Calls are made
+// before cascade-dependent branches so derivatives remain well-defined.
+vec2 ShadowReceiverGradient(in vec3 shadowPos)
+{
+	vec2 uvDx = dFdx(shadowPos.xy);
+	vec2 uvDy = dFdy(shadowPos.xy);
+	float zDx = dFdx(shadowPos.z);
+	float zDy = dFdy(shadowPos.z);
+	float det = uvDx.x * uvDy.y - uvDx.y * uvDy.x;
+	if (abs(det) < 1e-10)
+		return vec2(0.0);
+	return vec2(zDx * uvDy.y - zDy * uvDx.y,
+		uvDx.x * zDy - zDx * uvDy.x) / det;
+}
+
+float ShadowRawDepth(in int cascade, in vec2 uv)
+{
+	ivec2 size = textureSize(u_ShadowMap, 0).xy;
+	ivec2 p = clamp(ivec2(uv * vec2(size)), ivec2(0), size - ivec2(1));
+	return texelFetch(u_ShadowMap, ivec3(p, cascade), 0).r;
+}
+
+float ShadowReceiverDepth(in float centerDepth, in vec2 gradient,
+	in vec2 uvOffset, in float depthSpan)
+{
+	float correction = dot(gradient, uvOffset) * u_ShadowBias.z;
+	float correctionClamp = u_ShadowBias.w / max(depthSpan, 1e-5);
+	correction = clamp(correction, -correctionClamp, correctionClamp);
+	return centerDepth + correction - u_ShadowBias.x / max(depthSpan, 1e-5);
+}
+
+float ShadowStableAngle(in vec3 worldPosition)
+{
+	vec3 cell = floor(worldPosition * 0.25);
+	float h = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+	return h * 6.28318530718;
+}
+
+vec2 ShadowVogel(in int sampleIndex, in int sampleCount, in float angleOffset)
+{
+	float i = float(sampleIndex) + 0.5;
+	float r = sqrt(i / float(sampleCount));
+	float a = i * 2.39996322973 + angleOffset;
+	return vec2(cos(a), sin(a)) * r;
+}
+
+void ShadowSampleCounts(out int blockerSamples, out int filterSamples)
+{
+	int quality = int(u_ShadowPcss.w + 0.5);
+	if (quality <= 0)
+	{
+		blockerSamples = 8;
+		filterSamples = 8;
+	}
+	else if (quality == 1)
+	{
+		blockerSamples = 12;
+		filterSamples = 16;
+	}
+	else
+	{
+		blockerSamples = 24;
+		filterSamples = 32;
+	}
+}
+
+float ShadowManualPcf(in int cascade, in vec3 shadowPos,
+	in vec2 receiverGradient, in float depthSpan, in float radiusUv,
+	in int sampleCount, in float angle)
+{
+	float visibility = 0.0;
+	for (int i = 0; i < 32; ++i)
+	{
+		if (i >= sampleCount)
+			break;
+		vec2 offset = i == 0 ? vec2(0.0) :
+			ShadowVogel(i - 1, sampleCount - 1, angle) * radiusUv;
+		float receiver = ShadowReceiverDepth(shadowPos.z, receiverGradient, offset, depthSpan);
+		visibility += receiver <= ShadowRawDepth(cascade, shadowPos.xy + offset) ? 1.0 : 0.0;
+	}
+	return visibility / float(sampleCount);
+}
+
+SunCascadeResult EvaluateSunCascade(in mat4 shadowMvp, in int cascade,
+	in vec3 worldPosition, in vec3 geometricNormal, in float normalLight,
+	in vec2 receiverGradient)
+{
+	SunCascadeResult result;
+	float worldTexel = ShadowCascadeValue(u_ShadowTexelSize, cascade);
+	float depthSpan = ShadowCascadeValue(u_ShadowDepthSpan, cascade);
+	float normalOffset = worldTexel * u_ShadowBias.y * (1.0 - normalLight);
+	vec3 shadowPos = ShadowProject(shadowMvp, worldPosition + geometricNormal * normalOffset);
+
+	result.visibility = 1.0;
+	result.rawDepth = 1.0;
+	result.fixedPcf = 1.0;
+	result.blockerDepth = 1.0;
+	result.penumbraWorld = 0.0;
+	result.biasWorld = u_ShadowBias.x + normalOffset;
+	result.cascade = float(cascade);
+
+	if (any(lessThan(shadowPos, vec3(0.0))) || any(greaterThan(shadowPos, vec3(1.0))))
+		return result;
+
+	int debugMode = int(u_ShadowDebug.x + 0.5);
+	if (debugMode == 1 || debugMode == 7 || debugMode == 9)
+		return result;
+	if (debugMode == 2)
+	{
+		result.rawDepth = ShadowRawDepth(cascade, shadowPos.xy);
+		return result;
+	}
+
+	float angle = ShadowStableAngle(worldPosition);
+	int blockerSamples, filterSamples;
+	ShadowSampleCounts(blockerSamples, filterSamples);
+	float uvPerWorld = u_ShadowTexelSize.w / max(worldTexel, 1e-5);
+	float fixedRadiusUv = 1.5 * u_ShadowTexelSize.w;
+	bool pcssEnabled = u_ShadowPcss.z >= 0.5 && u_ShadowPcss.x > 0.0 && u_ShadowPcss.y > 0.0;
+
+	if (debugMode == 3 || !pcssEnabled)
+		result.fixedPcf = ShadowManualPcf(cascade, shadowPos, receiverGradient,
+			depthSpan, fixedRadiusUv, filterSamples, angle);
+	if (debugMode == 3)
+	{
+		result.visibility = result.fixedPcf;
+		return result;
+	}
+
+	if (!pcssEnabled)
+	{
+		result.visibility = result.fixedPcf;
+		return result;
+	}
+
+	// A directional light has no finite light-plane distance. Search in the
+	// largest permitted receiver-space penumbra instead, which keeps the
+	// meaning identical in every cascade.
+	float searchWorld = max(2.0 * worldTexel, u_ShadowPcss.y);
+	float searchRadiusUv = searchWorld * uvPerWorld;
+	float blockerSum = 0.0;
+	float blockerCount = 0.0;
+	for (int i = 0; i < 24; ++i)
+	{
+		if (i >= blockerSamples)
+			break;
+		vec2 offset = i == 0 ? vec2(0.0) :
+			ShadowVogel(i - 1, blockerSamples - 1, angle) * searchRadiusUv;
+		float receiver = ShadowReceiverDepth(shadowPos.z, receiverGradient, offset, depthSpan);
+		float sampleDepth = ShadowRawDepth(cascade, shadowPos.xy + offset);
+		if (sampleDepth < receiver)
+		{
+			blockerSum += sampleDepth;
+			blockerCount += 1.0;
+		}
+	}
+
+	if (blockerCount < 0.5)
+		return result;
+
+	result.blockerDepth = blockerSum / blockerCount;
+	float separationWorld = max((shadowPos.z - result.blockerDepth) * depthSpan, 0.0);
+	result.penumbraWorld = min(separationWorld * u_ShadowPcss.x, u_ShadowPcss.y);
+	if (debugMode == 4 || debugMode == 5)
+		return result;
+	float filterRadiusUv = max(0.5 * u_ShadowTexelSize.w,
+		result.penumbraWorld * uvPerWorld);
+	result.visibility = ShadowManualPcf(cascade, shadowPos, receiverGradient,
+		depthSpan, filterRadiusUv, filterSamples, angle);
+	return result;
+}
+
+SunCascadeResult MixSunCascadeResults(in SunCascadeResult a,
+	in SunCascadeResult b, in float t)
+{
+	SunCascadeResult r;
+	r.visibility = mix(a.visibility, b.visibility, t);
+	r.rawDepth = mix(a.rawDepth, b.rawDepth, t);
+	r.fixedPcf = mix(a.fixedPcf, b.fixedPcf, t);
+	r.blockerDepth = mix(a.blockerDepth, b.blockerDepth, t);
+	r.penumbraWorld = mix(a.penumbraWorld, b.penumbraWorld, t);
+	r.biasWorld = mix(a.biasWorld, b.biasWorld, t);
+	r.cascade = mix(a.cascade, b.cascade, t);
+	return r;
+}
+
+SunCascadeResult sunShadowModern(in vec3 worldPosition,
+	in vec3 geometricNormal, in float normalLight)
+{
+	vec3 base0 = ShadowProject(u_ShadowMvp, worldPosition);
+	vec3 base1 = ShadowProject(u_ShadowMvp2, worldPosition);
+	vec3 base2 = ShadowProject(u_ShadowMvp3, worldPosition);
+	vec2 gradient0 = ShadowReceiverGradient(base0);
+	vec2 gradient1 = ShadowReceiverGradient(base1);
+	vec2 gradient2 = ShadowReceiverGradient(base2);
+
+	float viewDepth = dot(worldPosition - u_ViewOrigin, normalize(u_ViewForward));
+	float split0 = u_ShadowSplits.x;
+	float split1 = u_ShadowSplits.y;
+	float half0 = u_ShadowBlend.x;
+	float half1 = u_ShadowBlend.y;
+	SunCascadeResult result;
+
+	if (half0 > 0.0 && viewDepth >= split0 - half0 && viewDepth <= split0 + half0)
+	{
+		SunCascadeResult a = EvaluateSunCascade(u_ShadowMvp, 0, worldPosition,
+			geometricNormal, normalLight, gradient0);
+		SunCascadeResult b = EvaluateSunCascade(u_ShadowMvp2, 1, worldPosition,
+			geometricNormal, normalLight, gradient1);
+		float t = smoothstep(split0 - half0, split0 + half0, viewDepth);
+		result = MixSunCascadeResults(a, b, t);
+	}
+	else if (viewDepth < split0)
+	{
+		result = EvaluateSunCascade(u_ShadowMvp, 0, worldPosition,
+			geometricNormal, normalLight, gradient0);
+	}
+	else if (half1 > 0.0 && viewDepth >= split1 - half1 && viewDepth <= split1 + half1)
+	{
+		SunCascadeResult a = EvaluateSunCascade(u_ShadowMvp2, 1, worldPosition,
+			geometricNormal, normalLight, gradient1);
+		SunCascadeResult b = EvaluateSunCascade(u_ShadowMvp3, 2, worldPosition,
+			geometricNormal, normalLight, gradient2);
+		float t = smoothstep(split1 - half1, split1 + half1, viewDepth);
+		result = MixSunCascadeResults(a, b, t);
+	}
+	else if (viewDepth < split1)
+	{
+		result = EvaluateSunCascade(u_ShadowMvp2, 1, worldPosition,
+			geometricNormal, normalLight, gradient1);
+	}
+	else
+	{
+		result = EvaluateSunCascade(u_ShadowMvp3, 2, worldPosition,
+			geometricNormal, normalLight, gradient2);
+	}
+
+	float farFade = smoothstep(u_ShadowSplits.w, u_ShadowSplits.z, viewDepth);
+	result.visibility = mix(result.visibility, 1.0, farFade);
+	return result;
+}
+
+#else
 
 // Input: It uses texture coords as the random number seed.
 // Output: Random number: [0,1), that is between 0.0 and 0.999999... inclusive.
@@ -654,6 +932,7 @@ float sunShadow(in vec3 viewOrigin, in vec3 viewDir, in vec3 biasOffset, in samp
 
 	return result;
 }
+#endif
 #endif
 
 #if defined(USE_PARALLAXMAP)
@@ -1230,12 +1509,22 @@ void main()
 	contactShadow = screenAO.g;
 	#endif
 	float cascadeShadow = 1.0;
+	#if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
+	SunCascadeResult sunInfo;
+	#endif
 
   #if defined(USE_SHADOWMAP)
 	vec3 primaryLightDir = normalize(u_PrimaryLightOrigin.xyz);
 	float NPL = clamp(dot(N, primaryLightDir), 0.0, 1.0);
+	#if defined(USE_SHADOWS2)
+	vec3 geometricNormal = normalize(vertexNormal);
+	float geometricNPL = clamp(dot(geometricNormal, primaryLightDir), 0.0, 1.0);
+	sunInfo = sunShadowModern(u_ViewOrigin - viewDir, geometricNormal, geometricNPL);
+	cascadeShadow = sunInfo.visibility;
+	#else
 	vec3 normalBias = vertexNormal * (1.0 - NPL);
 	cascadeShadow = sunShadow(u_ViewOrigin, viewDir, normalBias, u_ShadowMap);
+	#endif
 	// contact shadows only refine the near field of the cascaded shadow map
 	float shadowValue = cascadeShadow * contactShadow * NPL;
 
@@ -1366,6 +1655,43 @@ void main()
     #endif
 
 	out_Color.rgb += lightColor * reflectance * NL2;
+  #endif
+
+  #if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
+	// r_shadowDebug 1-9. These values are deliberately written unlit; the
+	// post-process path bypasses tone mapping while a shadow debug view is on.
+	if (u_ShadowDebug.x >= 1.0)
+	{
+		vec3 debugColor;
+		if (u_ShadowDebug.x == 1.0)
+		{
+			vec3 c0 = vec3(1.0, 0.18, 0.12);
+			vec3 c1 = vec3(0.15, 1.0, 0.2);
+			vec3 c2 = vec3(0.15, 0.35, 1.0);
+			debugColor = sunInfo.cascade < 1.0 ?
+				mix(c0, c1, sunInfo.cascade) : mix(c1, c2, sunInfo.cascade - 1.0);
+		}
+		else if (u_ShadowDebug.x == 2.0)
+			debugColor = vec3(sunInfo.rawDepth);
+		else if (u_ShadowDebug.x == 3.0)
+			debugColor = vec3(sunInfo.fixedPcf);
+		else if (u_ShadowDebug.x == 4.0)
+			debugColor = vec3(sunInfo.blockerDepth);
+		else if (u_ShadowDebug.x == 5.0)
+			debugColor = vec3(sunInfo.penumbraWorld / max(u_ShadowPcss.y, 1e-5));
+		else if (u_ShadowDebug.x == 6.0)
+			debugColor = vec3(sunInfo.visibility);
+		else if (u_ShadowDebug.x == 7.0)
+			debugColor = vec3(contactShadow);
+		else if (u_ShadowDebug.x == 8.0)
+			debugColor = vec3(sunInfo.visibility * contactShadow);
+		else
+			debugColor = vec3(sunInfo.biasWorld / max(u_ShadowBias.w, 1e-5));
+
+		out_Color = vec4(debugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+		return;
+	}
   #endif
 
   #if defined(USE_SSAO)

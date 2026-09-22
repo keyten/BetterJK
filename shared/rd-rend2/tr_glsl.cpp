@@ -448,6 +448,11 @@ static size_t GLSL_GetShaderHeader(
 
 	Q_strcat(dest, size, "#define USE_ALPHA_TEST\n");
 
+	// The modern sun path uses raw depth and manual comparisons. This must be
+	// decided with texture creation, so the A/B switch is latched.
+	if (r_sunShadowMode->integer)
+		Q_strcat(dest, size, "#define USE_SHADOWS2\n");
+
 	// screen-space AO / contact shadow map (u_SSAOMap), tr_ao.cpp
 	if (R_AOResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSAO\n");

@@ -3679,6 +3679,8 @@ void R_CreateBuiltinImages( void ) {
 
 	if (r_sunlightMode->integer)
 	{
+		const int sunShadowFlags = IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGFLAG_MUTABLE |
+			(r_sunShadowMode->integer ? 0 : IMGLFAG_SHADOWCOMP);
 		tr.sunShadowArrayImage = R_Create2DImageArray(
 			va("*sunShadowmapArray"),
 			NULL,
@@ -3686,8 +3688,8 @@ void R_CreateBuiltinImages( void ) {
 			r_shadowMapSize->integer,
 			3, // number of cascades
 			IMGTYPE_COLORALPHA,
-			IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGLFAG_SHADOWCOMP | IMGFLAG_MUTABLE,
-			GL_DEPTH_COMPONENT16);
+			sunShadowFlags,
+			r_sunShadowMode->integer ? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT16);
 	}
 
 	if (r_cubeMapping->integer)

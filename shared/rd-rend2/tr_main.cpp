@@ -2925,9 +2925,40 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 			viewZFar = r_shadowCascadeZFar->value;
 			splitBias = r_shadowCascadeZBias->value;
 
+			float cascadeSplits[3];
+			cascadeSplits[0] = CalcSplit(viewZNear, viewZFar, 1, 3) + splitBias;
+			cascadeSplits[1] = CalcSplit(viewZNear, viewZFar, 2, 3) + splitBias;
+			cascadeSplits[2] = viewZFar;
+			if (r_sunShadowMode->integer)
+			{
+				// Keep malformed cvar combinations from producing inverted slices in
+				// the modern path. The legacy path below deliberately remains exact.
+				cascadeSplits[0] = Com_Clamp(viewZNear + 1.0f, viewZFar - 2.0f, cascadeSplits[0]);
+				cascadeSplits[1] = Com_Clamp(cascadeSplits[0] + 1.0f, viewZFar - 1.0f, cascadeSplits[1]);
+			}
+
+			const float blendFraction = r_sunShadowMode->integer ?
+				Com_Clamp(0.0f, 0.3f, r_shadowCascadeBlend->value) : 0.0f;
+			const float cascadeSpans[3] = {
+				cascadeSplits[0] - viewZNear,
+				cascadeSplits[1] - cascadeSplits[0],
+				viewZFar - cascadeSplits[1] };
+			float blendHalfWidths[2] = {
+				0.5f * blendFraction * Q_min(cascadeSpans[0], cascadeSpans[1]),
+				0.5f * blendFraction * Q_min(cascadeSpans[1], cascadeSpans[2]) };
+			for (int i = 0; i < 3; ++i)
+				refdef->sunShadowSplits[i] = cascadeSplits[i];
+			for (int i = 0; i < 2; ++i)
+				refdef->sunShadowBlendWidths[i] = blendHalfWidths[i];
+
 			for (int level = 0; level < 3; level++)
 			{
-				switch (level)
+				if (r_sunShadowMode->integer)
+				{
+					splitZNear = level == 0 ? viewZNear : cascadeSplits[level - 1] - blendHalfWidths[level - 1];
+					splitZFar = level == 2 ? viewZFar : cascadeSplits[level] + blendHalfWidths[level];
+				}
+				else switch (level)
 				{
 				case 0:
 				default:
@@ -2971,6 +3002,34 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 					vec3_t splitCenter, frustrumPoint0, frustrumPoint7;
 
 					VectorSet(splitCenter, 0.f, 0.f, 0.f);
+
+					if (r_sunShadowMode->integer)
+					{
+						// A stable bounding sphere for the symmetric camera-frustum slice.
+						// Its center and radius depend only on FOV and split distances, not
+						// camera rotation or translation.
+						const float tanX = tanf(refdef->fov_x * (float)M_PI / 360.0f);
+						const float tanY = tanf(refdef->fov_y * (float)M_PI / 360.0f);
+						const float radialSq = tanX * tanX + tanY * tanY;
+						const float centerDistance = Q_min(
+							splitZFar,
+							0.5f * (splitZNear + splitZFar) * (1.0f + radialSq));
+						const float nearAxial = centerDistance - splitZNear;
+						const float farAxial = splitZFar - centerDistance;
+						const float nearRadiusSq = nearAxial * nearAxial + splitZNear * splitZNear * radialSq;
+						const float farRadiusSq = farAxial * farAxial + splitZFar * splitZFar * radialSq;
+						radius = sqrtf(Q_max(nearRadiusSq, farRadiusSq));
+						// Quantization prevents tiny FOV/split floating-point variations from
+						// changing the projection extent.
+						radius = ceilf(radius * 16.0f) * (1.0f / 16.0f);
+						VectorMA(refdef->vieworg, centerDistance, refdef->viewaxis[0], splitCenter);
+
+						lightviewBounds[0][0] = lightviewBounds[0][1] = lightviewBounds[0][2] = -radius;
+						lightviewBounds[1][0] = lightviewBounds[1][1] = lightviewBounds[1][2] = radius;
+						VectorCopy(splitCenter, lightOrigin);
+					}
+					else
+					{
 
 					// add view near plane
 					lx = splitZNear * tan(refdef->fov_x * M_PI / 360.0f);
@@ -3026,6 +3085,27 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 					lightviewBounds[1][2] = radius;
 
 					VectorCopy(splitCenter, lightOrigin);
+					}
+				}
+
+				const float worldUnitsPerTexelX =
+					(lightviewBounds[1][1] - lightviewBounds[0][1]) / (float)tr.sunShadowFbo[level]->width;
+				const float worldUnitsPerTexelY =
+					(lightviewBounds[1][2] - lightviewBounds[0][2]) / (float)tr.sunShadowFbo[level]->height;
+				refdef->sunShadowTexelSize[level] = Q_max(worldUnitsPerTexelX, worldUnitsPerTexelY);
+				refdef->sunShadowDepthSpan[level] = lightviewBounds[1][0] - lightviewBounds[0][0];
+
+				if (r_sunShadowMode->integer)
+				{
+					// Snap the light camera itself so its matrices, frustum and PVS origin
+					// all describe the same texel-aligned view. Only the two shadow-plane
+					// axes are snapped; light-space depth is left continuous.
+					const float lightX = DotProduct(lightOrigin, lightViewAxis[1]);
+					const float lightY = DotProduct(lightOrigin, lightViewAxis[2]);
+					const float snappedX = floorf(lightX / worldUnitsPerTexelX + 0.5f) * worldUnitsPerTexelX;
+					const float snappedY = floorf(lightY / worldUnitsPerTexelY + 0.5f) * worldUnitsPerTexelY;
+					VectorMA(lightOrigin, snappedX - lightX, lightViewAxis[1], lightOrigin);
+					VectorMA(lightOrigin, snappedY - lightY, lightViewAxis[2], lightOrigin);
 				}
 
 				orientationr_t orientation = {};
@@ -3039,18 +3119,21 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 					orientation,
 					lightviewBounds);
 
-				// Moving the Light in Texel-Sized Increments
-				// from http://msdn.microsoft.com/en-us/library/windows/desktop/ee416324%28v=vs.85%29.aspx
-				static float worldUnitsPerTexel = 2.0f * lightviewBounds[1][0] / (float)tr.sunShadowFbo[level]->width;
-				static float invWorldUnitsPerTexel = tr.sunShadowFbo[level]->width / (2.0f * lightviewBounds[1][0]);
+				if (!r_sunShadowMode->integer)
+				{
+					// Preserve the original implementation, including its process-lifetime
+					// first-cascade texel size, for exact legacy A/B comparisons.
+					static float worldUnitsPerTexel = 2.0f * lightviewBounds[1][0] / (float)tr.sunShadowFbo[level]->width;
+					static float invWorldUnitsPerTexel = tr.sunShadowFbo[level]->width / (2.0f * lightviewBounds[1][0]);
 
-				tr.viewParms.world.modelViewMatrix[12] = floorf(tr.viewParms.world.modelViewMatrix[12] * invWorldUnitsPerTexel);
-				tr.viewParms.world.modelViewMatrix[13] = floorf(tr.viewParms.world.modelViewMatrix[13] * invWorldUnitsPerTexel);
-				tr.viewParms.world.modelViewMatrix[14] = floorf(tr.viewParms.world.modelViewMatrix[14] * invWorldUnitsPerTexel);
+					tr.viewParms.world.modelViewMatrix[12] = floorf(tr.viewParms.world.modelViewMatrix[12] * invWorldUnitsPerTexel);
+					tr.viewParms.world.modelViewMatrix[13] = floorf(tr.viewParms.world.modelViewMatrix[13] * invWorldUnitsPerTexel);
+					tr.viewParms.world.modelViewMatrix[14] = floorf(tr.viewParms.world.modelViewMatrix[14] * invWorldUnitsPerTexel);
 
-				tr.viewParms.world.modelViewMatrix[12] *= worldUnitsPerTexel;
-				tr.viewParms.world.modelViewMatrix[13] *= worldUnitsPerTexel;
-				tr.viewParms.world.modelViewMatrix[14] *= worldUnitsPerTexel;
+					tr.viewParms.world.modelViewMatrix[12] *= worldUnitsPerTexel;
+					tr.viewParms.world.modelViewMatrix[13] *= worldUnitsPerTexel;
+					tr.viewParms.world.modelViewMatrix[14] *= worldUnitsPerTexel;
+				}
 
 				Matrix16Multiply(
 					tr.viewParms.projectionMatrix,

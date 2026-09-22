@@ -586,7 +586,9 @@ void RB_AOSceneParams( vec4_t aoParams, vec4_t aoParams2 )
 
 qboolean RB_AODebugBypassesToneMap( void )
 {
-	return (qboolean)(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9);
+	return (qboolean)(
+		(r_sunShadowMode->integer && r_shadowDebug->integer >= 1 && r_shadowDebug->integer <= 9) ||
+		(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9));
 }
 
 // Full screen r_debugAO views of the AO buffers, drawn at the end of the post

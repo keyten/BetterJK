@@ -635,7 +635,10 @@ void RE_RenderScene( const refdef_t *fd )
 			"%s_%i",
 			viewParmTypeNames[tr.cachedViewParms[i].viewParmType],
 			i));
-		qhandle_t timer = R_BeginTimedBlockCmd(va("Render Pass %i", i));
+		qhandle_t timer = R_BeginTimedBlockCmd(va(
+			"%s %i",
+			viewParmTypeNames[tr.cachedViewParms[i].viewParmType],
+			i));
 		tr.refdef.numDrawSurfs = 0;
 		R_RenderView(&tr.cachedViewParms[i]);
 		R_IssuePendingRenderCommands();

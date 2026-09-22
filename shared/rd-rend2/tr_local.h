@@ -270,6 +270,17 @@ extern cvar_t  *r_shadowMapSize;
 extern cvar_t  *r_shadowCascadeZNear;
 extern cvar_t  *r_shadowCascadeZFar;
 extern cvar_t  *r_shadowCascadeZBias;
+extern cvar_t  *r_sunShadowMode;
+extern cvar_t  *r_shadowCascadeBlend;
+extern cvar_t  *r_shadowDepthBias;
+extern cvar_t  *r_shadowNormalBias;
+extern cvar_t  *r_shadowSlopeBias;
+extern cvar_t  *r_shadowReceiverBiasClamp;
+extern cvar_t  *r_shadowPcss;
+extern cvar_t  *r_shadowPcssQuality;
+extern cvar_t  *r_shadowSunAngularDiameter;
+extern cvar_t  *r_shadowPcssMaxPenumbra;
+extern cvar_t  *r_shadowDebug;
 extern cvar_t  *r_ignoreDstAlpha;
 extern cvar_t  *r_refractionChromaticAberration;
 
@@ -851,6 +862,13 @@ struct LightsBlock
 	matrix_t shadowVP1;
 	matrix_t shadowVP2;
 	matrix_t shadowVP3;
+	vec4_t shadowSplits;			// three far distances, final fade start
+	vec4_t shadowBlend;			// two half widths, final far distance, unused
+	vec4_t shadowTexelSize;		// world units per texel for each cascade, inverse map size
+	vec4_t shadowDepthSpan;		// light-space depth span for each cascade, unused
+	vec4_t shadowBias;			// constant world bias, normal texels, receiver-plane scale, clamp
+	vec4_t shadowPcss;			// tan angular radius, max world penumbra, enabled, quality
+	vec4_t shadowDebug;			// debug mode, unused
 
 	int numLights;
 	float pad0[3];
@@ -1781,6 +1799,10 @@ typedef struct {
 	struct pshadow_s *pshadows;
 
 	float       sunShadowMvp[3][16];
+	float       sunShadowSplits[3];
+	float       sunShadowBlendWidths[2];
+	float       sunShadowTexelSize[3];
+	float       sunShadowDepthSpan[3];
 	float       sunDir[4];
 	float       sunCol[4];
 	float       sunAmbCol[4];
@@ -3190,6 +3212,17 @@ extern  cvar_t  *r_shadowMapSize;
 extern  cvar_t  *r_shadowCascadeZNear;
 extern  cvar_t  *r_shadowCascadeZFar;
 extern  cvar_t  *r_shadowCascadeZBias;
+extern  cvar_t  *r_sunShadowMode;
+extern  cvar_t  *r_shadowCascadeBlend;
+extern  cvar_t  *r_shadowDepthBias;
+extern  cvar_t  *r_shadowNormalBias;
+extern  cvar_t  *r_shadowSlopeBias;
+extern  cvar_t  *r_shadowReceiverBiasClamp;
+extern  cvar_t  *r_shadowPcss;
+extern  cvar_t  *r_shadowPcssQuality;
+extern  cvar_t  *r_shadowSunAngularDiameter;
+extern  cvar_t  *r_shadowPcssMaxPenumbra;
+extern  cvar_t  *r_shadowDebug;
 
 extern	cvar_t	*r_greyscale;
 

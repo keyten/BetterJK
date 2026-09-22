@@ -56,11 +56,38 @@ vec2 ProjectToUV(vec3 p)
 	return (ndc * 0.5 + 0.5) * u_AOViewport.zw + u_AOViewport.xy;
 }
 
-float Bayer4(ivec2 p)
+float DepthAtPixel(ivec2 p)
 {
-	p &= 3;
-	int b = ((p.x ^ p.y) & 1) * 8 + (p.y & 1) * 4 + ((p.x ^ p.y) & 2) + ((p.y & 2) >> 1);
-	return float(b);
+	return LinearDepth(texelFetch(u_ScreenDepthMap, p, 0).r);
+}
+
+// Reconstruct a full-resolution geometric normal and select the closest
+// finite difference on each axis. This avoids pulling the contact-ray origin
+// across depth discontinuities at silhouettes.
+vec3 ContactNormal(ivec2 pix, vec3 P)
+{
+	ivec2 maxPixel = ivec2(1.0 / u_AOTexelSize.zw) - ivec2(1);
+	ivec2 px0 = clamp(pix - ivec2(1, 0), ivec2(0), maxPixel);
+	ivec2 px1 = clamp(pix + ivec2(1, 0), ivec2(0), maxPixel);
+	ivec2 py0 = clamp(pix - ivec2(0, 1), ivec2(0), maxPixel);
+	ivec2 py1 = clamp(pix + ivec2(0, 1), ivec2(0), maxPixel);
+	float zx0 = DepthAtPixel(px0);
+	float zx1 = DepthAtPixel(px1);
+	float zy0 = DepthAtPixel(py0);
+	float zy1 = DepthAtPixel(py1);
+	vec3 dx0 = zx0 > 0.0 ? P - ViewPosition((vec2(px0) + 0.5) * u_AOTexelSize.zw, zx0) : vec3(1e10);
+	vec3 dx1 = zx1 > 0.0 ? ViewPosition((vec2(px1) + 0.5) * u_AOTexelSize.zw, zx1) - P : vec3(1e10);
+	vec3 dy0 = zy0 > 0.0 ? P - ViewPosition((vec2(py0) + 0.5) * u_AOTexelSize.zw, zy0) : vec3(1e10);
+	vec3 dy1 = zy1 > 0.0 ? ViewPosition((vec2(py1) + 0.5) * u_AOTexelSize.zw, zy1) - P : vec3(1e10);
+	float dx0Sq = dot(dx0, dx0);
+	float dx1Sq = dot(dx1, dx1);
+	float dy0Sq = dot(dy0, dy0);
+	float dy1Sq = dot(dy1, dy1);
+	vec3 dx = dx0Sq > 1e-8 && dx0Sq < dx1Sq ? dx0 : dx1;
+	vec3 dy = dy0Sq > 1e-8 && dy0Sq < dy1Sq ? dy0 : dy1;
+	vec3 crossNormal = cross(dx, dy);
+	vec3 N = dot(crossNormal, crossNormal) > 1e-10 ? normalize(crossNormal) : normalize(-P);
+	return dot(N, -P) < 0.0 ? -N : N;
 }
 
 // Depth-aware upsampling of the GTAO result: the 2x2 bilinear footprint,
@@ -114,12 +141,12 @@ float ContactShadow(ivec2 pix, vec2 uv, vec3 P, float z)
 	float rayLength = u_AOSettings2.x;
 	int steps = int(u_AOSettings2.y);
 	float pixelSize = z * u_AOSettings2.w;
+	vec3 N = ContactNormal(pix, P);
 
-	// start slightly off the receiver, scaled with the pixel footprint to stay
-	// clear of depth quantization (self-shadow acne)
-	vec3 origin = P + L * (pixelSize * 1.5 + 0.1);
+	// Start along the receiver normal and a little towards the light. The
+	// normal term retains contacts while rejecting the receiver itself.
+	vec3 origin = P + N * (pixelSize * 1.5 + 0.05) + L * 0.05;
 	float stepLength = rayLength / float(steps);
-	float jitter = (Bayer4(pix) + 0.5) / 16.0;
 
 	vec2 screenSize = 1.0 / u_AOTexelSize.zw;
 	vec2 viewportMin = u_AOViewport.xy;
@@ -128,7 +155,9 @@ float ContactShadow(ivec2 pix, vec2 uv, vec3 P, float z)
 	float occlusion = 0.0;
 	for (int i = 0; i < steps; i++)
 	{
-		float t = (float(i) + jitter) * stepLength;
+		// A fixed midpoint is temporally stable. A screen-locked Bayer offset
+		// visibly crawled across receivers while the camera moved.
+		float t = (float(i) + 0.5) * stepLength;
 		vec3 Q = origin + L * t;
 		if (Q.z <= 1.0)
 			break; // behind the camera

@@ -26,7 +26,11 @@ void main()
 uniform sampler3D u_FroxelHistory;
 uniform sampler3D u_VolumetricStaticGrid;
 uniform sampler3D u_VolumetricSunGrid;
-uniform sampler2DArrayShadow u_ShadowMap;	// sun cascades
+#if defined(USE_SHADOWS2)
+uniform sampler2DArray u_ShadowMap;		// raw sun cascade depth
+#else
+uniform sampler2DArrayShadow u_ShadowMap;	// legacy sun cascades
+#endif
 uniform sampler2DArrayShadow u_ShadowMap2;	// dynamic light cube faces, 6 layers per light
 
 uniform int u_FroxelSlice;
@@ -44,6 +48,13 @@ layout(std140) uniform Lights
 	mat4 u_ShadowMvp;
 	mat4 u_ShadowMvp2;
 	mat4 u_ShadowMvp3;
+	vec4 u_ShadowSplits;
+	vec4 u_ShadowBlend;
+	vec4 u_ShadowTexelSize;
+	vec4 u_ShadowDepthSpan;
+	vec4 u_ShadowBias;
+	vec4 u_ShadowPcss;
+	vec4 u_ShadowDebug;
 	int u_NumLights;
 	Light u_Lights[MAX_DLIGHTS];
 };
@@ -95,9 +106,29 @@ vec4 FroxelMedium(in vec3 p)
 
 // one hardware filtered tap with temporal accumulation (the jittered positions soften the beams),
 // four otherwise
+#if defined(USE_SHADOWS2)
+float FroxelSunCompare(in float layer, in vec2 uv, in float ref)
+{
+	ivec2 shadowSize = textureSize(u_ShadowMap, 0).xy;
+	ivec2 p = clamp(ivec2(uv * vec2(shadowSize)), ivec2(0), shadowSize - ivec2(1));
+	return ref <= texelFetch(u_ShadowMap, ivec3(p, int(layer)), 0).r ? 1.0 : 0.0;
+}
+#endif
+
 float SunShadowTap(in float layer, in vec3 shadowPos, in float bias, in float temporal)
 {
 	float ref = shadowPos.z - bias;
+	#if defined(USE_SHADOWS2)
+	if (temporal > 0.5)
+		return FroxelSunCompare(layer, shadowPos.xy, ref);
+
+	float texel = 0.75 / u_FroxelShadowParams.y;
+	float result = 0.0;
+	result += FroxelSunCompare(layer, shadowPos.xy + vec2(-texel, -texel), ref);
+	result += FroxelSunCompare(layer, shadowPos.xy + vec2( texel, -texel), ref);
+	result += FroxelSunCompare(layer, shadowPos.xy + vec2(-texel,  texel), ref);
+	result += FroxelSunCompare(layer, shadowPos.xy + vec2( texel,  texel), ref);
+	#else
 	if (temporal > 0.5)
 		return texture(u_ShadowMap, vec4(shadowPos.xy, layer, ref));
 
@@ -107,13 +138,57 @@ float SunShadowTap(in float layer, in vec3 shadowPos, in float bias, in float te
 	result += texture(u_ShadowMap, vec4(shadowPos.xy + vec2( texel, -texel), layer, ref));
 	result += texture(u_ShadowMap, vec4(shadowPos.xy + vec2(-texel,  texel), layer, ref));
 	result += texture(u_ShadowMap, vec4(shadowPos.xy + vec2( texel,  texel), layer, ref));
+	#endif
 	return result * 0.25;
 }
+
+#if defined(USE_SHADOWS2)
+float SunShadowCascade(in mat4 shadowMvp, in float layer, in vec3 p,
+	in float bias, in float temporal)
+{
+	vec4 projected = shadowMvp * vec4(p, 1.0);
+	vec3 shadowPos = projected.xyz / projected.w * 0.5 + 0.5;
+	if (any(lessThan(shadowPos, vec3(0.0))) || any(greaterThan(shadowPos, vec3(1.0))))
+		return 1.0;
+	return SunShadowTap(layer, shadowPos, bias, temporal);
+}
+#endif
 
 // Sun visibility from the cascaded shadow maps (cascade selection as sunShadow() of lightall).
 // coverage: 1 inside the cascades, fading to 0 at their far end (then the baked sun is used).
 float SunShadow(in vec3 p, in float temporal, out float coverage)
 {
+	#if defined(USE_SHADOWS2)
+	float bias = u_FroxelShadowParams.w;
+	float viewDepth = dot(p - u_FroxelViewOrigin.xyz, normalize(u_FroxelRayForward.xyz));
+	float split0 = u_ShadowSplits.x;
+	float split1 = u_ShadowSplits.y;
+	float half0 = u_ShadowBlend.x;
+	float half1 = u_ShadowBlend.y;
+	float result;
+
+	if (half0 > 0.0 && viewDepth >= split0 - half0 && viewDepth <= split0 + half0)
+	{
+		float nearResult = SunShadowCascade(u_ShadowMvp, 0.0, p, bias, temporal);
+		float farResult = SunShadowCascade(u_ShadowMvp2, 1.0, p, bias, temporal);
+		result = mix(nearResult, farResult, smoothstep(split0 - half0, split0 + half0, viewDepth));
+	}
+	else if (half1 > 0.0 && viewDepth >= split1 - half1 && viewDepth <= split1 + half1)
+	{
+		float nearResult = SunShadowCascade(u_ShadowMvp2, 1.0, p, bias, temporal);
+		float farResult = SunShadowCascade(u_ShadowMvp3, 2.0, p, bias, temporal);
+		result = mix(nearResult, farResult, smoothstep(split1 - half1, split1 + half1, viewDepth));
+	}
+	else if (viewDepth < split0)
+		result = SunShadowCascade(u_ShadowMvp, 0.0, p, bias, temporal);
+	else if (viewDepth < split1)
+		result = SunShadowCascade(u_ShadowMvp2, 1.0, p, bias, temporal);
+	else
+		result = SunShadowCascade(u_ShadowMvp3, 2.0, p, bias, temporal);
+
+	coverage = 1.0 - smoothstep(u_ShadowSplits.w, u_ShadowSplits.z, viewDepth);
+	return mix(1.0, result, coverage);
+	#else
 	coverage = 1.0;
 	float bias = u_FroxelShadowParams.w;
 	float edge = 0.5 - 2.0 / u_FroxelShadowParams.y;
@@ -138,6 +213,7 @@ float SunShadow(in vec3 p, in float temporal, out float coverage)
 
 	coverage = 0.0;
 	return 1.0;
+	#endif
 }
 
 // cube map face lookup of the dynamic light shadow maps, as lightall.glsl

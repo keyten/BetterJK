@@ -2408,6 +2408,32 @@ static void RB_UpdateLightsConstants(gpuFrame_t *frame, const trRefdef_t *refdef
 	memcpy(lightsBlock.shadowVP1, refdef->sunShadowMvp[0], sizeof(matrix_t));
 	memcpy(lightsBlock.shadowVP2, refdef->sunShadowMvp[1], sizeof(matrix_t));
 	memcpy(lightsBlock.shadowVP3, refdef->sunShadowMvp[2], sizeof(matrix_t));
+	VectorSet4(lightsBlock.shadowSplits,
+		refdef->sunShadowSplits[0], refdef->sunShadowSplits[1], refdef->sunShadowSplits[2],
+		refdef->sunShadowSplits[2] * 0.9f);
+	VectorSet4(lightsBlock.shadowBlend,
+		refdef->sunShadowBlendWidths[0], refdef->sunShadowBlendWidths[1],
+		refdef->sunShadowSplits[2], 0.0f);
+	VectorSet4(lightsBlock.shadowTexelSize,
+		refdef->sunShadowTexelSize[0], refdef->sunShadowTexelSize[1],
+		refdef->sunShadowTexelSize[2], 1.0f / (float)Q_max(1, r_shadowMapSize->integer));
+	VectorSet4(lightsBlock.shadowDepthSpan,
+		refdef->sunShadowDepthSpan[0], refdef->sunShadowDepthSpan[1],
+		refdef->sunShadowDepthSpan[2], 0.0f);
+	VectorSet4(lightsBlock.shadowBias,
+		Com_Clamp(0.0f, 8.0f, r_shadowDepthBias->value),
+		Com_Clamp(0.0f, 8.0f, r_shadowNormalBias->value),
+		Com_Clamp(0.0f, 4.0f, r_shadowSlopeBias->value),
+		Com_Clamp(0.0f, 32.0f, r_shadowReceiverBiasClamp->value));
+	const float angularRadius = Com_Clamp(0.0f, 8.0f, r_shadowSunAngularDiameter->value) *
+		(float)M_PI / 360.0f;
+	VectorSet4(lightsBlock.shadowPcss,
+		tanf(angularRadius),
+		Com_Clamp(0.0f, 256.0f, r_shadowPcssMaxPenumbra->value),
+		r_shadowPcss->integer ? 1.0f : 0.0f,
+		(float)Com_Clampi(0, 2, r_shadowPcssQuality->integer));
+	VectorSet4(lightsBlock.shadowDebug,
+		(float)Com_Clampi(0, 9, r_shadowDebug->integer), 0.0f, 0.0f, 0.0f);
 
 	lightsBlock.numLights = MIN(refdef->num_dlights, MAX_DLIGHTS);
 	for (int i = 0; i < lightsBlock.numLights; ++i)
@@ -3294,7 +3320,7 @@ const void *RB_PostProcess(const void *data)
 	{
 		if (RB_AODebugBypassesToneMap())
 		{
-			// r_debugAO 7-9 write visibility values, show them unmodified
+			// AO and sun-shadow visibility debug modes are already display values.
 			FBO_FastBlit(srcFbo, srcBox, NULL, dstBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 		}
 		else if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
