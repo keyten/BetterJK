@@ -1769,7 +1769,7 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_forwardPlusNearSlice, 1.0f, 1024.0f, qfalse );
 	r_forwardPlusMaxLightsPerCluster = ri.Cvar_Get( "r_forwardPlusMaxLightsPerCluster", "64", CVAR_ARCHIVE, "Forward+: lights kept per cluster, the least important ones are dropped" );
 	ri.Cvar_CheckRange( r_forwardPlusMaxLightsPerCluster, 1, 255, qtrue );
-	r_forwardPlusDebug = ri.Cvar_Get( "r_forwardPlusDebug", "0", CVAR_CHEAT, "Forward+ debug view: 1 tiles, 2 depth slice, 3 cluster, 4 lights per cluster, 5 overflow, 6 shadowed lights, 7 unshadowed lights, 8 light spheres, 9 light r_forwardPlusDebugLight" );
+	r_forwardPlusDebug = ri.Cvar_Get( "r_forwardPlusDebug", "0", CVAR_CHEAT | CVAR_LATCH, "Forward+ debug view: 1 tiles, 2 depth slice, 3 cluster, 4 lights per cluster, 5 overflow, 6 shadowed lights, 7 unshadowed lights, 8 light spheres, 9 light r_forwardPlusDebugLight" );
 	ri.Cvar_CheckRange( r_forwardPlusDebug, 0, 9, qtrue );
 	r_forwardPlusDebugLight = ri.Cvar_Get( "r_forwardPlusDebugLight", "0", CVAR_CHEAT, "Forward+: light index shown by r_forwardPlusDebug 9" );
 	r_dynamicShadowMaxLights = ri.Cvar_Get( "r_dynamicShadowMaxLights", "4", CVAR_ARCHIVE, "Forward+: dynamic lights with a shadow cube (needs r_dlightMode 2), the most important ones get them" );

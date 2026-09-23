@@ -1364,8 +1364,13 @@ FPlusLight FPlusFetchLight(in int lightIndex)
 }
 
 // r_forwardPlusDebug 6 / 7 / 9 only show some lights
+// debug views are compiled only with r_forwardPlusDebug set at shader load
+// (USE_FPLUS_DEBUG): in every lightall permutation they cost compile time
 bool FPlusDebugSkipLight(in FPlusLight light, in int lightIndex)
 {
+#if !defined(USE_FPLUS_DEBUG)
+	return false;
+#else
 	int mode = int(u_FPlusDebug.x);
 	if (mode == 6)
 		return light.shadowSlot < 0;
@@ -1374,6 +1379,7 @@ bool FPlusDebugSkipLight(in FPlusLight light, in int lightIndex)
 	if (mode == 9)
 		return lightIndex != int(u_FPlusDebug.y);
 	return false;
+#endif
 }
 
 #if defined(PER_PIXEL_LIGHTING)
@@ -1471,30 +1477,39 @@ vec3 CalcDynamicLightContribution(
 	s.roughness = roughness;
 	s.vertexNormal = vertexNormal;
 
-	if (FPlusEnabled())
-	{
-		if (u_LightMask == 0)
-			return outColor;
+	if (u_LightMask == 0)
+		return outColor;
 
-		ivec2 list = FPlusClusterLights(s.position);
-		for (int k = 0; k < list.y; k++)
+	// one loop and one EvaluateDynamicLight call site for both paths: every
+	// lightall permutation inlines it, a second copy doubled the compile time
+	bool fplus = FPlusEnabled();
+	ivec2 list = fplus ? FPlusClusterLights(s.position) : ivec2(0, min(u_NumLights, MAX_DLIGHTS));
+	for (int k = 0; k < list.y; k++)
+	{
+		vec3 lightOrigin, lightColor;
+		float lightRadius;
+		int shadowLayer;
+		if (fplus)
 		{
 			int lightIndex = FPlusLightIndex(list.x + k);
 			FPlusLight light = FPlusFetchLight(lightIndex);
 			if (light.type != 0.0 || FPlusDebugSkipLight(light, lightIndex))
 				continue;
-			outColor += EvaluateDynamicLight(s, light.origin, light.color, light.radius, light.shadowSlot);
+			lightOrigin = light.origin;
+			lightColor = light.color;
+			lightRadius = light.radius;
+			shadowLayer = light.shadowSlot;
 		}
-		return outColor;
-	}
-
-	for ( int i = 0; i < min(u_NumLights, MAX_DLIGHTS); i++ )
-	{
-		if ( ( u_LightMask & ( 1 << i ) ) == 0 ) {
-			continue;
+		else
+		{
+			if ( ( u_LightMask & ( 1 << k ) ) == 0 )
+				continue;
+			lightOrigin = u_Lights[k].origin.xyz;
+			lightColor = u_Lights[k].color;
+			lightRadius = u_Lights[k].radius;
+			shadowLayer = k;
 		}
-		Light light = u_Lights[i];
-		outColor += EvaluateDynamicLight(s, light.origin.xyz, light.color, light.radius, i);
+		outColor += EvaluateDynamicLight(s, lightOrigin, lightColor, lightRadius, shadowLayer);
 	}
 	return outColor;
 }
@@ -1519,31 +1534,34 @@ vec3 CalcDynamicLightContribution(
 	in vec3 N )
 {
 	vec3 outLight = vec3(0.0);
+	if (u_LightMask == 0)
+		return outLight;
 
-	if (FPlusEnabled())
+	bool fplus = FPlusEnabled();
+	ivec2 list = fplus ? FPlusClusterLights(position) : ivec2(0, min(u_NumLights, MAX_DLIGHTS));
+	for (int k = 0; k < list.y; k++)
 	{
-		if (u_LightMask == 0)
-			return outLight;
-
-		ivec2 list = FPlusClusterLights(position);
-		for (int k = 0; k < list.y; k++)
+		vec3 lightOrigin, lightColor;
+		float lightRadius;
+		if (fplus)
 		{
 			int lightIndex = FPlusLightIndex(list.x + k);
 			FPlusLight light = FPlusFetchLight(lightIndex);
 			if (light.type != 0.0 || FPlusDebugSkipLight(light, lightIndex))
 				continue;
-			outLight += EvaluateDynamicLightSimple(position, N, light.origin, light.color, light.radius);
+			lightOrigin = light.origin;
+			lightColor = light.color;
+			lightRadius = light.radius;
 		}
-		return outLight;
-	}
-
-	for ( int i = 0; i < min(u_NumLights, MAX_DLIGHTS); i++ )
-	{
-		if ( ( u_LightMask & ( 1 << i ) ) == 0 ) {
-			continue;
+		else
+		{
+			if ( ( u_LightMask & ( 1 << k ) ) == 0 )
+				continue;
+			lightOrigin = u_Lights[k].origin.xyz;
+			lightColor = u_Lights[k].color;
+			lightRadius = u_Lights[k].radius;
 		}
-		Light light = u_Lights[i];
-		outLight += EvaluateDynamicLightSimple(position, N, light.origin.xyz, light.color, light.radius);
+		outLight += EvaluateDynamicLightSimple(position, N, lightOrigin, lightColor, lightRadius);
 	}
 	return outLight;
 }
@@ -1558,8 +1576,11 @@ vec3 FPlusHashColor(in int n)
 
 bool FPlusDebugColor(in vec3 position, in vec3 litColor, in vec3 dynamicLight, out vec3 color)
 {
-	int mode = int(u_FPlusDebug.x);
 	color = litColor;
+#if !defined(USE_FPLUS_DEBUG)
+	return false;
+#else
+	int mode = int(u_FPlusDebug.x);
 	if (!FPlusEnabled() || mode <= 0)
 		return false;
 
@@ -1606,6 +1627,7 @@ bool FPlusDebugColor(in vec3 position, in vec3 litColor, in vec3 dynamicLight, o
 		color = litColor * 0.15 + sum;
 	}
 	return true;
+#endif
 }
 
 float luma(vec3 color)

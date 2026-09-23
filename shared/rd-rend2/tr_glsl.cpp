@@ -2024,6 +2024,10 @@ static int GLSL_LoadGPUProgramLightAll(
 		if (r_hdr->integer && !glRefConfig.floatLightmap)
 			Q_strcat(extradefines, sizeof(extradefines), "#define RGBM_LIGHTMAP\n");
 
+		// r_forwardPlusDebug views (latched): only compiled when asked for
+		if (r_forwardPlusDebug->integer)
+			Q_strcat(extradefines, sizeof(extradefines), "#define USE_FPLUS_DEBUG\n");
+
 		if (lightType)
 		{
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_LIGHT\n");

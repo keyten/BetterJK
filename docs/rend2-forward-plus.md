@@ -107,7 +107,7 @@ Legacy mode still renders a cube for every light, up to 32. Forward+ separates r
 | `r_forwardPlusSlices` | 16 | 1–64 (1 = 2D tiles) |
 | `r_forwardPlusNearSlice` | 48 | depth of the first slice |
 | `r_forwardPlusMaxLightsPerCluster` | 64 | 1–255 |
-| `r_forwardPlusDebug` | 0 | cheat. 1 tiles, 2 slices, 3 clusters, 4 lights/cluster heatmap, 5 overflowing clusters (red), 6 shadowed lights only, 7 unshadowed only, 8 light spheres, 9 only light `r_forwardPlusDebugLight` |
+| `r_forwardPlusDebug` | 0 | cheat, **latched** (`vid_restart`: the debug views are only compiled into lightall when it is non-zero). 1 tiles, 2 slices, 3 clusters, 4 lights/cluster heatmap, 5 overflowing clusters (red), 6 shadowed lights only, 7 unshadowed only, 8 light spheres, 9 only light `r_forwardPlusDebugLight` |
 | `r_forwardPlusDebugLight` | 0 | light index for debug 9 |
 | `r_dynamicShadowMaxLights` | 4 | Forward+ shadow budget |
 
@@ -157,6 +157,14 @@ Not measured yet: the game was not launched in this task (validation = build + o
 7. Moving lights and camera, dynamic shadows (`r_dlightMode 2`): shadow slots stay stable (debug 6/7).
 8. Saber, blaster spam, explosions, Force effects; PBR metal, rough dielectric, transparent surfaces.
 9. Froxel fog (`r_volumetricFog 2`) with Forward+: the fog uses the 32 most important lights.
+
+## Shader compile time
+
+Every lightall permutation (about 500 lit programs in SP, compiled at each start, no disk cache) contains the
+dynamic light code. The first version had two light loops (legacy + Forward+), each inlining `EvaluateDynamicLight`
+with its 9-tap shadow PCF, plus the debug views. That made lit programs compile 2-4x slower (about a minute more at
+startup, whatever `r_forwardPlus` was set to). Now there is one loop with a single call site, and the debug views
+sit behind `USE_FPLUS_DEBUG`. Offline compile times are back to the pre-Forward+ level on Intel and NVIDIA.
 
 ## Known limitations
 
