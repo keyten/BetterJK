@@ -3328,71 +3328,43 @@ void R_LoadCubemapEntities(const char *cubemapEntityName)
 	}
 }
 
-// origin z of the first entity of this class, false if there is none
-static qboolean R_FindEntityHeight(const char *className, float *height)
-{
-	char spawnVarChars[2048];
-	int numSpawnVars;
-	char *spawnVars[MAX_SPAWN_VARS][2];
-	qboolean found = qfalse;
-
-	// parse to the end: the parse point is reset for the next user
-	while(R_ParseSpawnVars(spawnVarChars, sizeof(spawnVarChars), &numSpawnVars, spawnVars))
-	{
-		if (found)
-			continue;
-
-		qboolean isClass = qfalse;
-		qboolean originSet = qfalse;
-		vec3_t origin;
-		for (int i = 0; i < numSpawnVars; i++)
-		{
-			if (!Q_stricmp(spawnVars[i][0], "classname") && !Q_stricmp(spawnVars[i][1], className))
-				isClass = qtrue;
-			else if (!Q_stricmp(spawnVars[i][0], "origin") &&
-				sscanf(spawnVars[i][1], "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3)
-				originSet = qtrue;
-		}
-
-		if (isClass && originSet)
-		{
-			*height = origin[2];
-			found = qtrue;
-		}
-	}
-
-	return found;
-}
-
 /*
 =================
 R_SetHeightFogBase
 
 The base height of the froxel height fog (r_volumetricFogHeightBase) follows
-the spawn point of every loaded map.
+the lowest floor of every loaded map: the lowest point of the visible opaque
+world surfaces, planar ones only when they face up (floors, not the underside
+of platforms). Patches and triangle soups (terrain) count by their bounds.
+Falls back to the bottom of the world bounds.
 =================
 */
-static void R_SetHeightFogBase(void)
+static void R_SetHeightFogBase(const world_t *worldData)
 {
-	const char *spawnEntities[] = { "info_player_start", "info_player_deathmatch" };
+	const bmodel_t *world = &worldData->bmodels[0];
+	float height = world->bounds[0][2];
+	qboolean found = qfalse;
 
-	for (size_t i = 0; i < ARRAY_LEN(spawnEntities); i++)
+	for (int i = 0; i < world->numSurfaces; i++)
 	{
-		float height = 0.0f;
-#ifdef REND2_SP
-		COM_BeginParseSession();
-#endif
-		const qboolean found = R_FindEntityHeight(spawnEntities[i], &height);
-#ifdef REND2_SP
-		COM_EndParseSession();
-#endif
-		if (found)
-		{
-			ri.Cvar_Set("r_volumetricFogHeightBase", va("%g", height));
-			ri.Printf(PRINT_DEVELOPER, "Froxel height fog base: %g (%s)\n", height, spawnEntities[i]);
-			return;
-		}
+		const msurface_t *surf = worldData->surfaces + world->firstSurface + i;
+		const shader_t *shader = surf->shader;
+		if (!shader || shader->isSky || shader->sort > SS_OPAQUE ||
+			(shader->surfaceFlags & (SURF_NODRAW | SURF_SKY)))
+			continue;
+		if (!(surf->cullinfo.type & CULLINFO_BOX))
+			continue;
+		if ((surf->cullinfo.type & CULLINFO_PLANE) && surf->cullinfo.plane.normal[2] < 0.7f)
+			continue;
+
+		if (!found || surf->cullinfo.bounds[0][2] < height)
+			height = surf->cullinfo.bounds[0][2];
+		found = qtrue;
 	}
+
+	ri.Cvar_Set("r_volumetricFogHeightBase", va("%g", height));
+	ri.Printf(PRINT_DEVELOPER, "Froxel height fog base: %g (%s)\n", height,
+		found ? "lowest floor" : "world bounds");
 }
 
 static void R_AssignCubemapsToWorldSurfaces(world_t *worldData)
@@ -4548,7 +4520,7 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 	if (bspIndex == nullptr)
 	{
 		R_BuildVolumetricLightGrid(worldData);
-		R_SetHeightFogBase();
+		R_SetHeightFogBase(worldData);
 	}
 
 	// load cubemaps

@@ -151,6 +151,7 @@ extern cvar_t	*r_volumetricFogBloom;
 extern cvar_t	*r_volumetricFogReset;
 extern cvar_t	*r_volumetricFogDebug;
 extern cvar_t	*r_volumetricFogFreeze;
+extern cvar_t	*r_volumetricFogHeight;
 extern cvar_t	*r_volumetricFogHeightOpaque;
 extern cvar_t	*r_volumetricFogHeightBase;
 extern cvar_t	*r_volumetricFogHeightFalloff;

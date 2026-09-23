@@ -170,7 +170,7 @@ Offline check on the stock maps (`maps/*.bsp` with fog, sun from the sky shader)
 
 An optional second medium, evaluated in `FroxelMedium` next to the fog volumes (no extra texture, no extra pass).
 Its extinction depends on the world z only, so it is anchored in the world and reprojects like the rest of the
-volume. Off by default (`r_volumetricFogHeightOpaque 0`): mode 2 is then unchanged, and a map without fog
+volume. Off by default (`r_volumetricFogHeight 0`): mode 2 is then unchanged, and a map without fog
 volumes still builds no volume at all.
 
 ```
@@ -187,8 +187,9 @@ Units: extinction per world unit, the same conversion as the fog volumes. `r_vol
 1.5/255. There is no separate density scale. Below the base the density grows up to `HeightMax` times the base
 density (1 = flat layer below the base). The color is a `fogParms` color (sRGB, converted like the fog volumes).
 
-The base height is set to the z of the first `info_player_start` (else `info_player_deathmatch`) whenever a map
-loads (`R_SetHeightFogBase`, tr_bsp.cpp); change the cvar afterwards to move it.
+The base height is set to the lowest floor of the map whenever it loads (`R_SetHeightFogBase`, tr_bsp.cpp: the
+lowest point of the visible opaque world surfaces, planar ones only when they face up; the world bounds if there
+is none); change the cvar afterwards to move it.
 
 Lighting is the one of the fog volumes (baked grid, sun + cascades, dynamic lights + their shadows, HG phase,
 temporal filter, bloom). The global fog stays a fog volume medium; the height fog adds to it and never replaces it.
@@ -268,8 +269,9 @@ homogeneous solution: the largest absolute error of S or T after the trilinear l
 | `r_volumetricFogReset` | 0 | Set by game code on camera cuts, cleared by the renderer |
 | `r_volumetricFogDebug` | 0 | cheat, debug views below |
 | `r_volumetricFogFreeze` | 0 | cheat, keep the volume and its camera |
-| `r_volumetricFogHeightOpaque` | 0 | height fog: depthForOpaque at the base height (units), 0 = off |
-| `r_volumetricFogHeightBase` | 0 | height fog: world z of the base, set to the spawn point z on map load |
+| `r_volumetricFogHeight` | 0 | height fog on / off |
+| `r_volumetricFogHeightOpaque` | 3000 | height fog: depthForOpaque at the base height (units) |
+| `r_volumetricFogHeightBase` | 0 | height fog: world z of the base, set to the lowest floor on map load |
 | `r_volumetricFogHeightFalloff` | 256 | height fog: scale height (density / e per this many units above the base) |
 | `r_volumetricFogHeightMax` | 1 | height fog: maximum density below the base, multiple of the base density |
 | `r_volumetricFogHeightTop` | 0 | height fog: soft cutoff height above the base, 0 = none |
@@ -337,12 +339,12 @@ vs `*-vfog.dll`).
 | teleport / cut | `setviewpos`, cinematics | history reset, no ghost frame | 8 |
 | different FOV | `cg_fov 60 / 110`, zoom | same fog density, reset on large jumps | 1, 10 |
 | legacy maps | `r_volumetricFog 1` and `0` | identical to before | - |
-| height fog, flat outdoor | mp/ffa3, t1_surprise: `r_volumetricFogHeightOpaque 3000` | haze along the ground, clear sky overhead | 12, 1 |
+| height fog, flat outdoor | mp/ffa3, t1_surprise: `r_volumetricFogHeight 1` | haze along the ground, clear sky overhead | 12, 1 |
 | height fog, camera above / inside | fly up (noclip), then back down | layer stays in place, no pop crossing the base | 12, 8 |
 | height fog, sun rays | outdoor map with doorways, `r_sunlightMode 2` | shafts in the haze | 3 |
 | height fog, saber / dlight | saber on inside the haze | colored glow like in fog volumes | 4 |
 | height fog + fog volume | map with a fog volume near the ground | both visible, additive | 11, 12, 1 |
-| height fog + global fog | map with a global fog | global fog unchanged at `Opaque 0` | 11 |
+| height fog + global fog | map with a global fog | global fog unchanged with `r_volumetricFogHeight 0` | 11 |
 | no fog map, defaults | any map without fog | no haze, no froxel timers in `r_speeds 100` | - |
 
 ## Known limitations
@@ -358,7 +360,7 @@ vs `*-vfog.dll`).
 - Moving fog volumes (brush entities) are not supported (neither are they in the legacy fog).
 - Height fog: beyond `r_volumetricFogFar` the last slice extinction is extrapolated (constant along the ray);
   thin layers far away are limited by the slice depth; only mode 2 has it; one global layer set by cvars; the
-  automatic base is the map's first spawn point (SP landmark transitions are not tracked).
+  automatic base is the lowest floor, which can be a pit or a basement below the main ground level.
 - Not run in game yet: correctness is verified by builds, offline compilation of every changed / new shader on
   the Intel and NVIDIA drivers, the legacy source comparison and the numeric checks above.
 

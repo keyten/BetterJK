@@ -557,7 +557,7 @@ static void R_VolumetricCullLights( const viewParms_t *view, const trRefdef_t *r
 =================
 R_VolumetricHeightFog
 
-Height fog medium (r_volumetricFogHeight*), world anchored:
+Height fog medium (r_volumetricFogHeight 1, off by default), world anchored:
 
   sigma(p) = sigma0 * min(exp(-(p.z - base) / falloff), maxScale) * cutoff
   sigma0   = -ln(1.5 / 255) / r_volumetricFogHeightOpaque * volumetricFogScale
@@ -574,7 +574,7 @@ static qboolean R_VolumetricHeightFog( vec4_t fog, vec4_t color, vec4_t top )
 	VectorSet4(top, 0.0f, 0.0f, 0.0f, 0.0f);
 
 	const float opaque = r_volumetricFogHeightOpaque->value;
-	if ( opaque <= 0.0f )
+	if ( !r_volumetricFogHeight->integer || opaque <= 0.0f )
 		return qfalse;
 
 	const float extinction = (-logf(1.5f / 255.0f)) / opaque *
