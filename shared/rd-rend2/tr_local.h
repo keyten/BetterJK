@@ -158,6 +158,12 @@ extern cvar_t	*r_volumetricFogHeightFalloff;
 extern cvar_t	*r_volumetricFogHeightMax;
 extern cvar_t	*r_volumetricFogHeightTop;
 extern cvar_t	*r_volumetricFogHeightColor;
+extern cvar_t	*r_volumetricFogNoise;
+extern cvar_t	*r_volumetricFogNoiseScale;
+extern cvar_t	*r_volumetricFogNoiseContrast;
+extern cvar_t	*r_volumetricFogNoiseDetailScale;
+extern cvar_t	*r_volumetricFogNoiseDetailContrast;
+extern cvar_t	*r_volumetricFogNoiseWind;
 
 extern cvar_t	*r_allowExtensions;
 
@@ -980,12 +986,18 @@ struct VolumetricFogBlock
 	vec4_t heightFog;				// height fog: base extinction per unit (0 = off), base z, 1 / falloff, log(max scale)
 	vec4_t heightFogColor;			// rgb albedo, w: fade out start above the base (top - fade)
 	vec4_t heightFogTop;			// x: top above the base (0 = no cutoff), yzw: unused
+	vec4_t noiseParams;				// density noise: 1 / macro period, 1 / detail period, macro contrast, detail contrast
+	vec4_t noiseMacroOffset;		// wind offset of the macro noise (tile units), w: 1 = height fog is noisy
+	vec4_t noiseDetailOffset;		// wind offset of the detail noise (tile units), w: history weight of noisy media
+	vec4_t noiseLod;				// lod offsets log2(64 / period) - 1 (macro, detail), slice thickness / depth, w: 1 = noise on
+	vec4_t noiseNormMacro[4];		// mean normalization of the macro noise at lod 0, 0.5, ..., 7.5
+	vec4_t noiseNormDetail[4];		// same, detail noise
 	int numFogs;
 	int pad0[3];
 	vec4_t fogColor[MAX_GPU_FOGS];	// rgb albedo (fog color), a: extinction per unit
 	vec4_t fogPlane[MAX_GPU_FOGS];	// as the Fogs block
 	vec4_t fogMins[MAX_GPU_FOGS];	// w: has plane
-	vec4_t fogMaxs[MAX_GPU_FOGS];
+	vec4_t fogMaxs[MAX_GPU_FOGS];	// w: 1 = density noise applies to this fog
 };
 
 struct surfaceSprite_t
@@ -1779,6 +1791,7 @@ typedef enum
 	UNIFORM_VOLUMETRICSTATICGRID,	// baked light grid without the sun
 	UNIFORM_VOLUMETRICSUNGRID,		// baked sun part of the light grid
 	UNIFORM_FROXELSLICE,	// slice rendered by the injection / integration pass
+	UNIFORM_FROXELNOISE,	// tiling density noise
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2863,6 +2876,7 @@ typedef struct trGlobals_s {
 	image_t					*froxelIntegratedImage;	// froxel fog: integrated in-scattering (rgb), transmittance (a)
 	image_t					*froxelCarryImage[2];	// froxel fog: integration state between slices
 	image_t					*froxelTailImage;	// froxel fog: last slice radiance (rgb) and extinction (a)
+	image_t					*froxelNoiseImage;	// froxel fog: tiling density noise, r = macro, g = detail (64^3, mips)
 	// screen-space reflections (tr_ssr.cpp)
 	image_t					*ssrNormalImage;	// rg = octahedral world normal, b = roughness, a = receiver
 	image_t					*ssrSpecularImage;	// rgb = sqrt(specular IBL weight)
@@ -4313,7 +4327,7 @@ qhandle_t RE_RegisterShader( const char *name );
 qhandle_t RE_RegisterShaderNoMip( const char *name );
 const char		*RE_ShaderNameFromIndex(int index);
 image_t *R_CreateImage( const char *name, byte *pic, int width, int height, imgType_t type, int flags, int internalFormat );
-image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, int depth, int internalFormat);
+image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, int depth, int internalFormat, int flags = IMGFLAG_CLAMPTOEDGE);
 image_t *R_GetLoadedImage(const char *name, int flags);
 
 void R_CreateColorGradingImages(void);

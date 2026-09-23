@@ -193,6 +193,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_VolumetricStaticGrid",	GLSL_INT, 1 },
 	{ "u_VolumetricSunGrid",	GLSL_INT, 1 },
 	{ "u_FroxelSlice",			GLSL_INT, 1 },
+	{ "u_FroxelNoise",			GLSL_INT, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -2713,8 +2714,10 @@ static int GLSL_LoadGPUProgramVolumetric(
 	{
 		const GPUProgramDesc *programDesc =
 			LoadProgramSource(name, allocator, fallback);
+		// the density noise is sampled by the injection and the debug views only
+		const bool noise = (sp == &tr.volumetricInjectShader || sp == &tr.volumetricDebugShader);
 		if ( !GLSL_LoadGPUShader(builder, sp, name, attribs, NO_XFB_VARS,
-				"", *programDesc, common) )
+				noise ? "#define USE_FROXEL_NOISE\n" : "", *programDesc, common) )
 		{
 			ri.Error(ERR_FATAL, "Could not load %s shader!", name);
 		}
@@ -2731,6 +2734,7 @@ static int GLSL_LoadGPUProgramVolumetric(
 		GLSL_SetUniformInt(sp, UNIFORM_FROXELDYNAMIC, TB_NORMALMAP);
 		GLSL_SetUniformInt(sp, UNIFORM_SHADOWMAP, TB_SHADOWMAP);
 		GLSL_SetUniformInt(sp, UNIFORM_SHADOWMAP2, TB_SHADOWMAPARRAY);
+		GLSL_SetUniformInt(sp, UNIFORM_FROXELNOISE, TB_DELUXEMAP);
 		GLSL_SetFroxelLookupUnits(sp);
 		qglUseProgram(0);
 		GLSL_FinishGPUShader(sp);

@@ -46,6 +46,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "tr_local.h"
 
+#include <algorithm>
+
 #define FROXEL_MAX_SLICES 128
 #define FROXEL_NEAR 8.0f
 #define FROXEL_AUTO_FAR 4096.0f
@@ -95,6 +97,7 @@ struct froxelState_t
 	float fovX, fovY;
 	float nearZ, farZ;
 	int debug;
+	unsigned int noiseKey;
 	unsigned int frameIndex;
 
 	// frozen froxel camera (r_volumetricFogFreeze)
@@ -107,6 +110,328 @@ static froxelState_t s_vf;
 qboolean R_VolumetricFroxelEnabled( void )
 {
 	return s_vf.resources;
+}
+
+/*
+============================================================
+
+Density noise (r_volumetricFogNoise)
+
+A tiling 64^3 RGBA8 texture generated at renderer init, sampled in world
+space: r = macro field, g = detail field (independent), b and a unused. Each
+field is a tileable gradient noise FBM (lattice periods 4, 8 and 16 cells per
+tile, weights 1, 0.5, 0.25, every octave shifted by its own fraction of a cell
+so that their lattice points, where gradient noise is 0, do not line up into
+a visible grid), histogram equalized so that its texels are uniformly
+distributed over 0..255 (mean exactly 0.5). The density modulation
+
+  f(n; c) = (1 + c) * n^c
+
+then has a mean of exactly 1 for any contrast c; the remaining deviation of
+the filtered texture (trilinear, mips) is measured per mip level on the CPU
+and divided out (noiseNorm tables, every half mip level).
+
+============================================================
+*/
+
+#define FROXEL_NOISE_SIZE 64
+#define FROXEL_NOISE_LEVELS 7		// 64, 32, ..., 1
+#define FROXEL_NOISE_TEXELS (FROXEL_NOISE_SIZE * FROXEL_NOISE_SIZE * FROXEL_NOISE_SIZE)
+#define FROXEL_NOISE_MEAN_SAMPLES 32768
+// all mip levels of one field: 64^3 + 32^3 + ... + 1
+#define FROXEL_NOISE_CHAIN (262144 + 32768 + 4096 + 512 + 64 + 8 + 1)
+
+struct froxelNoise_t
+{
+	qboolean valid;
+	// CPU copy of both fields with their box filtered mips (as the GPU mips),
+	// static: kept over renderer restarts
+	byte chain[2][FROXEL_NOISE_CHAIN];
+	byte *levels[2][FROXEL_NOISE_LEVELS];
+
+	// mean normalization at lod 0, 0.5, ..., 6 (13..15 = lod 6), cached by contrast
+	float normContrast[2];
+	float norm[2][16];
+};
+
+static froxelNoise_t s_noise;
+
+static uint32_t R_NoiseHash( uint32_t x )
+{
+	x ^= x >> 16;
+	x *= 0x7feb352du;
+	x ^= x >> 15;
+	x *= 0x846ca68bu;
+	x ^= x >> 16;
+	return x;
+}
+
+static const float noiseGradients[12][3] =
+{
+	{ 1, 1, 0 }, { -1, 1, 0 }, { 1, -1, 0 }, { -1, -1, 0 },
+	{ 1, 0, 1 }, { -1, 0, 1 }, { 1, 0, -1 }, { -1, 0, -1 },
+	{ 0, 1, 1 }, { 0, -1, 1 }, { 0, 1, -1 }, { 0, -1, -1 },
+};
+
+// gradient index of every lattice point of an octave (period^3 <= 16^3)
+static void R_NoiseLatticeGradients( byte *gradients, int period, uint32_t seed )
+{
+	for ( int iz = 0; iz < period; iz++ )
+		for ( int iy = 0; iy < period; iy++ )
+			for ( int ix = 0; ix < period; ix++ )
+			{
+				const uint32_t h = R_NoiseHash(seed ^ R_NoiseHash((uint32_t)ix + R_NoiseHash((uint32_t)iy + R_NoiseHash((uint32_t)iz))));
+				gradients[(iz * period + iy) * period + ix] = (byte)(h % 12);
+			}
+}
+
+static float R_NoiseFade( float t )
+{
+	return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+// tileable gradient noise, x, y, z in lattice cells; the lattice repeats
+// every period (power of two) cells, so the tile wraps seamlessly
+static float R_NoisePerlin( float x, float y, float z, int period, const byte *gradients )
+{
+	const int ix = (int)floorf(x);
+	const int iy = (int)floorf(y);
+	const int iz = (int)floorf(z);
+	const float fx = x - (float)ix;
+	const float fy = y - (float)iy;
+	const float fz = z - (float)iz;
+	const float u = R_NoiseFade(fx);
+	const float v = R_NoiseFade(fy);
+	const float w = R_NoiseFade(fz);
+
+	float corners[8];
+	for ( int c = 0; c < 8; c++ )
+	{
+		const int dx = c & 1, dy = (c >> 1) & 1, dz = (c >> 2) & 1;
+		const int mask = period - 1;
+		const float *g = noiseGradients[gradients[
+			(((iz + dz) & mask) * period + ((iy + dy) & mask)) * period + ((ix + dx) & mask)]];
+		corners[c] = g[0] * (fx - (float)dx) + g[1] * (fy - (float)dy) + g[2] * (fz - (float)dz);
+	}
+
+	const float x00 = corners[0] + u * (corners[1] - corners[0]);
+	const float x10 = corners[2] + u * (corners[3] - corners[2]);
+	const float x01 = corners[4] + u * (corners[5] - corners[4]);
+	const float x11 = corners[6] + u * (corners[7] - corners[6]);
+	const float y0 = x00 + v * (x10 - x00);
+	const float y1 = x01 + v * (x11 - x01);
+	return y0 + w * (y1 - y0);
+}
+
+struct noiseRank_t
+{
+	float value;
+	int index;
+	bool operator<( const noiseRank_t& other ) const
+	{
+		return (value != other.value) ? (value < other.value) : (index < other.index);
+	}
+};
+
+// one field: FBM of 3 octaves, histogram equalized to 0..255
+static void R_NoiseGenerateField( byte *out, uint32_t seed )
+{
+	static const int periods[3] = { 4, 8, 16 };
+	static const float weights[3] = { 1.0f, 0.5f, 0.25f };
+	// in cells of each octave: the tile stays periodic
+	static const float shifts[3][3] = {
+		{ 0.0f, 0.0f, 0.0f }, { 0.371f, 0.683f, 0.529f }, { 0.817f, 0.243f, 0.461f } };
+	const int n = FROXEL_NOISE_SIZE;
+
+	static byte gradients[3][16 * 16 * 16];
+	for ( int o = 0; o < 3; o++ )
+		R_NoiseLatticeGradients(gradients[o], periods[o], seed + 0x632be5abu * (uint32_t)o);
+
+	noiseRank_t *ranks = (noiseRank_t *)Z_Malloc(FROXEL_NOISE_TEXELS * sizeof(noiseRank_t), TAG_TEMP_WORKSPACE, qfalse);
+	for ( int k = 0; k < n; k++ )
+	{
+		for ( int j = 0; j < n; j++ )
+		{
+			for ( int i = 0; i < n; i++ )
+			{
+				float value = 0.0f;
+				for ( int o = 0; o < 3; o++ )
+				{
+					const float scale = (float)periods[o] / (float)n;
+					value += weights[o] * R_NoisePerlin(
+						((float)i + 0.5f) * scale + shifts[o][0],
+						((float)j + 0.5f) * scale + shifts[o][1],
+						((float)k + 0.5f) * scale + shifts[o][2],
+						periods[o], gradients[o]);
+				}
+				const int index = (k * n + j) * n + i;
+				ranks[index].value = value;
+				ranks[index].index = index;
+			}
+		}
+	}
+
+	// rank -> 0..255, every value is taken by exactly 1 / 256 of the texels
+	std::sort(ranks, ranks + FROXEL_NOISE_TEXELS);
+	for ( int r = 0; r < FROXEL_NOISE_TEXELS; r++ )
+		out[ranks[r].index] = (byte)((r * 256) / FROXEL_NOISE_TEXELS);
+
+	Z_Free(ranks);
+}
+
+// 2x2x2 box filter with rounding (glGenerateMipmap of an RGBA8 texture)
+static void R_NoiseDownsample( const byte *in, int size, byte *out )
+{
+	const int half = size / 2;
+	for ( int k = 0; k < half; k++ )
+	{
+		for ( int j = 0; j < half; j++ )
+		{
+			for ( int i = 0; i < half; i++ )
+			{
+				int sum = 0;
+				for ( int c = 0; c < 8; c++ )
+				{
+					const int x = 2 * i + (c & 1), y = 2 * j + ((c >> 1) & 1), z = 2 * k + ((c >> 2) & 1);
+					sum += in[(z * size + y) * size + x];
+				}
+				out[(k * half + j) * half + i] = (byte)((sum + 4) / 8);
+			}
+		}
+	}
+}
+
+// trilinear, repeat, level of the given size, u in tile units; 0..1
+static float R_NoiseSample( const byte *level, int size, const float *u )
+{
+	int i0[3], i1[3];
+	float f[3];
+	for ( int a = 0; a < 3; a++ )
+	{
+		const float x = u[a] * (float)size - 0.5f;
+		const float fl = floorf(x);
+		f[a] = x - fl;
+		i0[a] = (int)fl & (size - 1);	// sizes are powers of two
+		i1[a] = (i0[a] + 1) & (size - 1);
+	}
+
+	float result = 0.0f;
+	for ( int c = 0; c < 8; c++ )
+	{
+		const int x = (c & 1) ? i1[0] : i0[0];
+		const int y = (c & 2) ? i1[1] : i0[1];
+		const int z = (c & 4) ? i1[2] : i0[2];
+		const float w = ((c & 1) ? f[0] : 1.0f - f[0]) * ((c & 2) ? f[1] : 1.0f - f[1]) * ((c & 4) ? f[2] : 1.0f - f[2]);
+		result += w * (float)level[(z * size + y) * size + x];
+	}
+	return result / 255.0f;
+}
+
+// as textureLod: fractional lods blend the two levels
+static float R_NoiseSampleLod( int field, const float *u, float lod )
+{
+	lod = Com_Clamp(0.0f, (float)(FROXEL_NOISE_LEVELS - 1), lod);
+	const int l = (int)lod;
+	const float a = R_NoiseSample(s_noise.levels[field][l], FROXEL_NOISE_SIZE >> l, u);
+	if ( l >= FROXEL_NOISE_LEVELS - 1 )
+		return a;
+	const float b = R_NoiseSample(s_noise.levels[field][l + 1], FROXEL_NOISE_SIZE >> (l + 1), u);
+	return a + (b - a) * (lod - (float)l);
+}
+
+static float R_NoiseContrast( float n, float c )
+{
+	return (1.0f + c) * powf(MAX(n, 1e-4f), c);
+}
+
+// 1 / E[f(n; c)] at lod 0, 0.5, ..., 6 of a field, n filtered as the GPU does
+// (trilinear, mip blend) at low discrepancy (R3 sequence) positions. Blending
+// two levels lowers the variance of n, so the half levels are measured too.
+static void R_NoiseMeasureNorm( int field, float contrast, float *norm )
+{
+	for ( int j = 0; j < 16; j++ )
+		norm[j] = 1.0f;
+	if ( contrast <= 0.0f )
+		return;
+
+	static const double alpha[3] = { 0.8191725133961645, 0.6710436067037893, 0.5497004779019703 };
+	const int numSteps = 2 * (FROXEL_NOISE_LEVELS - 1) + 1;
+	for ( int j = 0; j < numSteps; j++ )
+	{
+		double sum = 0.0;
+		for ( int s = 0; s < FROXEL_NOISE_MEAN_SAMPLES; s++ )
+		{
+			float u[3];
+			for ( int a = 0; a < 3; a++ )
+			{
+				const double x = 0.5 + alpha[a] * (double)s;
+				u[a] = (float)(x - floor(x));
+			}
+			sum += R_NoiseContrast(R_NoiseSampleLod(field, u, 0.5f * (float)j), contrast);
+		}
+		const double mean = sum / (double)FROXEL_NOISE_MEAN_SAMPLES;
+		norm[j] = (mean > 1e-6) ? (float)(1.0 / mean) : 1.0f;
+	}
+	for ( int j = numSteps; j < 16; j++ )
+		norm[j] = norm[numSteps - 1];
+}
+
+static void R_CreateVolumetricNoiseImage( void )
+{
+	static const uint32_t seeds[2] = { 0x5f3759dfu, 0x9e3779b9u };
+	const int start = ri.Milliseconds();
+
+	if ( !s_noise.valid )
+	{
+		for ( int field = 0; field < 2; field++ )
+		{
+			int offset = 0;
+			for ( int l = 0; l < FROXEL_NOISE_LEVELS; l++ )
+			{
+				const int size = FROXEL_NOISE_SIZE >> l;
+				s_noise.levels[field][l] = s_noise.chain[field] + offset;
+				offset += size * size * size;
+			}
+
+			R_NoiseGenerateField(s_noise.levels[field][0], seeds[field]);
+			for ( int l = 1; l < FROXEL_NOISE_LEVELS; l++ )
+			{
+				R_NoiseDownsample(s_noise.levels[field][l - 1], FROXEL_NOISE_SIZE >> (l - 1),
+					s_noise.levels[field][l]);
+			}
+		}
+		s_noise.valid = qtrue;
+	}
+	s_noise.normContrast[0] = s_noise.normContrast[1] = -1.0f;
+
+	byte *texels = (byte *)Z_Malloc(FROXEL_NOISE_TEXELS * 4, TAG_TEMP_WORKSPACE, qtrue);
+	for ( int t = 0; t < FROXEL_NOISE_TEXELS; t++ )
+	{
+		texels[t * 4 + 0] = s_noise.levels[0][0][t];
+		texels[t * 4 + 1] = s_noise.levels[1][0][t];
+	}
+	// repeat, trilinear, full mip chain
+	tr.froxelNoiseImage = R_CreateImage3D("*froxelNoise", texels,
+		FROXEL_NOISE_SIZE, FROXEL_NOISE_SIZE, FROXEL_NOISE_SIZE, GL_RGBA8, IMGFLAG_MIPMAP);
+	Z_Free(texels);
+
+	ri.Printf(PRINT_DEVELOPER, "Froxel fog density noise: %d^3 RGBA8, %d ms\n",
+		FROXEL_NOISE_SIZE, ri.Milliseconds() - start);
+}
+
+// the mean normalization of both fields for the current contrasts
+static const float *R_VolumetricNoiseNorm( int field, float contrast )
+{
+	if ( s_noise.normContrast[field] != contrast )
+	{
+		R_NoiseMeasureNorm(field, contrast, s_noise.norm[field]);
+		s_noise.normContrast[field] = contrast;
+		ri.Printf(PRINT_DEVELOPER, "Froxel fog noise %s, contrast %.2f: mean normalization %.4f %.4f %.4f %.4f %.4f %.4f %.4f (lod 0..6)\n",
+			field ? "detail" : "macro", contrast,
+			s_noise.norm[field][0], s_noise.norm[field][2], s_noise.norm[field][4], s_noise.norm[field][6],
+			s_noise.norm[field][8], s_noise.norm[field][10], s_noise.norm[field][12]);
+	}
+	return s_noise.norm[field];
 }
 
 /*
@@ -127,6 +452,7 @@ void R_CreateVolumetricImages( int width, int height )
 	tr.froxelIntegratedImage = NULL;
 	tr.froxelCarryImage[0] = tr.froxelCarryImage[1] = NULL;
 	tr.froxelTailImage = NULL;
+	tr.froxelNoiseImage = NULL;
 
 	if ( r_volumetricFog->integer != 2 )
 		return;
@@ -157,6 +483,8 @@ void R_CreateVolumetricImages( int width, int height )
 	tr.froxelTailImage = R_CreateImage(
 		"*froxelTail", NULL, s_vf.width, s_vf.height, IMGTYPE_COLORALPHA,
 		IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_RGBA16F);
+
+	R_CreateVolumetricNoiseImage();
 
 	s_vf.resources = qtrue;
 
@@ -821,6 +1149,102 @@ void R_VolumetricFog_f( void )
 	R_VolumetricFogPrint();
 }
 
+/*
+=================
+R_VolumetricNoise
+
+Density noise constants (r_volumetricFogNoise, off by default):
+
+  sigma = sigma_plain + m(p) * sigma_noisy
+  m(p)  = N_M(lod) * f(n_M; c_M) * N_D(lod) * f(n_D; c_D),  f(n; c) = (1 + c) n^c
+  n_M   = noise.r at p / P_M - windOffset_M
+  n_D   = noise.g at R30(p / P_D) + offset - windOffset_D
+
+The wind offsets are wrapped to the tile (the texture repeats), in double
+precision from the renderer time. A moving medium lowers the history weight
+of the noisy media so that the lag of the temporal filter stays below a tenth
+of the finest noise feature:
+
+  lag = |wind| * dt * w / (1 - w) <= lambda  ->  w_noise = min(w, lambda / (lambda + |wind| * dt))
+
+False when no medium is noisy (or both contrasts are 0).
+=================
+*/
+#define FROXEL_NOISE_COS30 0.8660254f
+#define FROXEL_NOISE_SIN30 0.5f
+
+static qboolean R_VolumetricNoise( VolumetricFogBlock *block, const trRefdef_t *refdef, float historyWeight )
+{
+	const int mask = r_volumetricFogNoise->integer & 7;
+	const float macroContrast = Com_Clamp(0.0f, 4.0f, r_volumetricFogNoiseContrast->value);
+	const float detailContrast = Com_Clamp(0.0f, 4.0f, r_volumetricFogNoiseDetailContrast->value);
+	if ( !mask || !tr.froxelNoiseImage || (macroContrast <= 0.0f && detailContrast <= 0.0f) )
+		return qfalse;
+
+	const float macroPeriod = MAX(64.0f, r_volumetricFogNoiseScale->value);
+	const float detailPeriod = MAX(16.0f, r_volumetricFogNoiseDetailScale->value);
+	VectorSet4(block->noiseParams, 1.0f / macroPeriod, 1.0f / detailPeriod, macroContrast, detailContrast);
+
+	vec3_t wind = { 0.0f, 0.0f, 0.0f };
+	sscanf(r_volumetricFogNoiseWind->string, "%f %f %f", &wind[0], &wind[1], &wind[2]);
+	const double seconds = (double)refdef->time * 0.001;
+	const double detailWind[3] = {
+		FROXEL_NOISE_COS30 * wind[0] - FROXEL_NOISE_SIN30 * wind[1],
+		FROXEL_NOISE_SIN30 * wind[0] + FROXEL_NOISE_COS30 * wind[1],
+		wind[2] };
+	for ( int c = 0; c < 3; c++ )
+	{
+		const double macro = (double)wind[c] * seconds / macroPeriod;
+		const double detail = detailWind[c] * seconds / detailPeriod;
+		block->noiseMacroOffset[c] = (float)(macro - floor(macro));
+		block->noiseDetailOffset[c] = (float)(detail - floor(detail));
+	}
+	block->noiseMacroOffset[3] = (mask & 1) ? 1.0f : 0.0f;
+
+	// history weight of the noisy media
+	const float speed = VectorLength(wind);
+	const float finest = ((detailContrast > 0.0f) ? detailPeriod : macroPeriod) / 16.0f;
+	const float lambda = 0.1f * finest;
+	const float dt = Com_Clamp(1.0f / 240.0f, 1.0f / 15.0f, refdef->frameTime * 0.001f);
+	block->noiseDetailOffset[3] = (speed > 0.0f) ?
+		MIN(historyWeight, lambda / (lambda + speed * dt)) : historyWeight;
+
+	// lod = log2(slice thickness / texel size) - 1: one level sharper than the
+	// froxel, the jittered positions average the rest over the frames
+	const float sliceRatio = powf(s_vf.farZ / s_vf.nearZ, 1.0f / (float)s_vf.depth) - 1.0f;
+	VectorSet4(block->noiseLod,
+		log2f((float)FROXEL_NOISE_SIZE / macroPeriod) - 1.0f,
+		log2f((float)FROXEL_NOISE_SIZE / detailPeriod) - 1.0f,
+		sliceRatio,
+		1.0f);
+
+	const float *macroNorm = R_VolumetricNoiseNorm(0, macroContrast);
+	const float *detailNorm = R_VolumetricNoiseNorm(1, detailContrast);
+	for ( int j = 0; j < 16; j++ )
+	{
+		block->noiseNormMacro[j >> 2][j & 3] = macroNorm[j];
+		block->noiseNormDetail[j >> 2][j & 3] = detailNorm[j];
+	}
+
+	return qtrue;
+}
+
+// the noise settings the history was built with (a change resets it)
+static unsigned int R_VolumetricNoiseKey( void )
+{
+	const float values[5] = {
+		(float)r_volumetricFogNoise->integer,
+		r_volumetricFogNoiseScale->value,
+		r_volumetricFogNoiseContrast->value,
+		r_volumetricFogNoiseDetailScale->value,
+		r_volumetricFogNoiseDetailContrast->value };
+	unsigned int key = 2166136261u;
+	const byte *bytes = (const byte *)values;
+	for ( size_t i = 0; i < sizeof(values); i++ )
+		key = (key ^ bytes[i]) * 16777619u;
+	return key;
+}
+
 static const viewParms_t *R_VolumetricMainView( void )
 {
 	for ( int i = tr.numCachedViewParms - 1; i >= 0; i-- )
@@ -955,6 +1379,7 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 
 	// history
 	const int debug = r_volumetricFogDebug->integer;
+	const unsigned int noiseKey = R_VolumetricNoiseKey();
 	const qboolean temporal = (qboolean)(r_volumetricFogTemporal->integer != 0);
 	qboolean historyValid = (qboolean)(
 		temporal &&
@@ -966,6 +1391,7 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 		s_vf.nearZ == nearZ &&
 		s_vf.farZ == farZ &&
 		s_vf.debug == debug &&
+		s_vf.noiseKey == noiseKey &&
 		!r_volumetricFogReset->integer &&
 		tr.temporalHistoryValid);
 	if ( historyValid )
@@ -997,6 +1423,7 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 	s_vf.nearZ = nearZ;
 	s_vf.farZ = farZ;
 	s_vf.debug = debug;
+	s_vf.noiseKey = noiseKey;
 	s_vf.frameIndex++;
 
 	R_VolumetricCullLights(view, refdef, forward);
@@ -1081,6 +1508,10 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 	VectorCopy4(heightFogColor, block.heightFogColor);
 	VectorCopy4(heightFogTop, block.heightFogTop);
 
+	// density noise of the selected media
+	const qboolean noise = R_VolumetricNoise(&block, refdef, block.temporalParams[0]);
+	const int noiseMask = noise ? (r_volumetricFogNoise->integer & 7) : 0;
+
 	// media: every fog volume of the map, as the Fogs block (volumetric units)
 	int numFogs = tr.world->numfogs - 1;
 	numFogs = Com_Clampi(0, MAX_GPU_FOGS, numFogs);
@@ -1093,7 +1524,8 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 		VectorSet4(block.fogColor[i], fog->color[0], fog->color[1], fog->color[2], extinction);
 		VectorCopy4(fog->surface, block.fogPlane[i]);
 		VectorSet4(block.fogMins[i], fog->bounds[0][0], fog->bounds[0][1], fog->bounds[0][2], fog->hasSurface ? 1.0f : 0.0f);
-		VectorSet4(block.fogMaxs[i], fog->bounds[1][0], fog->bounds[1][1], fog->bounds[1][2], 0.0f);
+		const qboolean noisy = (qboolean)(noiseMask & ((fog == tr.world->globalFog) ? 4 : 2));
+		VectorSet4(block.fogMaxs[i], fog->bounds[1][0], fog->bounds[1][1], fog->bounds[1][2], noisy ? 1.0f : 0.0f);
 	}
 
 	s_vf.frozenBlock = block;
@@ -1299,6 +1731,7 @@ void RB_VolumetricBuild( void )
 			staticGrid = tr.world->volumetricLightMaps[0];
 
 		GL_BindToTMU(tr.froxelInjectImage[previous], TB_COLORMAP);
+		GL_BindToTMU(tr.froxelNoiseImage, TB_DELUXEMAP);
 		GL_BindToTMU(staticGrid, TB_LIGHTMAP);
 		GL_BindToTMU(sunGrid, TB_NORMALMAP);
 		if ( tr.sunShadowArrayImage )
@@ -1444,5 +1877,6 @@ void RB_VolumetricDebugOverlay( void )
 	GL_BindToTMU(tr.froxelDynamicImage, TB_NORMALMAP);
 	GL_BindToTMU(tr.froxelIntegratedImage, TB_CUBEMAP);
 	GL_BindToTMU(tr.froxelTailImage, TB_ENVBRDFMAP);
+	GL_BindToTMU(tr.froxelNoiseImage, TB_DELUXEMAP);
 	RB_InstantTriangle();
 }

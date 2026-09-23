@@ -16,7 +16,8 @@ void main()
 // Media: the BSP fog volumes (axial bounds + the plane of their visible side), extinction and color
 // as the legacy volumetric fog, plus the optional height fog (r_volumetricFogHeight*, off by default)
 // whose extinction depends on world z. Extinctions add, albedos are extinction weighted. Without
-// both there is no medium.
+// both there is no medium. The selected media (r_volumetricFogNoise) are multiplied by the world space
+// density noise m(p) (mean 1): only the extinction changes, the light does not.
 //
 // Light (the phase function is 4 pi HG, 1 = isotropic):
 //   baked   light grid without the sun (isotropic, legacy brightness)
@@ -93,16 +94,29 @@ float FroxelHeightExtinction(in vec3 p)
 }
 
 // extinction (a) and albedo (rgb) of the fog volumes and the height fog at p (debug views 11 and 12
-// keep one of them)
-vec4 FroxelMedium(in vec3 p, in int debugView)
+// keep one of them, 14 drops the density noise). noisyFraction: share of the extinction that comes
+// from noise modulated media (their history weight is lowered when the noise moves).
+vec4 FroxelMedium(in vec3 p, in int debugView, out float noisyFraction)
 {
+	bool noise = u_FroxelNoiseLod.w > 0.5 && debugView != 14;
 	float extinction = 0.0;
 	vec3 albedo = vec3(0.0);
+	float noisyExtinction = 0.0;
+	vec3 noisyAlbedo = vec3(0.0);
 
 	if (u_FroxelHeightFog.x > 0.0 && debugView != 11)
 	{
-		extinction = FroxelHeightExtinction(p);
-		albedo = u_FroxelHeightFogColor.rgb * extinction;
+		float e = FroxelHeightExtinction(p);
+		if (noise && u_FroxelNoiseMacroOffset.w > 0.5)
+		{
+			noisyExtinction = e;
+			noisyAlbedo = u_FroxelHeightFogColor.rgb * e;
+		}
+		else
+		{
+			extinction = e;
+			albedo = u_FroxelHeightFogColor.rgb * e;
+		}
 	}
 
 	int numFogs = (debugView == 12) ? 0 : u_FroxelNumFogs;
@@ -119,8 +133,27 @@ vec4 FroxelMedium(in vec3 p, in int debugView)
 			continue;
 
 		vec4 fog = u_FroxelFogColor[i];
-		extinction += fog.a;
-		albedo += fog.rgb * fog.a;
+		if (noise && maxs.w > 0.5)
+		{
+			noisyExtinction += fog.a;
+			noisyAlbedo += fog.rgb * fog.a;
+		}
+		else
+		{
+			extinction += fog.a;
+			albedo += fog.rgb * fog.a;
+		}
+	}
+
+	noisyFraction = 0.0;
+	if (noisyExtinction > 0.0)
+	{
+		float viewDepth = dot(p - u_FroxelViewOrigin.xyz, u_FroxelViewForward.xyz);
+		float m = FroxelNoiseModulation(p, viewDepth);
+		noisyExtinction *= m;
+		extinction += noisyExtinction;
+		albedo += noisyAlbedo * m;
+		noisyFraction = noisyExtinction / max(extinction, 1e-12);
 	}
 
 	return vec4(albedo / max(extinction, 1e-12), extinction);
@@ -343,8 +376,16 @@ void main()
 	vec3 p = FroxelWorldPosition(center + u_FroxelJitter.xyz * temporal);
 	vec3 pc = FroxelWorldPosition(center);
 
-	vec4 medium = FroxelMedium(p, debugView);
-	vec4 mediumCenter = FroxelMedium(pc, debugView);
+	float noisyFraction;
+	vec4 medium = FroxelMedium(p, debugView, noisyFraction);
+
+	// the medium at the center is only needed by the dynamic lights of this slice
+	vec4 mediumCenter = vec4(0.0);
+	if (u_LightMask != 0)
+	{
+		float unused;
+		mediumCenter = FroxelMedium(pc, debugView, unused);
+	}
 
 	// baked light and sun
 	vec3 staticLight = vec3(0.0);
@@ -396,7 +437,7 @@ void main()
 
 	// dynamic lights
 	vec3 dynamicLight = vec3(0.0);
-	if (mediumCenter.a > 0.0 && u_LightMask != 0)
+	if (mediumCenter.a > 0.0)
 	{
 		vec3 viewDir = normalize(pc - u_FroxelViewOrigin.xyz);
 		dynamicLight = DynamicLights(pc, viewDir, g) * u_FroxelLightParams.z;
@@ -427,8 +468,10 @@ void main()
 
 	vec4 current = vec4(medium.rgb * medium.a * (staticLight + sunLight), medium.a);
 
-	// temporal accumulation with the reprojected history
+	// temporal accumulation with the reprojected history. Noise modulated media that move with the
+	// wind use a lower weight (R_VolumetricNoise), so the drifting density leaves no trail.
 	float weight = u_FroxelTemporalParams.x;
+	float froxelWeight = mix(weight, u_FroxelNoiseDetailOffset.w, noisyFraction);
 	if (weight > 0.0)
 	{
 		vec4 prevClip = u_FroxelPrevViewProjection * vec4(pc, 1.0);
@@ -455,7 +498,7 @@ void main()
 					history.rgb = historyRadiance * history.a;
 				}
 
-				weight = u_FroxelTemporalParams.x;
+				weight = froxelWeight;
 				current = mix(current, history, weight);
 			}
 		}

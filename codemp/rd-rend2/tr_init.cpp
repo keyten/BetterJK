@@ -118,6 +118,12 @@ cvar_t	*r_volumetricFogHeightFalloff;
 cvar_t	*r_volumetricFogHeightMax;
 cvar_t	*r_volumetricFogHeightTop;
 cvar_t	*r_volumetricFogHeightColor;
+cvar_t	*r_volumetricFogNoise;
+cvar_t	*r_volumetricFogNoiseScale;
+cvar_t	*r_volumetricFogNoiseContrast;
+cvar_t	*r_volumetricFogNoiseDetailScale;
+cvar_t	*r_volumetricFogNoiseDetailContrast;
+cvar_t	*r_volumetricFogNoiseWind;
 
 cvar_t	*r_allowExtensions;
 
@@ -1790,8 +1796,8 @@ void R_Register( void )
 	r_volumetricFogBloom = ri.Cvar_Get("r_volumetricFogBloom", "0", CVAR_ARCHIVE, "Froxel fog: bright in-scattering added to the glow buffer (bloom), 0 = none");
 	ri.Cvar_CheckRange(r_volumetricFogBloom, 0.0f, 4.0f, qfalse);
 	r_volumetricFogReset = ri.Cvar_Get("r_volumetricFogReset", "0", 0, "Set to 1 by game code to reset the froxel fog history (camera cut), cleared by the renderer");
-	r_volumetricFogDebug = ri.Cvar_Get("r_volumetricFogDebug", "0", CVAR_CHEAT, "Froxel fog debug view: 1 density, 2 sun (unshadowed), 3 sun (shadowed), 4 dynamic lights, 5 baked light, 6 scattering, 7 transmittance, 8 history weight, 9 integrated volume, 10 slices, 11 density of the BSP fog volumes, 12 density of the height fog");
-	ri.Cvar_CheckRange(r_volumetricFogDebug, 0, 12, qtrue);
+	r_volumetricFogDebug = ri.Cvar_Get("r_volumetricFogDebug", "0", CVAR_CHEAT, "Froxel fog debug view: 1 density, 2 sun (unshadowed), 3 sun (shadowed), 4 dynamic lights, 5 baked light, 6 scattering, 7 transmittance, 8 history weight, 9 integrated volume, 10 slices, 11 density of the BSP fog volumes, 12 density of the height fog, 13 noise modulation, 14 density without noise, 15 density with noise");
+	ri.Cvar_CheckRange(r_volumetricFogDebug, 0, 15, qtrue);
 	r_volumetricFogFreeze = ri.Cvar_Get("r_volumetricFogFreeze", "0", CVAR_CHEAT, "Froxel fog: keep the current froxel volume and its camera (debugging)");
 	ri.Cvar_CheckRange(r_volumetricFogFreeze, 0, 1, qtrue);
 	r_volumetricFogHeight = ri.Cvar_Get("r_volumetricFogHeight", "0", CVAR_ARCHIVE, "Froxel fog (r_volumetricFog 2): height fog (ground haze) medium, 0 = off, 1 = on");
@@ -1806,6 +1812,17 @@ void R_Register( void )
 	r_volumetricFogHeightTop = ri.Cvar_Get("r_volumetricFogHeightTop", "0", CVAR_ARCHIVE, "Froxel fog height fog: height above the base where the medium fades out (soft cutoff), 0 = none");
 	ri.Cvar_CheckRange(r_volumetricFogHeightTop, 0.0f, 65536.0f, qfalse);
 	r_volumetricFogHeightColor = ri.Cvar_Get("r_volumetricFogHeightColor", "0.7 0.75 0.8", CVAR_ARCHIVE, "Froxel fog height fog: scattering color (albedo), \"r g b\" in 0..1 as fogParms");
+	r_volumetricFogNoise = ri.Cvar_Get("r_volumetricFogNoise", "0", CVAR_ARCHIVE, "Froxel fog: media with world space noise density, bits: 1 height fog, 2 BSP fog volumes, 4 global fog (0 = homogeneous)");
+	ri.Cvar_CheckRange(r_volumetricFogNoise, 0, 7, qtrue);
+	r_volumetricFogNoiseScale = ri.Cvar_Get("r_volumetricFogNoiseScale", "4096", CVAR_ARCHIVE, "Froxel fog noise: period of the macro noise tile (world units)");
+	ri.Cvar_CheckRange(r_volumetricFogNoiseScale, 64.0f, 65536.0f, qfalse);
+	r_volumetricFogNoiseContrast = ri.Cvar_Get("r_volumetricFogNoiseContrast", "1", CVAR_ARCHIVE, "Froxel fog noise: contrast of the macro noise, 0 = homogeneous, 1 = density 0..2x, higher = sparser clumps (the mean density is kept)");
+	ri.Cvar_CheckRange(r_volumetricFogNoiseContrast, 0.0f, 4.0f, qfalse);
+	r_volumetricFogNoiseDetailScale = ri.Cvar_Get("r_volumetricFogNoiseDetailScale", "900", CVAR_ARCHIVE, "Froxel fog noise: period of the detail noise tile (world units)");
+	ri.Cvar_CheckRange(r_volumetricFogNoiseDetailScale, 16.0f, 65536.0f, qfalse);
+	r_volumetricFogNoiseDetailContrast = ri.Cvar_Get("r_volumetricFogNoiseDetailContrast", "0", CVAR_ARCHIVE, "Froxel fog noise: contrast of the detail noise (second texture sample), 0 = off");
+	ri.Cvar_CheckRange(r_volumetricFogNoiseDetailContrast, 0.0f, 4.0f, qfalse);
+	r_volumetricFogNoiseWind = ri.Cvar_Get("r_volumetricFogNoiseWind", "0 0 0", CVAR_ARCHIVE, "Froxel fog noise: wind, \"x y z\" world units per second, the noise drifts with it (0 = world stable)");
 
 	r_sunShadows = ri.Cvar_Get( "r_sunShadows", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	r_shadowFilter = ri.Cvar_Get( "r_shadowFilter", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );

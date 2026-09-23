@@ -2582,7 +2582,7 @@ image_t *R_Create2DImageArray(const char *name, byte *pic, int width, int height
 	return image;
 }
 
-image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, int depth, int internalFormat)
+image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, int depth, int internalFormat, int flags)
 {
 	image_t *image;
 	long hash;
@@ -2607,8 +2607,18 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 		dataType = GL_UNSIGNED_SHORT;
 	}
 
+	// IMGFLAG_MIPMAP: full mip chain (generated from level 0), trilinear;
+	// no IMGFLAG_CLAMPTOEDGE: repeat
+	const qboolean mipmap = (qboolean)((flags & IMGFLAG_MIPMAP) != 0);
+	int levels = 1;
+	if (mipmap)
+	{
+		for (int size = MAX(width, MAX(height, depth)); size > 1; size >>= 1)
+			levels++;
+	}
+
 	image->type = IMGTYPE_COLORALPHA;
-	image->flags = IMGFLAG_3D;
+	image->flags = IMGFLAG_3D | (flags & (IMGFLAG_MIPMAP | IMGFLAG_CLAMPTOEDGE));
 
 	Q_strncpyz(image->imgName, name, sizeof(image->imgName));
 
@@ -2619,7 +2629,7 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 	GL_Bind(image);
 	if (ShouldUseImmutableTextures(image->flags, internalFormat))
 	{
-		qglTexStorage3D(GL_TEXTURE_3D, 1, internalFormat, width, height, depth);
+		qglTexStorage3D(GL_TEXTURE_3D, levels, internalFormat, width, height, depth);
 		if (data)
 			qglTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, width, height, depth, dataFormat, dataType, data);
 	}
@@ -2628,11 +2638,19 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 		qglTexImage3D(GL_TEXTURE_3D, 0, internalFormat, width, height, depth, 0, dataFormat, dataType, data);
 	}
 
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	if (mipmap)
+	{
+		if (data)
+			qglGenerateMipmap(GL_TEXTURE_3D);
+		qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, levels - 1);
+	}
+
+	const GLint wrap = (flags & IMGFLAG_CLAMPTOEDGE) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, mipmap ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
 	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, wrap);
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, wrap);
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, wrap);
 
 	hash = generateHashValue(name);
 	image->next = hashTable[hash];

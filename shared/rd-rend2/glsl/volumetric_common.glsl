@@ -41,11 +41,17 @@ layout(std140) uniform VolumetricFog
 	vec4 u_FroxelHeightFog;				// height fog: base extinction (0 = off), base z, 1 / falloff, log(max scale)
 	vec4 u_FroxelHeightFogColor;		// rgb albedo, w: fade out start above the base
 	vec4 u_FroxelHeightFogTop;			// x: top above the base (0 = no cutoff)
+	vec4 u_FroxelNoiseParams;			// density noise: 1 / macro period, 1 / detail period, macro contrast, detail contrast
+	vec4 u_FroxelNoiseMacroOffset;		// wind offset (tile units), w: 1 = height fog is noisy
+	vec4 u_FroxelNoiseDetailOffset;		// wind offset (tile units), w: history weight of the noisy media
+	vec4 u_FroxelNoiseLod;				// lod offsets (macro, detail), slice thickness / view depth, w: 1 = noise on
+	vec4 u_FroxelNoiseNormMacro[4];		// mean normalization at lod 0, 0.5, ..., 7.5
+	vec4 u_FroxelNoiseNormDetail[4];
 	int u_FroxelNumFogs;
 	vec4 u_FroxelFogColor[MAX_GPU_FOGS];	// rgb albedo (fog color), a: extinction
 	vec4 u_FroxelFogPlane[MAX_GPU_FOGS];
 	vec4 u_FroxelFogMins[MAX_GPU_FOGS];		// w: has plane
-	vec4 u_FroxelFogMaxs[MAX_GPU_FOGS];
+	vec4 u_FroxelFogMaxs[MAX_GPU_FOGS];		// w: density noise applies
 };
 
 uniform sampler3D u_FroxelVolume;
@@ -77,6 +83,65 @@ float FroxelPhase(in float g, in float cosTheta)
 	float denom = max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4);
 	return (1.0 - g2) / (denom * sqrt(denom));
 }
+
+#if defined(USE_FROXEL_NOISE)
+// Density noise (r_volumetricFogNoise): a tiling 64^3 texture sampled in world space, r = macro field,
+// g = detail field, both uniformly distributed (histogram equalized). The modulation
+//   f(n; c) = (1 + c) n^c
+// has a mean of 1 for any contrast c; N(lod) removes the deviation of the filtered texture per mip level.
+uniform sampler3D u_FroxelNoise;
+
+// table of 16 values at lod 0, 0.5, ..., 7.5
+float FroxelNoiseNorm(in vec4 t0, in vec4 t1, in vec4 t2, in vec4 t3, in float lod)
+{
+	float l = clamp(lod, 0.0, 6.0) * 2.0;
+	int i = int(l);
+	vec4 a = (i < 4) ? t0 : ((i < 8) ? t1 : ((i < 12) ? t2 : t3));
+	int j = i + 1;
+	vec4 b = (j < 4) ? t0 : ((j < 8) ? t1 : ((j < 12) ? t2 : t3));
+	return mix(a[i & 3], b[j & 3], l - float(i));
+}
+
+float FroxelNoiseContrast(in float n, in float c)
+{
+	return (1.0 + c) * pow(max(n, 1e-4), c);
+}
+
+// density modulation m(p), world anchored. viewDepth selects the mip level from the slice thickness
+// (0: the finest level).
+float FroxelNoiseModulation(in vec3 p, in float viewDepth)
+{
+	float footprint = log2(max(viewDepth * u_FroxelNoiseLod.z, 1e-6));
+	float m = 1.0;
+
+	float macroContrast = u_FroxelNoiseParams.z;
+	if (macroContrast > 0.0)
+	{
+		float lod = max(footprint + u_FroxelNoiseLod.x, 0.0);
+		vec3 uvw = p * u_FroxelNoiseParams.x - u_FroxelNoiseMacroOffset.xyz;
+		float n = textureLod(u_FroxelNoise, uvw, lod).r;
+		m *= FroxelNoiseContrast(n, macroContrast) *
+			FroxelNoiseNorm(u_FroxelNoiseNormMacro[0], u_FroxelNoiseNormMacro[1],
+				u_FroxelNoiseNormMacro[2], u_FroxelNoiseNormMacro[3], lod);
+	}
+
+	float detailContrast = u_FroxelNoiseParams.w;
+	if (detailContrast > 0.0)
+	{
+		// rotated by 30 degrees around z and offset: the two tiles share no axis or origin
+		float lod = max(footprint + u_FroxelNoiseLod.y, 0.0);
+		vec3 q = p * u_FroxelNoiseParams.y;
+		q.xy = vec2(0.8660254 * q.x - 0.5 * q.y, 0.5 * q.x + 0.8660254 * q.y);
+		vec3 uvw = q + vec3(0.37, 0.61, 0.23) - u_FroxelNoiseDetailOffset.xyz;
+		float n = textureLod(u_FroxelNoise, uvw, lod).g;
+		m *= FroxelNoiseContrast(n, detailContrast) *
+			FroxelNoiseNorm(u_FroxelNoiseNormDetail[0], u_FroxelNoiseNormDetail[1],
+				u_FroxelNoiseNormDetail[2], u_FroxelNoiseNormDetail[3], lod);
+	}
+
+	return m;
+}
+#endif
 
 // In-scattering (rgb) and transmittance (a) between the camera and the view depth d, along the ray
 // through uv (froxel volume texture coordinates). rayScale: path length per unit of view depth.

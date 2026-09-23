@@ -20,6 +20,11 @@ void main()
 //  10 froxel slice index at the scene depth, froxel grid lines
 //  11 density of the BSP fog volumes only       (the injection drops the height fog)
 //  12 density of the height fog only            (the injection drops the BSP fog volumes)
+//  13 density noise m(p) at the scene surface, per pixel, world space (gray 0..1, 1 = white, then
+//     yellow to red up to 4); r_volumetricFogNoise must be on
+//  14 extinction of the froxel at the scene depth, without the noise (the injection drops it)
+//  15 extinction of the froxel at the scene depth, with the noise
+//     (14, 15: heat of the optical depth of 512 units, the scale of view 1)
 
 uniform sampler2D u_ScreenDepthMap;
 uniform sampler3D u_FroxelSource;	// injected volume: rgb / a = history weight in view 8
@@ -83,6 +88,21 @@ void main()
 	else if (view == 9)
 	{
 		color = Display(fog.rgb) + vec3(0.0, 0.0, 0.15) * (1.0 - fog.a);
+	}
+	else if (view == 13)
+	{
+		float m = (u_FroxelNoiseLod.w > 0.5) ? FroxelNoiseModulation(worldPos, 0.0) : 1.0;
+		color = (m <= 1.0) ? vec3(m) : mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), clamp((m - 1.0) / 3.0, 0.0, 1.0));
+	}
+	else if (view == 14 || view == 15)
+	{
+		vec4 clip = u_FroxelViewProjection * vec4(worldPos, 1.0);
+		vec2 uv = clamp(clip.xy / max(clip.w, 1e-3) * 0.5 + 0.5, 0.0, 1.0);
+		float d = dot(worldPos - u_FroxelViewOrigin.xyz, u_FroxelViewForward.xyz);
+		float w = FroxelDepthToW(min(d, u_FroxelSliceParams.y));
+		float slice = min(floor(w * u_FroxelGridSize.z), u_FroxelGridSize.z - 1.0);
+		float extinction = texture(u_FroxelSource, vec3(uv, (slice + 0.5) / u_FroxelGridSize.z)).a;
+		color = Heat(extinction * 512.0 / 4.0);
 	}
 	else if (view == 10)
 	{
