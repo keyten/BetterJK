@@ -612,6 +612,215 @@ static qboolean R_VolumetricHeightFog( vec4_t fog, vec4_t color, vec4_t top )
 	return qtrue;
 }
 
+/*
+=================
+R_VolumetricFog_f
+
+r_vfog: adds the froxel fog medium to any map, a front end to the height
+fog cvars (r_volumetricFogHeight*), so the values persist and every map
+without BSP fog volumes can get its medium (and its light beams).
+=================
+*/
+static qboolean R_VolumetricFogParseNumber( const char *s, float *out )
+{
+	char *end;
+	const double value = strtod(s, &end);
+	if ( end == s || *end != '\0' )
+		return qfalse;
+	*out = (float)value;
+	return qtrue;
+}
+
+static void R_VolumetricFogUsage( void )
+{
+	ri.Printf(PRINT_ALL,
+		"usage: r_vfog                     current state\n"
+		"       r_vfog on | off | reset\n"
+		"       r_vfog <key> <value> ...   sets the medium and switches it on\n"
+		"         opaque  <units>          distance at which the fog at the base becomes opaque\n"
+		"         falloff <units>          height over which the density drops by e (large = uniform)\n"
+		"         color   <r> <g> <b>      scattering color 0..1\n"
+		"         base    <z> | auto       base height, auto = lowest floor of the map\n"
+		"         top     <units>          soft ceiling above the base, 0 = none\n"
+		"         max     <scale>          density cap below the base\n"
+		"       r_vfog uniform <opaque> [r g b]   uniform haze over the whole map\n"
+		"example: r_vfog opaque 2500 falloff 600 color 0.75 0.8 0.85\n");
+}
+
+static void R_VolumetricFogPrint( void )
+{
+	ri.Printf(PRINT_ALL, "volumetric fog medium: %s\n", r_volumetricFogHeight->integer ? "on" : "off");
+	ri.Printf(PRINT_ALL, "  opaque  %g\n", r_volumetricFogHeightOpaque->value);
+	ri.Printf(PRINT_ALL, "  falloff %g\n", r_volumetricFogHeightFalloff->value);
+	ri.Printf(PRINT_ALL, "  color   %s\n", r_volumetricFogHeightColor->string);
+	ri.Printf(PRINT_ALL, "  base    %g\n", r_volumetricFogHeightBase->value);
+	ri.Printf(PRINT_ALL, "  top     %g\n", r_volumetricFogHeightTop->value);
+	ri.Printf(PRINT_ALL, "  max     %g\n", r_volumetricFogHeightMax->value);
+
+	if ( r_volumetricFog->integer != 2 || !s_vf.resources )
+		ri.Printf(PRINT_WARNING, "r_vfog needs r_volumetricFog 2 (then vid_restart)\n");
+	else if ( !r_depthPrepass->integer )
+		ri.Printf(PRINT_WARNING, "r_vfog needs r_depthPrepass 1\n");
+}
+
+void R_VolumetricFog_f( void )
+{
+	const int argc = ri.Cmd_Argc();
+	if ( argc < 2 )
+	{
+		R_VolumetricFogPrint();
+		ri.Printf(PRINT_ALL, "(r_vfog help for the parameters)\n");
+		return;
+	}
+
+	const char *cmd = ri.Cmd_Argv(1);
+	if ( !Q_stricmp(cmd, "help") || !Q_stricmp(cmd, "?") )
+	{
+		R_VolumetricFogUsage();
+		return;
+	}
+
+	if ( !Q_stricmp(cmd, "on") || !Q_stricmp(cmd, "off") )
+	{
+		ri.Cvar_Set("r_volumetricFogHeight", !Q_stricmp(cmd, "on") ? "1" : "0");
+		R_VolumetricFogPrint();
+		return;
+	}
+
+	if ( !Q_stricmp(cmd, "reset") )
+	{
+		cvar_t *cvars[] = {
+			r_volumetricFogHeight, r_volumetricFogHeightOpaque, r_volumetricFogHeightFalloff,
+			r_volumetricFogHeightColor, r_volumetricFogHeightTop, r_volumetricFogHeightMax };
+		for ( size_t i = 0; i < ARRAY_LEN(cvars); i++ )
+		{
+			if ( cvars[i]->resetString )
+				ri.Cvar_Set(cvars[i]->name, cvars[i]->resetString);
+		}
+		if ( tr.world )
+			R_SetHeightFogBase(tr.world);
+		R_VolumetricFogPrint();
+		return;
+	}
+
+	if ( !Q_stricmp(cmd, "uniform") )
+	{
+		float opaque;
+		if ( argc < 3 || !R_VolumetricFogParseNumber(ri.Cmd_Argv(2), &opaque) )
+		{
+			R_VolumetricFogUsage();
+			return;
+		}
+
+		ri.Cvar_Set("r_volumetricFogHeightOpaque", va("%g", opaque));
+		ri.Cvar_Set("r_volumetricFogHeightFalloff", "65536");
+		ri.Cvar_Set("r_volumetricFogHeightTop", "0");
+		ri.Cvar_Set("r_volumetricFogHeightMax", "1");
+		if ( argc >= 6 )
+		{
+			float rgb[3];
+			for ( int c = 0; c < 3; c++ )
+			{
+				if ( !R_VolumetricFogParseNumber(ri.Cmd_Argv(3 + c), &rgb[c]) )
+				{
+					R_VolumetricFogUsage();
+					return;
+				}
+			}
+			ri.Cvar_Set("r_volumetricFogHeightColor", va("%g %g %g", rgb[0], rgb[1], rgb[2]));
+		}
+		ri.Cvar_Set("r_volumetricFogHeight", "1");
+		R_VolumetricFogPrint();
+		return;
+	}
+
+	// key value pairs: validate everything first, then apply
+	struct setting_t { const char *cvar; char value[64]; };
+	setting_t settings[8];
+	int numSettings = 0;
+	qboolean autoBase = qfalse;
+
+	for ( int i = 1; i < argc; )
+	{
+		const char *key = ri.Cmd_Argv(i);
+		const char *cvar = NULL;
+		if ( !Q_stricmp(key, "opaque") ) cvar = "r_volumetricFogHeightOpaque";
+		else if ( !Q_stricmp(key, "falloff") ) cvar = "r_volumetricFogHeightFalloff";
+		else if ( !Q_stricmp(key, "base") ) cvar = "r_volumetricFogHeightBase";
+		else if ( !Q_stricmp(key, "top") ) cvar = "r_volumetricFogHeightTop";
+		else if ( !Q_stricmp(key, "max") ) cvar = "r_volumetricFogHeightMax";
+		else if ( !Q_stricmp(key, "color") ) cvar = "r_volumetricFogHeightColor";
+
+		if ( !cvar || numSettings >= (int)ARRAY_LEN(settings) )
+		{
+			ri.Printf(PRINT_WARNING, "r_vfog: unknown parameter '%s'\n", key);
+			R_VolumetricFogUsage();
+			return;
+		}
+
+		if ( !Q_stricmp(key, "color") )
+		{
+			float rgb[3];
+			if ( i + 3 >= argc )	// color r g b
+			{
+				R_VolumetricFogUsage();
+				return;
+			}
+			for ( int c = 0; c < 3; c++ )
+			{
+				if ( !R_VolumetricFogParseNumber(ri.Cmd_Argv(i + 1 + c), &rgb[c]) )
+				{
+					R_VolumetricFogUsage();
+					return;
+				}
+			}
+			settings[numSettings].cvar = cvar;
+			Com_sprintf(settings[numSettings].value, sizeof(settings[numSettings].value),
+				"%g %g %g", rgb[0], rgb[1], rgb[2]);
+			numSettings++;
+			i += 4;
+			continue;
+		}
+
+		if ( i + 1 >= argc )
+		{
+			R_VolumetricFogUsage();
+			return;
+		}
+
+		const char *valueString = ri.Cmd_Argv(i + 1);
+		if ( !Q_stricmp(key, "base") && !Q_stricmp(valueString, "auto") )
+		{
+			autoBase = qtrue;
+			i += 2;
+			continue;
+		}
+
+		float value;
+		if ( !R_VolumetricFogParseNumber(valueString, &value) )
+		{
+			ri.Printf(PRINT_WARNING, "r_vfog: '%s' is not a number\n", valueString);
+			return;
+		}
+		settings[numSettings].cvar = cvar;
+		Com_sprintf(settings[numSettings].value, sizeof(settings[numSettings].value), "%g", value);
+		numSettings++;
+		i += 2;
+	}
+
+	for ( int i = 0; i < numSettings; i++ )
+		ri.Cvar_Set(settings[i].cvar, settings[i].value);
+	if ( autoBase )
+	{
+		if ( tr.world )
+			R_SetHeightFogBase(tr.world);
+		else
+			ri.Printf(PRINT_WARNING, "r_vfog: no map loaded, base auto is applied on the next map load\n");
+	}
+	ri.Cvar_Set("r_volumetricFogHeight", "1");
+	R_VolumetricFogPrint();
+}
+
 static const viewParms_t *R_VolumetricMainView( void )
 {
 	for ( int i = tr.numCachedViewParms - 1; i >= 0; i-- )

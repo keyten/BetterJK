@@ -3339,7 +3339,7 @@ of platforms). Patches and triangle soups (terrain) count by their bounds.
 Falls back to the bottom of the world bounds.
 =================
 */
-static void R_SetHeightFogBase(const world_t *worldData)
+void R_SetHeightFogBase(const world_t *worldData)
 {
 	const bmodel_t *world = &worldData->bmodels[0];
 	float height = world->bounds[0][2];

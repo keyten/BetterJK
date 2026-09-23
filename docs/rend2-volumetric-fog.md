@@ -196,6 +196,23 @@ temporal filter, bloom). The global fog stays a fog volume medium; the height fo
 Transparent surfaces after `SS_FOG` outside every fog volume look the volume up when the height fog is on
 (`RB_VolumetricHeightFogSurface`: generic `USE_FOG` permutation, fog pass, surface sprites).
 
+### `r_vfog` console command
+
+Adds this medium to any map (a map without BSP fog volumes has no froxel passes, so no light beams, until it
+has a medium). A front end to the `r_volumetricFogHeight*` cvars, so the values are archived:
+
+```
+r_vfog                          state and warnings (needs r_volumetricFog 2, r_depthPrepass 1)
+r_vfog help
+r_vfog on | off | reset
+r_vfog opaque 2500 falloff 600 color 0.75 0.8 0.85   any keys, switches the medium on
+       keys: opaque <u>, falloff <u>, color <r g b>, base <z> | auto, top <u>, max <scale>
+r_vfog uniform 4000 [r g b]     uniform haze (falloff 65536, no ceiling)
+```
+
+The sky: a finite falloff leaves almost no medium at the sky distance, so the sky stays clear behind the beams;
+a uniform haze continues to the sky through the tail and fogs it like the legacy fog cap.
+
 ## Integration (`volumetric_integrate.glsl`)
 
 Front to back over the slices of every froxel column, with the medium constant inside a slice:

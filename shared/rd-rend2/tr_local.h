@@ -4376,6 +4376,8 @@ qboolean R_VolumetricFroxelEnabled(void);
 void R_CreateVolumetricImages(int width, int height);
 void R_CreateVolumetricFBOs(void);
 void R_BuildVolumetricLightGrid(world_t *world);
+void R_SetHeightFogBase(const world_t *worldData);
+void R_VolumetricFog_f(void);
 void RB_UpdateVolumetricConstants(struct gpuFrame_t *frame, const trRefdef_t *refdef);
 UniformBlockBinding RB_GetVolumetricFogBlockUniformBinding(void);
 void RB_VolumetricBeginView(void);

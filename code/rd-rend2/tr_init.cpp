@@ -1562,6 +1562,7 @@ static consoleCommand_t	commands[] = {
 	{ "gfxinfo",			GfxInfo_f },
 	{ "gfxmeminfo",			GfxMemInfo_f },
 	{ "r_we",				R_WorldEffect_f },
+	{ "r_vfog",				R_VolumetricFog_f },
 	//{ "imagecacheinfo",		RE_RegisterImages_Info_f },
 	{ "modellist",			R_Modellist_f },
 	//{ "modelcacheinfo",		RE_RegisterModels_Info_f },
