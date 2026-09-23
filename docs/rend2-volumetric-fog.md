@@ -195,6 +195,11 @@ homogeneous solution: the largest absolute error of S or T after the trilinear l
 - **History reset**: map change, no volume in the previous frame, camera move over 256 units, rotation over 75
   degrees, FOV change over 15%, near / far / debug view change, `r_volumetricFogReset 1` (game code, cleared by the
   renderer), the motion blur cut detection (`tr.temporalHistoryValid`, when `r_motionBlur` is on).
+- "A volume in the previous frame" means one the GPU passes actually wrote (`RB_VolumetricBuild` records the
+  frame and the image), not only one the constants planned: a skipped build (no draw surfaces, the view not on
+  `renderFbo`, ...) must not turn a never written image into the history. The volumes are cleared at creation,
+  and the inject pass drops a NaN / Inf history and never writes one, so a bad froxel cannot be fed back (seen
+  once on taspir1: black blurry froxel squares in the sky at the spawn point).
 - Depth discontinuities: the froxel volume is world anchored and defined behind geometry too, so reprojection has
   no depth edges; the screen-space disocclusion case is the frustum edge above.
 - Without temporal accumulation (`r_volumetricFogTemporal 0`): no jitter, froxel centers, 4 shadow taps.

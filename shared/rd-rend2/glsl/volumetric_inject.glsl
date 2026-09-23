@@ -419,6 +419,10 @@ void main()
 			{
 				vec4 history = texture(u_FroxelHistory, coord);
 
+				// a corrupt history (NaN, Inf) would be fed back forever: drop it
+				if (any(isnan(history)) || any(isinf(history)) || history.a < 0.0)
+					history = current;
+
 				// the light may have changed (moving shadows, switched lights): clamp the radiance
 				// of the history to a range around the current one
 				if (current.a > 0.0 && history.a > 0.0)
@@ -438,6 +442,13 @@ void main()
 	if (debugView == 8)
 		current.rgb = vec3(weight) * current.a;
 
+	// one bad froxel must not poison the next frames (history) nor the integrated column
+	vec4 dynamicEmission = vec4(mediumCenter.rgb * mediumCenter.a * dynamicLight, 1.0);
+	if (any(isnan(current)) || any(isinf(current)))
+		current = vec4(0.0);
+	if (any(isnan(dynamicEmission)) || any(isinf(dynamicEmission)))
+		dynamicEmission = vec4(0.0, 0.0, 0.0, 1.0);
+
 	out_Color = current;
-	out_Dynamic = vec4(mediumCenter.rgb * mediumCenter.a * dynamicLight, 1.0);
+	out_Dynamic = dynamicEmission;
 }

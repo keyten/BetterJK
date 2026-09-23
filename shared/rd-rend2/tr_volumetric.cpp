@@ -79,6 +79,11 @@ struct froxelState_t
 	int current;				// froxelInjectImage written this frame
 	int lightMask[FROXEL_MAX_SLICES];
 
+	// the last froxelInjectImage the GPU passes actually wrote: the history
+	// must not be an image whose build was skipped (never initialized or stale)
+	int builtVolumeFrame;
+	int builtVolumeImage;
+
 	// the camera of the volume in froxelInjectImage[current]
 	qboolean hasVolume;
 	int volumeFrameNumber;
@@ -114,6 +119,8 @@ Resources
 void R_CreateVolumetricImages( int width, int height )
 {
 	Com_Memset(&s_vf, 0, sizeof(s_vf));
+	s_vf.builtVolumeFrame = -1;
+	s_vf.builtVolumeImage = -1;
 	tr.froxelInjectImage[0] = tr.froxelInjectImage[1] = NULL;
 	tr.froxelDynamicImage = NULL;
 	tr.froxelIntegratedImage = NULL;
@@ -201,6 +208,53 @@ void R_CreateVolumetricFBOs( void )
 		qglDrawBuffers(3, bufs);
 	}
 	R_CheckFBO(tr.froxelIntegrateFbo);
+
+	// Clear every volume once: the images are created without data, and a
+	// lookup of a volume that was never built must see no fog, not garbage
+	// (NaN would be fed back by the temporal filter forever).
+	{
+		const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		const float noFog[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+		GL_SetViewportAndScissor(0, 0, s_vf.width, s_vf.height);
+
+		FBO_Bind(tr.froxelInjectFbo);
+		for ( int k = 0; k < s_vf.depth; k++ )
+		{
+			for ( int i = 0; i < 2; i++ )
+			{
+				qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+					tr.froxelInjectImage[i]->texnum, 0, k);
+				qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+					tr.froxelDynamicImage->texnum, 0, k);
+				qglClearBufferfv(GL_COLOR, 0, zero);
+				qglClearBufferfv(GL_COLOR, 1, zero);
+			}
+		}
+		qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			tr.froxelInjectImage[0]->texnum, 0, 0);
+		qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+			tr.froxelDynamicImage->texnum, 0, 0);
+
+		FBO_Bind(tr.froxelIntegrateFbo);
+		for ( int k = 0; k < s_vf.depth; k++ )
+		{
+			qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+				tr.froxelIntegratedImage->texnum, 0, k);
+			qglClearBufferfv(GL_COLOR, 0, noFog);
+		}
+		qglFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			tr.froxelIntegratedImage->texnum, 0, 0);
+		for ( int i = 0; i < 2; i++ )
+		{
+			qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+				GL_TEXTURE_2D, tr.froxelCarryImage[i]->texnum, 0);
+			qglClearBufferfv(GL_COLOR, 1, noFog);
+		}
+		qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
+			GL_TEXTURE_2D, tr.froxelCarryImage[0]->texnum, 0);
+		qglClearBufferfv(GL_COLOR, 2, zero);	// tail: no medium beyond far
+	}
 
 	// composite: color and glow of renderFbo only, the sampled depth must not
 	// be attached
@@ -632,6 +686,8 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 		temporal &&
 		s_vf.hasVolume &&
 		s_vf.volumeFrameNumber + 1 == frameNumber &&
+		s_vf.builtVolumeFrame + 1 == frameNumber &&	// the previous volume was really built
+		s_vf.builtVolumeImage == s_vf.current &&		// and is the history image of this frame
 		s_vf.world == tr.world &&
 		s_vf.nearZ == nearZ &&
 		s_vf.farZ == farZ &&
@@ -927,6 +983,8 @@ void RB_VolumetricBuild( void )
 	FBO_t *oldFbo = glState.currentFBO;
 	const int current = s_vf.current;
 	const int previous = current ^ 1;
+	s_vf.builtVolumeFrame = s_vf.volumeFrameNumber;
+	s_vf.builtVolumeImage = current;
 
 	R_PushDebugGroup(AL_STAGE, "Froxel fog");
 	GL_Cull(CT_TWO_SIDED);
