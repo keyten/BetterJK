@@ -1206,7 +1206,7 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 
 	UniformDataWriter uniformDataWriter;
 	uniformDataWriter.Start(sp);
-	uniformDataWriter.SetUniformInt(UNIFORM_FOGINDEX, input->fogNum - 1);
+	uniformDataWriter.SetUniformInt(UNIFORM_FOGINDEX, MAX(input->fogNum - 1, 0));
 	if (input->numPasses > 0 && tess.shader->fogPass != FP_EQUAL)
 		uniformDataWriter.SetUniformInt(UNIFORM_ALPHA_TEST_TYPE, input->xstages[0]->alphaTestType);
 	else
@@ -1733,16 +1733,18 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 		stateBits = pStage->stateBits;
 
-		const bool alphaSunCaster =
-			(backEnd.viewParms.flags & VPF_SHADOWCASCADES) &&
+		const bool alphaShadowDepth =
+			backEnd.depthFill &&
 			r_sunShadowMode->integer &&
 			r_sunShadowAlphaCasters->integer &&
-			input->shader->alphaShadow;
-		if (alphaSunCaster)
+			input->shader->alphaShadow &&
+			(!(backEnd.viewParms.flags & VPF_DEPTHSHADOW) ||
+			 (backEnd.viewParms.flags & VPF_SHADOWCASCADES));
+		if (alphaShadowDepth)
 		{
-			// A blended foliage stage is only a source of its cutout silhouette in
-			// the shadow map.  Color blending is meaningless in a depth-only FBO,
-			// and many stock q3map_alphashadow stages do not request depth writes.
+			// A blended foliage stage contributes only its cutout silhouette to a
+			// depth pass. Color blending is meaningless there, and many stock
+			// q3map_alphashadow stages do not request depth writes.
 			stateBits &= ~(GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
 			stateBits |= GLS_DEPTHMASK_TRUE;
 		}
@@ -1834,8 +1836,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		uniformDataWriter.Start(sp);
 
 		// froxel volumetric fog (tr_volumetric.cpp): the in-shader fog of the
-		// generic programs, set for every stage (the value stays in the program)
-		const bool stageFog = input->fogNum
+		// generic programs, set for every stage (the value stays in the program).
+		// The height fog also fogs surfaces outside the fog volumes.
+		const bool heightFog = RB_VolumetricHeightFogSurface(input->shader->sort) != qfalse;
+		const bool stageFog = (input->fogNum || heightFog)
 			&& pStage->glslShaderGroup != tr.lightallShader
 			&& !backEnd.depthFill
 			&& !input->shader->fogPass;
@@ -1846,14 +1850,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				uniformDataWriter, samplerBindingsWriter);
 		}
 
-		if ( input->fogNum
-			 && pStage->glslShaderGroup != tr.lightallShader
-			 && !backEnd.depthFill 
-			 && !input->shader->fogPass) {
+		if ( stageFog ) {
 			vec4_t fogColorMask;
 			ComputeFogColorMask(pStage, fogColorMask);
 			uniformDataWriter.SetUniformVec4(UNIFORM_FOGCOLORMASK, fogColorMask);
-			uniformDataWriter.SetUniformInt(UNIFORM_FOGINDEX, input->fogNum - 1);
+			// no fog volume (height fog only): the index is unused by the froxel lookup
+			uniformDataWriter.SetUniformInt(UNIFORM_FOGINDEX, MAX(input->fogNum - 1, 0));
 			if (r_volumetricFog->integer)
 			{
 				if (tr.world  && tr.world->lightGridData && !tr.refdef.doLAGoggles)
@@ -2001,7 +2003,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 		AlphaTestType alphaTestType =
 			useAlphaTestGE192 ? ALPHA_TEST_GE192 : pStage->alphaTestType;
-		if (alphaSunCaster && alphaTestType == ALPHA_TEST_NONE)
+		if (alphaShadowDepth && alphaTestType == ALPHA_TEST_NONE)
 		{
 			// Stock foliage such as fern3b/plant uses alpha blending together
 			// with q3map_alphashadow instead of an explicit alphaFunc.
@@ -2365,7 +2367,8 @@ void RB_StageIteratorGeneric( void )
 		{
 			fog = tr.world->fogs + input->fogNum;
 		}
-		if (fog && tess.shader->fogPass && r_drawfog->integer)
+		// froxel height fog: also outside the fog volumes
+		if ((fog || RB_VolumetricHeightFogSurface(input->shader->sort)) && tess.shader->fogPass && r_drawfog->integer)
 			RB_FogPass(input, &vertexArrays);
 
 		//

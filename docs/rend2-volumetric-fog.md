@@ -166,6 +166,35 @@ Offline check on the stock maps (`maps/*.bsp` with fog, sun from the sky shader)
   light. `r_volumetricFogDlightShadows 0` disables them.
 - No new shadow maps are rendered.
 
+## Height fog (ground haze)
+
+An optional second medium, evaluated in `FroxelMedium` next to the fog volumes (no extra texture, no extra pass).
+Its extinction depends on the world z only, so it is anchored in the world and reprojects like the rest of the
+volume. Off by default (`r_volumetricFogHeightOpaque 0`): mode 2 is then unchanged, and a map without fog
+volumes still builds no volume at all.
+
+```
+h        = p.z - r_volumetricFogHeightBase
+sigma0   = -ln(1.5 / 255) / r_volumetricFogHeightOpaque * volumetricFogScale * r_volumetricFogScale
+sigma(h) = sigma0 * min(exp(-h / r_volumetricFogHeightFalloff), r_volumetricFogHeightMax)
+                  * (1 - smoothstep(top - fade, top, h))       top = r_volumetricFogHeightTop (0: no cutoff)
+                                                                fade = min(falloff, top)
+medium   = fog volumes + height fog: extinctions add, albedo = extinction weighted average
+```
+
+Units: extinction per world unit, the same conversion as the fog volumes. `r_volumetricFogHeightOpaque` is a
+`fogParms` depthForOpaque: the distance through the medium at the base height after which the transmittance is
+1.5/255. There is no separate density scale. Below the base the density grows up to `HeightMax` times the base
+density (1 = flat layer below the base). The color is a `fogParms` color (sRGB, converted like the fog volumes).
+
+The base height is set to the z of the first `info_player_start` (else `info_player_deathmatch`) whenever a map
+loads (`R_SetHeightFogBase`, tr_bsp.cpp); change the cvar afterwards to move it.
+
+Lighting is the one of the fog volumes (baked grid, sun + cascades, dynamic lights + their shadows, HG phase,
+temporal filter, bloom). The global fog stays a fog volume medium; the height fog adds to it and never replaces it.
+Transparent surfaces after `SS_FOG` outside every fog volume look the volume up when the height fog is on
+(`RB_VolumetricHeightFogSurface`: generic `USE_FOG` permutation, fog pass, surface sprites).
+
 ## Integration (`volumetric_integrate.glsl`)
 
 Front to back over the slices of every froxel column, with the medium constant inside a slice:
@@ -239,6 +268,12 @@ homogeneous solution: the largest absolute error of S or T after the trilinear l
 | `r_volumetricFogReset` | 0 | Set by game code on camera cuts, cleared by the renderer |
 | `r_volumetricFogDebug` | 0 | cheat, debug views below |
 | `r_volumetricFogFreeze` | 0 | cheat, keep the volume and its camera |
+| `r_volumetricFogHeightOpaque` | 0 | height fog: depthForOpaque at the base height (units), 0 = off |
+| `r_volumetricFogHeightBase` | 0 | height fog: world z of the base, set to the spawn point z on map load |
+| `r_volumetricFogHeightFalloff` | 256 | height fog: scale height (density / e per this many units above the base) |
+| `r_volumetricFogHeightMax` | 1 | height fog: maximum density below the base, multiple of the base density |
+| `r_volumetricFogHeightTop` | 0 | height fog: soft cutoff height above the base, 0 = none |
+| `r_volumetricFogHeightColor` | 0.7 0.75 0.8 | height fog: scattering color (albedo), as fogParms |
 
 The existing `r_volumetricFogScale`, `r_volumetricFogDefaultScale` and the `volumetricFogScale` worldspawn key
 scale the extinction in both modes; `r_volumetricFogSamples` only concerns the legacy ray march. Mode 2 needs
@@ -262,6 +297,8 @@ mode 2 shows the legacy in-scattering of the baked light (static + baked sun == 
 | 8 | temporal history weight, average over the fogged froxels in front of the scene (dark red: no fog) |
 | 9 | integrated volume: in-scattering over black, blue where the fog is opaque |
 | 10 | froxel slice at the scene depth (heat), froxel grid lines |
+| 11 | as 1, fog volumes only (the injection drops the height fog) |
+| 12 | as 1, height fog only (the injection drops the fog volumes) |
 
 Views 2 to 5 keep only that light term in the injection, so the scene behind the overlay also shows it. Changing
 the view resets the history. `r_volumetricFogFreeze 1` keeps the froxel volume and its camera: move away to see
@@ -275,7 +312,9 @@ other GPU timed blocks (GL timestamp queries).
 Not measured yet (the renderer has not been run with this mode). Expected shape: injection dominates (one full
 screen triangle per slice at froxel resolution; cost grows with the number of fog volumes, the lights of the
 slice and the cascade lookups), integration is a few texture fetches per froxel, the composite is one full screen
-pass. Maps without fog volumes do no froxel work at all. Profile with `r_speeds 100` on low / medium / high before
+pass. Maps without fog volumes do no froxel work at all unless the height fog is on. The height fog adds one
+`exp`, one `smoothstep` and a few ALU to each of the two `FroxelMedium` calls per froxel (a uniform branch when
+off); it makes more froxels non-empty, so more of them take the light path. Profile with `r_speeds 100` on low / medium / high before
 changing the presets.
 
 ## Validation checklist
@@ -298,6 +337,13 @@ vs `*-vfog.dll`).
 | teleport / cut | `setviewpos`, cinematics | history reset, no ghost frame | 8 |
 | different FOV | `cg_fov 60 / 110`, zoom | same fog density, reset on large jumps | 1, 10 |
 | legacy maps | `r_volumetricFog 1` and `0` | identical to before | - |
+| height fog, flat outdoor | mp/ffa3, t1_surprise: `r_volumetricFogHeightOpaque 3000` | haze along the ground, clear sky overhead | 12, 1 |
+| height fog, camera above / inside | fly up (noclip), then back down | layer stays in place, no pop crossing the base | 12, 8 |
+| height fog, sun rays | outdoor map with doorways, `r_sunlightMode 2` | shafts in the haze | 3 |
+| height fog, saber / dlight | saber on inside the haze | colored glow like in fog volumes | 4 |
+| height fog + fog volume | map with a fog volume near the ground | both visible, additive | 11, 12, 1 |
+| height fog + global fog | map with a global fog | global fog unchanged at `Opaque 0` | 11 |
+| no fog map, defaults | any map without fog | no haze, no froxel timers in `r_speeds 100` | - |
 
 ## Known limitations
 
@@ -310,12 +356,15 @@ vs `*-vfog.dll`).
 - The light grid split is a heuristic; `r_volumetricFogSunScale` / `StaticScale` balance it per map.
 - The history of the view model region is reprojected like the world (the volume is world space).
 - Moving fog volumes (brush entities) are not supported (neither are they in the legacy fog).
+- Height fog: beyond `r_volumetricFogFar` the last slice extinction is extrapolated (constant along the ray);
+  thin layers far away are limited by the slice depth; only mode 2 has it; one global layer set by cvars; the
+  automatic base is the map's first spawn point (SP landmark transitions are not tracked).
 - Not run in game yet: correctness is verified by builds, offline compilation of every changed / new shader on
   the Intel and NVIDIA drivers, the legacy source comparison and the numeric checks above.
 
 ## Possible improvements (not implemented)
 
-- Height fog and noise modulated density in `FroxelMedium`, local density volumes.
+- Noise modulated density in `FroxelMedium`, local density volumes, per map height fog settings.
 - Per tile light lists instead of per slice masks.
 - Depth aware (minimum depth per froxel column) skipping of hidden froxels.
 - Blue noise instead of a Halton cycle for the jitter.

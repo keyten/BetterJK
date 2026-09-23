@@ -18,6 +18,8 @@ void main()
 //  8  temporal history weight, averaged over the fogged froxels in front of the scene (red: no fog)
 //  9  integrated volume: in-scattering over black, faded where transmittance is low
 //  10 froxel slice index at the scene depth, froxel grid lines
+//  11 density of the BSP fog volumes only       (the injection drops the height fog)
+//  12 density of the height fog only            (the injection drops the BSP fog volumes)
 
 uniform sampler2D u_ScreenDepthMap;
 uniform sampler3D u_FroxelSource;	// injected volume: rgb / a = history weight in view 8
@@ -45,7 +47,7 @@ void main()
 	int view = int(u_FroxelDebugParams.x);
 	vec3 color = vec3(0.0);
 
-	if (view == 1)
+	if (view == 1 || view == 11 || view == 12)
 	{
 		color = Heat(-log(max(fog.a, 1e-4)) / 4.0);
 	}

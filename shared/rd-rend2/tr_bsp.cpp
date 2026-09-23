@@ -3328,6 +3328,73 @@ void R_LoadCubemapEntities(const char *cubemapEntityName)
 	}
 }
 
+// origin z of the first entity of this class, false if there is none
+static qboolean R_FindEntityHeight(const char *className, float *height)
+{
+	char spawnVarChars[2048];
+	int numSpawnVars;
+	char *spawnVars[MAX_SPAWN_VARS][2];
+	qboolean found = qfalse;
+
+	// parse to the end: the parse point is reset for the next user
+	while(R_ParseSpawnVars(spawnVarChars, sizeof(spawnVarChars), &numSpawnVars, spawnVars))
+	{
+		if (found)
+			continue;
+
+		qboolean isClass = qfalse;
+		qboolean originSet = qfalse;
+		vec3_t origin;
+		for (int i = 0; i < numSpawnVars; i++)
+		{
+			if (!Q_stricmp(spawnVars[i][0], "classname") && !Q_stricmp(spawnVars[i][1], className))
+				isClass = qtrue;
+			else if (!Q_stricmp(spawnVars[i][0], "origin") &&
+				sscanf(spawnVars[i][1], "%f %f %f", &origin[0], &origin[1], &origin[2]) == 3)
+				originSet = qtrue;
+		}
+
+		if (isClass && originSet)
+		{
+			*height = origin[2];
+			found = qtrue;
+		}
+	}
+
+	return found;
+}
+
+/*
+=================
+R_SetHeightFogBase
+
+The base height of the froxel height fog (r_volumetricFogHeightBase) follows
+the spawn point of every loaded map.
+=================
+*/
+static void R_SetHeightFogBase(void)
+{
+	const char *spawnEntities[] = { "info_player_start", "info_player_deathmatch" };
+
+	for (size_t i = 0; i < ARRAY_LEN(spawnEntities); i++)
+	{
+		float height = 0.0f;
+#ifdef REND2_SP
+		COM_BeginParseSession();
+#endif
+		const qboolean found = R_FindEntityHeight(spawnEntities[i], &height);
+#ifdef REND2_SP
+		COM_EndParseSession();
+#endif
+		if (found)
+		{
+			ri.Cvar_Set("r_volumetricFogHeightBase", va("%g", height));
+			ri.Printf(PRINT_DEVELOPER, "Froxel height fog base: %g (%s)\n", height, spawnEntities[i]);
+			return;
+		}
+	}
+}
+
 static void R_AssignCubemapsToWorldSurfaces(world_t *worldData)
 {
 	world_t	*w;
@@ -4479,7 +4546,10 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 	R_GenerateSurfaceSprites(worldData, worldIndex + 1);
 	R_BuildLightGridTexture(worldData);
 	if (bspIndex == nullptr)
+	{
 		R_BuildVolumetricLightGrid(worldData);
+		R_SetHeightFogBase();
+	}
 
 	// load cubemaps
 	if (r_cubeMapping->integer && bspIndex == nullptr)

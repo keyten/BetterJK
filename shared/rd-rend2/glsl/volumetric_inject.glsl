@@ -14,7 +14,9 @@ void main()
 //                       sabers, bolts and explosions leave no trails)
 //
 // Media: the BSP fog volumes (axial bounds + the plane of their visible side), extinction and color
-// as the legacy volumetric fog. Outside every fog volume there is no medium.
+// as the legacy volumetric fog, plus the optional height fog (r_volumetricFogHeight*, off by default)
+// whose extinction depends on world z. Extinctions add, albedos are extinction weighted. Without
+// both there is no medium.
 //
 // Light (the phase function is 4 pi HG, 1 = isotropic):
 //   baked   light grid without the sun (isotropic, legacy brightness)
@@ -79,12 +81,32 @@ vec3 FroxelWorldPosition(in vec3 froxel)
 	return u_FroxelViewOrigin.xyz + ray * d;
 }
 
-// extinction (a) and albedo (rgb) of the fog volumes at p
-vec4 FroxelMedium(in vec3 p)
+// extinction of the height fog at p, world anchored:
+//   sigma0 * min(exp(-(z - base) / falloff), maxScale) * (1 - smoothstep(top - fade, top, z - base))
+float FroxelHeightExtinction(in vec3 p)
+{
+	float h = p.z - u_FroxelHeightFog.y;
+	float extinction = u_FroxelHeightFog.x * exp(min(-h * u_FroxelHeightFog.z, u_FroxelHeightFog.w));
+	if (u_FroxelHeightFogTop.x > 0.0)
+		extinction *= 1.0 - smoothstep(u_FroxelHeightFogColor.w, u_FroxelHeightFogTop.x, h);
+	return extinction;
+}
+
+// extinction (a) and albedo (rgb) of the fog volumes and the height fog at p (debug views 11 and 12
+// keep one of them)
+vec4 FroxelMedium(in vec3 p, in int debugView)
 {
 	float extinction = 0.0;
 	vec3 albedo = vec3(0.0);
-	for (int i = 0; i < u_FroxelNumFogs; i++)
+
+	if (u_FroxelHeightFog.x > 0.0 && debugView != 11)
+	{
+		extinction = FroxelHeightExtinction(p);
+		albedo = u_FroxelHeightFogColor.rgb * extinction;
+	}
+
+	int numFogs = (debugView == 12) ? 0 : u_FroxelNumFogs;
+	for (int i = 0; i < numFogs; i++)
 	{
 		vec4 mins = u_FroxelFogMins[i];
 		vec4 maxs = u_FroxelFogMaxs[i];
@@ -321,8 +343,8 @@ void main()
 	vec3 p = FroxelWorldPosition(center + u_FroxelJitter.xyz * temporal);
 	vec3 pc = FroxelWorldPosition(center);
 
-	vec4 medium = FroxelMedium(p);
-	vec4 mediumCenter = FroxelMedium(pc);
+	vec4 medium = FroxelMedium(p, debugView);
+	vec4 mediumCenter = FroxelMedium(pc, debugView);
 
 	// baked light and sun
 	vec3 staticLight = vec3(0.0);

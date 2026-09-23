@@ -3501,7 +3501,8 @@ shaderProgram_t *GLSL_GetGenericShaderProgram(int stage)
 			break;
 	}
 
-	if (tess.fogNum &&
+	// froxel height fog: also outside the fog volumes (RB_VolumetricHeightFogSurface)
+	if ((tess.fogNum || RB_VolumetricHeightFogSurface(tess.shader->sort)) &&
 		pStage->adjustColorsForFog != ACFF_NONE &&
 		r_drawfog->integer &&
 		!tess.shader->isSky)

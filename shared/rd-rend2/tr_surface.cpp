@@ -2618,7 +2618,8 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 	if ((firstStage->stateBits & (GLS_SRCBLEND_BITS|GLS_DSTBLEND_BITS)) == (GLS_SRCBLEND_ONE|GLS_DSTBLEND_ONE))
 		shaderFlags |= SSDEF_ADDITIVE;
 
-	if (surf->fogIndex > 0 && r_drawfog->integer)
+	// froxel height fog: also outside the fog volumes
+	if ((surf->fogIndex > 0 || RB_VolumetricHeightFogSurface(surf->shader->sort)) && r_drawfog->integer)
 		shaderFlags |= SSDEF_USE_FOG;
 
 	if (backEnd.depthFill &&

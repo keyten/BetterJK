@@ -111,6 +111,12 @@ cvar_t	*r_volumetricFogBloom;
 cvar_t	*r_volumetricFogReset;
 cvar_t	*r_volumetricFogDebug;
 cvar_t	*r_volumetricFogFreeze;
+cvar_t	*r_volumetricFogHeightOpaque;
+cvar_t	*r_volumetricFogHeightBase;
+cvar_t	*r_volumetricFogHeightFalloff;
+cvar_t	*r_volumetricFogHeightMax;
+cvar_t	*r_volumetricFogHeightTop;
+cvar_t	*r_volumetricFogHeightColor;
 
 cvar_t	*r_allowExtensions;
 
@@ -1774,10 +1780,20 @@ void R_Register( void )
 	r_volumetricFogBloom = ri.Cvar_Get("r_volumetricFogBloom", "0", CVAR_ARCHIVE, "Froxel fog: bright in-scattering added to the glow buffer (bloom), 0 = none");
 	ri.Cvar_CheckRange(r_volumetricFogBloom, 0.0f, 4.0f, qfalse);
 	r_volumetricFogReset = ri.Cvar_Get("r_volumetricFogReset", "0", 0, "Set to 1 by game code to reset the froxel fog history (camera cut), cleared by the renderer");
-	r_volumetricFogDebug = ri.Cvar_Get("r_volumetricFogDebug", "0", CVAR_CHEAT, "Froxel fog debug view: 1 density, 2 sun (unshadowed), 3 sun (shadowed), 4 dynamic lights, 5 baked light, 6 scattering, 7 transmittance, 8 history weight, 9 integrated volume, 10 slices");
-	ri.Cvar_CheckRange(r_volumetricFogDebug, 0, 10, qtrue);
+	r_volumetricFogDebug = ri.Cvar_Get("r_volumetricFogDebug", "0", CVAR_CHEAT, "Froxel fog debug view: 1 density, 2 sun (unshadowed), 3 sun (shadowed), 4 dynamic lights, 5 baked light, 6 scattering, 7 transmittance, 8 history weight, 9 integrated volume, 10 slices, 11 density of the BSP fog volumes, 12 density of the height fog");
+	ri.Cvar_CheckRange(r_volumetricFogDebug, 0, 12, qtrue);
 	r_volumetricFogFreeze = ri.Cvar_Get("r_volumetricFogFreeze", "0", CVAR_CHEAT, "Froxel fog: keep the current froxel volume and its camera (debugging)");
 	ri.Cvar_CheckRange(r_volumetricFogFreeze, 0, 1, qtrue);
+	r_volumetricFogHeightOpaque = ri.Cvar_Get("r_volumetricFogHeightOpaque", "0", CVAR_ARCHIVE, "Froxel fog height fog: distance at which the medium at the base height becomes opaque, as fogParms depthForOpaque (world units), 0 = off");
+	ri.Cvar_CheckRange(r_volumetricFogHeightOpaque, 0.0f, 1000000.0f, qfalse);
+	r_volumetricFogHeightBase = ri.Cvar_Get("r_volumetricFogHeightBase", "0", CVAR_ARCHIVE, "Froxel fog height fog: world Z of the base height, set to the spawn point Z when a map loads");
+	r_volumetricFogHeightFalloff = ri.Cvar_Get("r_volumetricFogHeightFalloff", "256", CVAR_ARCHIVE, "Froxel fog height fog: height (world units) over which the density falls by a factor e above the base height");
+	ri.Cvar_CheckRange(r_volumetricFogHeightFalloff, 1.0f, 65536.0f, qfalse);
+	r_volumetricFogHeightMax = ri.Cvar_Get("r_volumetricFogHeightMax", "1", CVAR_ARCHIVE, "Froxel fog height fog: maximum density below the base height, as a multiple of the base density");
+	ri.Cvar_CheckRange(r_volumetricFogHeightMax, 1.0f, 64.0f, qfalse);
+	r_volumetricFogHeightTop = ri.Cvar_Get("r_volumetricFogHeightTop", "0", CVAR_ARCHIVE, "Froxel fog height fog: height above the base where the medium fades out (soft cutoff), 0 = none");
+	ri.Cvar_CheckRange(r_volumetricFogHeightTop, 0.0f, 65536.0f, qfalse);
+	r_volumetricFogHeightColor = ri.Cvar_Get("r_volumetricFogHeightColor", "0.7 0.75 0.8", CVAR_ARCHIVE, "Froxel fog height fog: scattering color (albedo), \"r g b\" in 0..1 as fogParms");
 
 	r_sunShadows = ri.Cvar_Get( "r_sunShadows", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	r_shadowFilter = ri.Cvar_Get( "r_shadowFilter", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );
@@ -1787,7 +1803,7 @@ void R_Register( void )
 	r_shadowCascadeZBias = ri.Cvar_Get( "r_shadowCascadeZBias", "-320", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	r_sunShadowMode = ri.Cvar_Get( "r_sunShadowMode", "1", CVAR_ARCHIVE | CVAR_LATCH, "Sun shadows: 0 legacy, 1 stabilized blended PCSS" );
 	ri.Cvar_CheckRange( r_sunShadowMode, 0, 1, qtrue );
-	r_sunShadowAlphaCasters = ri.Cvar_Get( "r_sunShadowAlphaCasters", "1", CVAR_ARCHIVE, "Shadows 2.0 foliage/cutout sun casters (q3map_alphashadow and surfaceSprites)" );
+	r_sunShadowAlphaCasters = ri.Cvar_Get( "r_sunShadowAlphaCasters", "1", CVAR_ARCHIVE | CVAR_LATCH, "Shadows 2.0 foliage/cutout sun casters and receivers (q3map_alphashadow and surfaceSprites)" );
 	ri.Cvar_CheckRange( r_sunShadowAlphaCasters, 0, 1, qtrue );
 	r_shadowCascadeBlend = ri.Cvar_Get( "r_shadowCascadeBlend", "0.10", CVAR_ARCHIVE, "Cascade transition width as a fraction of the smaller adjacent cascade" );
 	ri.Cvar_CheckRange( r_shadowCascadeBlend, 0.0f, 0.3f, qfalse );

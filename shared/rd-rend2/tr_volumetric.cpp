@@ -78,6 +78,7 @@ struct froxelState_t
 	qboolean built;				// GPU passes of this frame ran
 	int current;				// froxelInjectImage written this frame
 	int lightMask[FROXEL_MAX_SLICES];
+	qboolean frameHeightFog;	// the volume of this frame has the height fog medium
 
 	// the last froxelInjectImage the GPU passes actually wrote: the history
 	// must not be an image whose build was skipped (never initialized or stale)
@@ -552,6 +553,57 @@ static void R_VolumetricCullLights( const viewParms_t *view, const trRefdef_t *r
 	}
 }
 
+/*
+=================
+R_VolumetricHeightFog
+
+Height fog medium (r_volumetricFogHeight*), world anchored:
+
+  sigma(p) = sigma0 * min(exp(-(p.z - base) / falloff), maxScale) * cutoff
+  sigma0   = -ln(1.5 / 255) / r_volumetricFogHeightOpaque * volumetricFogScale
+
+sigma0 is converted from a depthForOpaque distance exactly like the BSP fog
+volumes below, so both media share one unit (extinction per world unit).
+False (and a zero base extinction) when off.
+=================
+*/
+static qboolean R_VolumetricHeightFog( vec4_t fog, vec4_t color, vec4_t top )
+{
+	VectorSet4(fog, 0.0f, 0.0f, 0.0f, 0.0f);
+	VectorSet4(color, 0.0f, 0.0f, 0.0f, 0.0f);
+	VectorSet4(top, 0.0f, 0.0f, 0.0f, 0.0f);
+
+	const float opaque = r_volumetricFogHeightOpaque->value;
+	if ( opaque <= 0.0f )
+		return qfalse;
+
+	const float extinction = (-logf(1.5f / 255.0f)) / opaque *
+		tr.volumetricFogScale * r_volumetricFogScale->value;
+	if ( extinction <= 0.0f )
+		return qfalse;
+
+	const float falloff = MAX(1.0f, r_volumetricFogHeightFalloff->value);
+	const float maxScale = MAX(1.0f, r_volumetricFogHeightMax->value);
+	VectorSet4(fog, extinction, r_volumetricFogHeightBase->value, 1.0f / falloff, logf(maxScale));
+
+	// albedo in the fogParms convention (R_LoadFogs, ParseShader)
+	vec3_t albedo = { 0.7f, 0.75f, 0.8f };
+	sscanf(r_volumetricFogHeightColor->string, "%f %f %f", &albedo[0], &albedo[1], &albedo[2]);
+	for ( int c = 0; c < 3; c++ )
+	{
+		albedo[c] = Com_Clamp(0.0f, 1.0f, albedo[c]);
+		if ( tr.linearLight )
+			albedo[c] = (float)sRGBtoRGB(albedo[c]);
+		albedo[c] *= tr.identityLight;
+	}
+
+	// soft cutoff: fades out over the last falloff (at most the whole layer)
+	const float topHeight = MAX(0.0f, r_volumetricFogHeightTop->value);
+	VectorSet4(color, albedo[0], albedo[1], albedo[2], topHeight - MIN(falloff, topHeight));
+	VectorSet4(top, topHeight, 0.0f, 0.0f, 0.0f);
+	return qtrue;
+}
+
 static const viewParms_t *R_VolumetricMainView( void )
 {
 	for ( int i = tr.numCachedViewParms - 1; i >= 0; i-- )
@@ -595,10 +647,14 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 		return;
 	}
 
+	vec4_t heightFog, heightFogColor, heightFogTop;
+	const qboolean heightFogOn = R_VolumetricHeightFog(heightFog, heightFogColor, heightFogTop);
+	s_vf.frameHeightFog = qfalse;
+
 	const qboolean worldView = (qboolean)(
 		view != NULL &&
 		tr.world != NULL &&
-		tr.world->numfogs > 1 &&	// no fog volume, no media: nothing to do
+		(tr.world->numfogs > 1 || heightFogOn) &&	// no fog volume, no height fog: nothing to do
 		tr.renderFbo != NULL &&
 		!(refdef->rdflags & (RDF_NOWORLDMODEL | RDF_HYPERSPACE)) &&
 		!refdef->doLAGoggles &&
@@ -614,6 +670,7 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 
 	s_vf.builtFrameNumber = frameNumber;
 	s_vf.frameScene = frame->currentScene;
+	s_vf.frameHeightFog = heightFogOn;
 
 	// projection of the rendered view; the froxel camera drops the SMAA T2x
 	// jitter (written to P[2] and P[6], see R_GatherFrameViews)
@@ -802,6 +859,11 @@ void RB_UpdateVolumetricConstants( gpuFrame_t *frame, const trRefdef_t *refdef )
 
 	VectorSet4(block.debugParams, (float)debug, r_volumetricFogBloom->value, 0.0f, 0.0f);
 
+	// height fog medium, added to the fog volumes by the injection
+	VectorCopy4(heightFog, block.heightFog);
+	VectorCopy4(heightFogColor, block.heightFogColor);
+	VectorCopy4(heightFogTop, block.heightFogTop);
+
 	// media: every fog volume of the map, as the Fogs block (volumetric units)
 	int numFogs = tr.world->numfogs - 1;
 	numFogs = Com_Clampi(0, MAX_GPU_FOGS, numFogs);
@@ -885,6 +947,21 @@ int RB_VolumetricFogMode( float sort )
 
 	// the sort key keeps the integer part of the sort (RB_CreateSortKey)
 	return ((int)sort <= SS_FOG) ? 2 : 1;
+}
+
+/*
+=================
+RB_VolumetricHeightFogSurface
+
+The height fog is everywhere, not only inside the fog volumes: surfaces
+without a fog volume (fogNum 0) that look the volume up themselves (layers
+after SS_FOG) must be drawn with their fog path too. The layers up to SS_FOG
+get it from the composite.
+=================
+*/
+qboolean RB_VolumetricHeightFogSurface( float sort )
+{
+	return (qboolean)(s_vf.frameHeightFog && RB_VolumetricFogMode(sort) == 1);
 }
 
 void RB_VolumetricSetupFogDraw( int mode, UniformDataWriter& uniforms, SamplerBindingsWriter& samplers )

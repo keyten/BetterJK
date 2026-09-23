@@ -151,6 +151,12 @@ extern cvar_t	*r_volumetricFogBloom;
 extern cvar_t	*r_volumetricFogReset;
 extern cvar_t	*r_volumetricFogDebug;
 extern cvar_t	*r_volumetricFogFreeze;
+extern cvar_t	*r_volumetricFogHeightOpaque;
+extern cvar_t	*r_volumetricFogHeightBase;
+extern cvar_t	*r_volumetricFogHeightFalloff;
+extern cvar_t	*r_volumetricFogHeightMax;
+extern cvar_t	*r_volumetricFogHeightTop;
+extern cvar_t	*r_volumetricFogHeightColor;
 
 extern cvar_t	*r_allowExtensions;
 
@@ -967,6 +973,9 @@ struct VolumetricFogBlock
 	vec4_t gridScale;				// world to light grid texture coordinates, w: horizontal cell size
 	vec4_t shadowParams;			// cascade far distance, shadow map size, dlight shadows, bias
 	vec4_t debugParams;				// debug view, bloom, unused, unused
+	vec4_t heightFog;				// height fog: base extinction per unit (0 = off), base z, 1 / falloff, log(max scale)
+	vec4_t heightFogColor;			// rgb albedo, w: fade out start above the base (top - fade)
+	vec4_t heightFogTop;			// x: top above the base (0 = no cutoff), yzw: unused
 	int numFogs;
 	int pad0[3];
 	vec4_t fogColor[MAX_GPU_FOGS];	// rgb albedo (fog color), a: extinction per unit
@@ -4326,6 +4335,7 @@ void RB_UpdateVolumetricConstants(struct gpuFrame_t *frame, const trRefdef_t *re
 UniformBlockBinding RB_GetVolumetricFogBlockUniformBinding(void);
 void RB_VolumetricBeginView(void);
 int RB_VolumetricFogMode(float sort);
+qboolean RB_VolumetricHeightFogSurface(float sort);
 void RB_VolumetricSetupFogDraw(int mode, UniformDataWriter& uniforms, SamplerBindingsWriter& samplers);
 void RB_VolumetricBuild(void);
 qboolean RB_VolumetricCompositeActive(void);
