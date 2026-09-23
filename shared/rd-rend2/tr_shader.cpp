@@ -3763,6 +3763,20 @@ static qboolean CollapseStagesToGLSL(void)
 				if (pStage->bundle[0].tcGen != TCGEN_TEXTURE || pStage->bundle[0].numTexMods != 0)
 					pStage->glslShaderIndex |= LIGHTDEF_USE_TCGEN_AND_TCMOD;
 			}
+
+			// Some stock cutout foliage (notably yavin/fern3b) is authored as an
+			// unlit alpha-blended stage.  In Shadows 2.0, treat only its base stage
+			// as a light-grid receiver so the sun/CSM path can affect it.  This is
+			// latched with r_sunShadowAlphaCasters because it changes the required
+			// lightall permutation and vertex attributes.
+			if (i == 0 && shader.alphaShadow &&
+				r_sunShadowMode->integer && r_sunShadowAlphaCasters->integer &&
+				r_sunlightMode->integer &&
+				pStage->glslShaderGroup == tr.lightallShader &&
+				!(pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK))
+			{
+				pStage->glslShaderIndex |= LIGHTDEF_USE_LIGHT_VECTOR;
+			}
 		}
 	}
 

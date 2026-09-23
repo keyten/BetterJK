@@ -82,7 +82,7 @@ PCSS visibility; it never replaces it.
 | Cvar | Default | Meaning |
 | --- | ---: | --- |
 | `r_sunShadowMode` | 1 | 0 legacy, 1 shadows 2.0; latched |
-| `r_sunShadowAlphaCasters` | 1 | sun-shadow cutouts for `q3map_alphashadow` foliage and `surfaceSprites`; live toggle |
+| `r_sunShadowAlphaCasters` | 1 | sun-shadow cutouts/receivers for `q3map_alphashadow` foliage and `surfaceSprites`; latched |
 | `r_shadowCascadeBlend` | 0.10 | overlap as fraction of smaller adjacent span |
 | `r_shadowDepthBias` | 0.15 | constant world-space receiver bias |
 | `r_shadowNormalBias` | 0.75 | normal offset in cascade texels |
@@ -112,11 +112,17 @@ alpha blending, it uses a 0.5 cutout. Blending is disabled and depth writes are
 forced only for this depth-only draw. Glass, smoke and other unmarked blended
 materials remain excluded.
 
+Unlit base stages marked `q3map_alphashadow` use the light-grid lightall path so
+they can receive CSM. Blended cutouts also enter the camera depth prepass with
+the same 0.5 fallback threshold. This makes later transparent surfaces such as
+water respect the foliage depth while retaining blended texture edges.
+
 Generated `surfaceSprites` use their normal alpha test and retain the visible
 camera's billboard axes, distance fade and wind phase in every cascade. This
 prevents the light view from rotating or distance-culling grass independently
-in each shadow map. Setting `r_sunShadowAlphaCasters 0` disables both new paths
-immediately; legacy sun shadows and dynamic-light shadow maps are unchanged.
+in each shadow map. Setting `r_sunShadowAlphaCasters 0` and restarting the
+renderer disables these paths; legacy sun shadows and dynamic-light shadow maps
+are unchanged.
 
 ## Performance and validation
 

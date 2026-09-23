@@ -1259,21 +1259,22 @@ static void RB_SubmitDrawSurfsForDepthFill(
 		R_DecomposeSort(drawSurf->sort, &entityNum, &shader, &cubemapIndex, &postRender);
 		assert(shader != nullptr);
 
-		const bool alphaSunCaster =
-			(backEnd.viewParms.flags & VPF_SHADOWCASCADES) &&
+		const bool alphaShadowDepth =
 			r_sunShadowMode->integer &&
 			r_sunShadowAlphaCasters->integer &&
-			shader->alphaShadow;
+			shader->alphaShadow &&
+			(!(backEnd.viewParms.flags & VPF_DEPTHSHADOW) ||
+			 (backEnd.viewParms.flags & VPF_SHADOWCASCADES));
 
-		if ((shader->sort != SS_OPAQUE && !alphaSunCaster) ||
+		if ((shader->sort != SS_OPAQUE && !alphaShadowDepth) ||
 			shader->useDistortion ||
-			(shader->depthPrepass == DEPTHPREPASS_SKIP && !alphaSunCaster))
+			(shader->depthPrepass == DEPTHPREPASS_SKIP && !alphaShadowDepth))
 		{
 			// Don't draw yet, let's see what's to come
 			continue;
 		}
 
-		if (shader->depthPrepass == DEPTHPREPASS_SIMPLE && !alphaSunCaster)
+		if (shader->depthPrepass == DEPTHPREPASS_SIMPLE && !alphaShadowDepth)
 			shader = tr.defaultShader;
 
 		if (*drawSurf->surface == SF_MDX)
