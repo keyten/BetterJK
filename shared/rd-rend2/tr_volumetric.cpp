@@ -217,6 +217,12 @@ void R_CreateVolumetricFBOs( void )
 		const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		const float noFog[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
+		// clears obey the color masks: draw buffer 2 (the tail) is masked by
+		// default with SSR, and a map change keeps the context (glState is
+		// reset, the GL masks are not), so set every mask explicitly
+		qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		glState.ssrAuxWrite = true;
+
 		GL_SetViewportAndScissor(0, 0, s_vf.width, s_vf.height);
 
 		FBO_Bind(tr.froxelInjectFbo);
@@ -255,6 +261,8 @@ void R_CreateVolumetricFBOs( void )
 		qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1,
 			GL_TEXTURE_2D, tr.froxelCarryImage[0]->texnum, 0);
 		qglClearBufferfv(GL_COLOR, 2, zero);	// tail: no medium beyond far
+
+		GL_ResetSSRAuxWrite();
 	}
 
 	// composite: color and glow of renderFbo only, the sampled depth must not
@@ -1112,6 +1120,10 @@ void RB_VolumetricBuild( void )
 		GL_BindToTMU(tr.froxelInjectImage[current], TB_COLORMAP);
 		GL_BindToTMU(tr.froxelDynamicImage, TB_NORMALMAP);
 
+		// the tail is draw buffer 2, masked by default with SSR (the SSR
+		// attachments of renderFbo, see GL_SetSSRAuxWrite)
+		GL_SetSSRAuxWrite(true);
+
 		const GLenum bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
 		for ( int k = 0; k < s_vf.depth; k++ )
 		{
@@ -1126,6 +1138,8 @@ void RB_VolumetricBuild( void )
 			GLSL_SetUniformInt(sp, UNIFORM_FROXELSLICE, k);
 			RB_InstantTriangle();
 		}
+
+		GL_SetSSRAuxWrite(false);
 	}
 	RB_VolumetricEndTimer(timer);
 

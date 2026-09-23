@@ -228,8 +228,13 @@ homogeneous solution: the largest absolute error of S or T after the trilinear l
 - "A volume in the previous frame" means one the GPU passes actually wrote (`RB_VolumetricBuild` records the
   frame and the image), not only one the constants planned: a skipped build (no draw surfaces, the view not on
   `renderFbo`, ...) must not turn a never written image into the history. The volumes are cleared at creation,
-  and the inject pass drops a NaN / Inf history and never writes one, so a bad froxel cannot be fed back (seen
-  once on taspir1: black blurry froxel squares in the sky at the spawn point).
+  and the inject pass drops a NaN / Inf history and never writes one, so a bad froxel cannot be fed back.
+- **Draw buffers 2-4 are color masked by default when SSR is on** (`GL_ResetSSRAuxWrite` after every
+  `qglColorMask`, the SSR material attachments of `renderFbo`). Any froxel pass that writes attachment 2 or
+  higher, or clears it, must enable it with `GL_SetSSRAuxWrite(true)` and restore it. The integrate pass writes
+  the tail there: without it the tail was never written, which on a first map is zeroed memory (no fog beyond
+  far) and after a map change (the GL context is kept) recycled VRAM: black blurry froxel squares over the whole
+  sky (seen on taspir1), history and light term independent, gone after `vid_restart`.
 - Depth discontinuities: the froxel volume is world anchored and defined behind geometry too, so reprojection has
   no depth edges; the screen-space disocclusion case is the frustum edge above.
 - Without temporal accumulation (`r_volumetricFogTemporal 0`): no jitter, froxel centers, 4 shadow taps.
