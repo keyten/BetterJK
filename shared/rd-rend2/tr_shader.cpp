@@ -1712,6 +1712,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if (!Q_stricmp(token, "specularreflectance"))
 		{
+			stage->specularScaleAuthored = qtrue;
 			token = COM_ParseExt(text, qfalse);
 			if ( token[0] == 0 )
 			{
@@ -1727,6 +1728,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if (!Q_stricmp(token, "specularexponent"))
 		{
+			stage->specularScaleAuthored = qtrue;
 			float exponent;
 
 			token = COM_ParseExt(text, qfalse);
@@ -1747,6 +1749,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if ( !Q_stricmp( token, "gloss" ) )
 		{
+			stage->specularScaleAuthored = qtrue;
 			token = COM_ParseExt(text, qfalse);
 			if ( token[0] == 0 )
 			{
@@ -1761,6 +1764,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if (!Q_stricmp(token, "roughness"))
 		{
+			stage->specularScaleAuthored = qtrue;
 			token = COM_ParseExt(text, qfalse);
 			if (token[0] == 0)
 			{
@@ -1841,6 +1845,7 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if (!Q_stricmp(token, "specularscale"))
 		{
+			stage->specularScaleAuthored = qtrue;
 			token = COM_ParseExt(text, qfalse);
 			if ( token[0] == 0 )
 			{
@@ -3286,6 +3291,7 @@ static void CollapseStagesToLightall(shaderStage_t *stage, shaderStage_t *lightm
 		{
 			if (stage->specularType == SPEC_SPECGLOSS)
 				defs |= LIGHTDEF_USE_SPEC_GLOSS;
+			stage->pbrSource = PBR_SOURCE_EXPLICIT;
 		}
 		else if ((lightmap || useLightVector || useLightVertex) && (diffuseImg = stage->bundle[TB_DIFFUSEMAP].image[0]) != NULL)
 		{
@@ -3309,6 +3315,7 @@ static void CollapseStagesToLightall(shaderStage_t *stage, shaderStage_t *lightm
 				stage->specularType = SPEC_SPECGLOSS;
 				defs |= LIGHTDEF_USE_SPEC_GLOSS;
 				VectorSet4(stage->specularScale, 1.0f, 1.0f, 1.0f, 0.0f);
+				stage->pbrSource = PBR_SOURCE_DISCOVERED;
 			}
 			else
 			{
@@ -3327,13 +3334,24 @@ static void CollapseStagesToLightall(shaderStage_t *stage, shaderStage_t *lightm
 					R_LoadPackedMaterialImage(stage, imageName, specularFlags);
 					if (!stage->bundle[TB_ORMSMAP].image[0])
 					{
+						// constant ORMS through whiteImage: AO 1, roughness 1,
+						// metal 0, F0 0.08 * 0.5 = 0.04. Authored scalar keywords
+						// are overwritten here too (existing behaviour, kept for
+						// r_autoPBR 0); r_autoPBR only replaces the diffuse-only case
 						stage->specularScale[0] = 0.0f;
 						stage->specularScale[2] =
 						stage->specularScale[3] = 1.0f;
 						stage->specularScale[1] = 0.5f;
+						stage->pbrSource = stage->specularScaleAuthored ?
+							PBR_SOURCE_SCALAR : PBR_SOURCE_LEGACY;
 					}
 				}
+				if (stage->pbrSource == PBR_SOURCE_NONE)
+					stage->pbrSource = PBR_SOURCE_DISCOVERED;
 			}
+
+			// classified once here, the class is only picked at draw time
+			R_ClassifyMaterial(stage, shader.name, diffuseImg->imgName);
 		}
 	}
 

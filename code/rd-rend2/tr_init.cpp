@@ -226,6 +226,9 @@ cvar_t  *r_ssrEmitters;
 cvar_t  *r_ssrEmitterIntensity;
 cvar_t  *r_ssrEmitterMaxRoughness;
 
+cvar_t  *r_autoPBR;
+cvar_t  *r_autoPBRDebug;
+
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
 cvar_t  *r_deluxeMapping;
@@ -1549,6 +1552,7 @@ typedef struct consoleCommand_s {
 static consoleCommand_t	commands[] = {
 	{ "imagelist",			R_ImageList_f },
 	{ "shaderlist",			R_ShaderList_f },
+	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
 	{ "skinlist",			R_SkinList_f },
 	{ "fontlist",			R_FontList_f },
 	{ "screenshot",			R_ScreenShotJPEG_f },
@@ -1761,6 +1765,10 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_ssrEmitterIntensity, 0.0f, 16.0f, qfalse );
 	r_ssrEmitterMaxRoughness = ri_Cvar_Get_NoComm( "r_ssrEmitterMaxRoughness", "0.35", CVAR_ARCHIVE, "SSR: rougher surfaces do not reflect light sabers / effects (their dynamic light highlight already does)" );
 	ri.Cvar_CheckRange( r_ssrEmitterMaxRoughness, 0.05f, 1.0f, qfalse );
+	r_autoPBR = ri_Cvar_Get_NoComm( "r_autoPBR", "0", CVAR_ARCHIVE, "PBR parameters of legacy materials without authored specular / packed maps: 0 = current rend2 fallback, 1 = generic dielectric, 2 = heuristic material classes" );
+	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
+	r_autoPBRDebug = ri_Cvar_Get_NoComm( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );
+	ri.Cvar_CheckRange( r_autoPBRDebug, 0, 2, qtrue );
 
 	r_normalMapping = ri_Cvar_Get_NoComm( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri_Cvar_Get_NoComm( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );

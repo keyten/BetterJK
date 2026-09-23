@@ -1996,7 +1996,21 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		};
 
 		uniformDataWriter.SetUniformVec4(UNIFORM_NORMALSCALE, normalScale);
-		uniformDataWriter.SetUniformVec4(UNIFORM_SPECULARSCALE, pStage->specularScale);
+		// r_autoPBR: legacy stages get their constant material here, at draw
+		// time, so the cvar needs neither vid_restart nor a shader permutation
+		vec4_t specularScale;
+		if (!R_AutoPBRSpecularScale(pStage, specularScale))
+			VectorCopy4(pStage->specularScale, specularScale);
+		uniformDataWriter.SetUniformVec4(UNIFORM_SPECULARSCALE, specularScale);
+
+		if (pStage->glslShaderGroup == tr.lightallShader)
+		{
+			vec4_t materialDebug = {};
+			R_AutoPBRDebugColor(pStage, materialDebug);
+			uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
+			if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
+				pStage->pbrDrawn = qtrue;
+		}
 
 		const float parallaxBias = r_forceParallaxBias->value > 0.0f ? r_forceParallaxBias->value : pStage->parallaxBias;
 		uniformDataWriter.SetUniformFloat(UNIFORM_PARALLAXBIAS, parallaxBias);

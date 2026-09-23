@@ -253,6 +253,9 @@ extern cvar_t  *r_ssrEmitters;
 extern cvar_t  *r_ssrEmitterIntensity;
 extern cvar_t  *r_ssrEmitterMaxRoughness;
 
+extern cvar_t  *r_autoPBR;
+extern cvar_t  *r_autoPBRDebug;
+
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
@@ -1079,6 +1082,29 @@ typedef enum
 	SPEC_ORMS,		// calculate spec from orms texture with a specular of 0.0 - 0.08 from input
 } specularType_t;
 
+// where the PBR parameters of a lightall stage come from (tr_autopbr.cpp)
+typedef enum
+{
+	PBR_SOURCE_NONE,		// not a lit lightall stage, or r_specularMapping 0
+	PBR_SOURCE_EXPLICIT,	// specMap / rmoMap / ormMap / moxrMap ... keyword
+	PBR_SOURCE_DISCOVERED,	// <diffuse>_specGloss / _rmo / _orm found next to the diffuse
+	PBR_SOURCE_SCALAR,		// no map, but specularScale / roughness / gloss ... keywords
+	PBR_SOURCE_LEGACY,		// diffuse only: white ORMS + specularScale fallback, r_autoPBR applies
+} pbrSource_t;
+
+// heuristic material classes of legacy stages (r_autoPBR 2)
+typedef enum
+{
+	MATCLASS_GENERIC,
+	MATCLASS_METAL,
+	MATCLASS_SKIN,
+	MATCLASS_CLOTH,
+	MATCLASS_LEATHER,
+	MATCLASS_PLASTIC,	// plastic and rubber
+	MATCLASS_HAIR,		// hair and fur
+	MATCLASS_COUNT
+} materialClass_t;
+
 enum AlphaTestType
 {
 	ALPHA_TEST_NONE,
@@ -1103,6 +1129,7 @@ typedef struct {
 	qboolean		glow;
 	qboolean		emissive;
 	qboolean		cloth;
+	qboolean		specularScaleAuthored;	// specularScale / roughness / gloss ... keywords
 
 	AlphaTestType	alphaTestType;
 
@@ -1124,6 +1151,11 @@ typedef struct {
 
 	stageType_t     type;
 	specularType_t  specularType;
+	pbrSource_t     pbrSource;
+	materialClass_t materialClass;
+	const char     *materialReason;	// static string: rule that picked materialClass
+	const char     *materialToken;	// static string: token that matched, or NULL
+	qboolean        pbrDrawn;		// drawn since registration, for pbr_dumpMaterials
 	struct shaderProgram_s *glslShaderGroup;
 	int glslShaderIndex;
 
@@ -1675,6 +1707,7 @@ typedef enum
 	UNIFORM_VERTEXLERP,
 	UNIFORM_NORMALSCALE,
 	UNIFORM_SPECULARSCALE,
+	UNIFORM_MATERIALDEBUG,	// r_autoPBRDebug: rgb = color, a = 1 when on (tr_autopbr.cpp)
 	UNIFORM_PARALLAXBIAS,
 
 	UNIFORM_VIEWINFO, // znear, zfar, width/2, height/2
@@ -4306,6 +4339,17 @@ void R_CreateAOFBOs(void);
 void RB_RenderScreenSpaceLighting(void);
 void RB_AOSceneParams(vec4_t aoParams, vec4_t aoParams2);
 qboolean RB_AODebugBypassesToneMap(void);
+
+/*
+============================================================
+AUTO PBR, tr_autopbr.cpp
+============================================================
+*/
+void R_ClassifyMaterial(shaderStage_t *stage, const char *shaderName, const char *diffuseName);
+qboolean R_AutoPBRSpecularScale(const shaderStage_t *stage, vec4_t out);
+qboolean R_AutoPBRDebugColor(const shaderStage_t *stage, vec4_t out);
+const char *R_MaterialClassName(materialClass_t cls);
+void R_PBRDumpMaterials_f(void);
 void RB_AODebugOverlay(void);
 
 qboolean R_MotionBlurEnabled(void);

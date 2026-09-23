@@ -477,6 +477,8 @@ uniform vec4 u_EmissiveParams;
 
 uniform vec4 u_NormalScale;
 uniform vec4 u_SpecularScale;
+// r_autoPBRDebug (tr_autopbr.cpp): rgb = material class / source color, a = 1 when on
+uniform vec4 u_MaterialDebug;
 uniform float u_ParallaxBias;
 
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_CUBEMAP)
@@ -1712,6 +1714,19 @@ void main()
 		return;
 	}
   #endif
+
+	// r_autoPBRDebug 1-2, flat color with a little view facing shading so the
+	// shape stays readable; written unlit (tone mapping is bypassed)
+	if (u_MaterialDebug.a > 0.0)
+	{
+		out_Color = vec4(u_MaterialDebug.rgb * (0.35 + 0.65 * NE), diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
 
   #if defined(USE_SSAO)
 	// r_debugAO 7-9, written unlit (tone mapping is bypassed for these)
