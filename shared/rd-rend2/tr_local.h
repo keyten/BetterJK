@@ -192,6 +192,7 @@ extern cvar_t  *r_linearLighting;
 extern cvar_t  *r_colorGrading;
 extern cvar_t  *r_colorGradingLut;
 extern cvar_t  *r_colorGradingIntensity;
+extern cvar_t  *r_autoEmissive;
 
 extern cvar_t  *r_depthPrepass;
 extern cvar_t  *r_ssao;
@@ -1627,7 +1628,7 @@ typedef enum
 	UNIFORM_SHADOWMVP3,
 
 	UNIFORM_ENABLETEXTURES,
-	UNIFORM_EMISSIVEPARAMS, // rgb = linear emission scale, w = scene domain (-1 legacy, +1 linear, 0 disabled)
+	UNIFORM_EMISSIVEPARAMS, // rgb = scale; |w| = 0 off, 1 explicit, 2 auto source; sign = legacy/linear scene
 
 	UNIFORM_DIFFUSETEXMATRIX,
 	UNIFORM_DIFFUSETEXOFFTURB,

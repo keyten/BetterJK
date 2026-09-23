@@ -555,7 +555,7 @@ uniform int u_AlphaTestType;
 
 // x = glow out, y = deluxe, z = screen shadow, w = cube
 uniform vec4 u_EnableTextures;
-// rgb = linear HDR emission scale; w = 0 disabled, +1 linear scene, -1 legacy encoded scene
+// rgb = linear scale; |w| = 0 disabled, 1 explicit, 2 auto source; sign = legacy/linear scene
 uniform vec4 u_EmissiveParams;
 
 in vec2 var_DiffuseTex;
@@ -682,7 +682,7 @@ void main()
 	}
 #endif
 
-	if (u_EmissiveParams.w != 0.0)
+	if (abs(u_EmissiveParams.w) == 1.0)
 	{
 		vec3 emissiveLinear = texture(u_EmissiveMap, var_DiffuseTex).rgb * u_EmissiveParams.rgb;
 		if (u_EmissiveParams.w > 0.0)
@@ -730,6 +730,9 @@ void main()
 	emissive *= vec3(1.0) - u_FogColorMask.rgb * fogColorOpacity.a;
 #endif
 #endif
+
+	if (abs(u_EmissiveParams.w) == 2.0)
+		emissive = color.rgb;
 
 	out_Color = color;
 	out_Glow = mix(vec4(emissive, color.a), color, u_EnableTextures.x);

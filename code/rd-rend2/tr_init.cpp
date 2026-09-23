@@ -165,6 +165,7 @@ cvar_t  *r_linearLighting;
 cvar_t  *r_colorGrading;
 cvar_t  *r_colorGradingLut;
 cvar_t  *r_colorGradingIntensity;
+cvar_t  *r_autoEmissive;
 
 cvar_t  *r_depthPrepass;
 cvar_t  *r_ssao;
@@ -1651,6 +1652,8 @@ void R_Register( void )
 	r_colorGradingLut = ri_Cvar_Get_NoComm( "r_colorGradingLut", "", CVAR_ARCHIVE, "Color grading LUT (.cube, or *identity). Overrides the LUT of the map (maps/<map>.cube), empty uses it" );
 	r_colorGradingIntensity = ri_Cvar_Get_NoComm( "r_colorGradingIntensity", "1", CVAR_ARCHIVE, "Color grading strength: 0 = none, 1 = full LUT" );
 	ri.Cvar_CheckRange( r_colorGradingIntensity, 0.0f, 1.0f, qfalse );
+	r_autoEmissive = ri_Cvar_Get_NoComm( "r_autoEmissive", "0", CVAR_ARCHIVE, "Automatically use legacy glow and unlit additive stages as emissive sources" );
+	ri.Cvar_CheckRange( r_autoEmissive, 0, 1, qtrue );
 
 	r_depthPrepass = ri_Cvar_Get_NoComm( "r_depthPrepass", "1", CVAR_ARCHIVE, "" );
 	r_ssao = ri_Cvar_Get_NoComm( "r_ssao", "0", CVAR_LATCH | CVAR_ARCHIVE, "" );

@@ -47,3 +47,19 @@ No cvar enables the material path globally. A stage must contain one of the new
 emissive keywords, so unmodified shader scripts keep a zero emissive term. With
 no new keyword, `out_Color` and both the disabled and enabled legacy `glow`
 outputs follow their prior expressions.
+
+## Automatic compatibility
+
+`r_autoEmissive` is an immediate, archived switch. Its default is `0`, preserving
+the legacy output. Set it to `1` to export these existing stages as emissive
+sources without adding their color to the scene a second time:
+
+- stages carrying the legacy `glow` keyword;
+- standalone unlit `blendFunc add` stages that do not use lightall, a lightmap,
+  detail rendering, or a sky surface.
+
+The structural rule intentionally rejects lit color generators, lightstyle
+passes, white diffuse surfaces and bright skies. Automatic filename-suffix
+discovery is not used because Jedi Academy assets do not expose a verified,
+repository-wide emissive naming convention here. The switch is evaluated per
+draw and does not require `vid_restart`.

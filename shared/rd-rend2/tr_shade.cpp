@@ -1634,6 +1634,47 @@ void RB_ShadowTessEnd(shaderCommands_t *input, const VertexArraysProperties *ver
 	RB_AddDrawItem(backEndData->currentPass, key, item);
 }
 
+static bool IsAutoEmissiveStage( const shaderStage_t *stage )
+{
+	if (!r_autoEmissive->integer)
+		return false;
+
+	// The legacy keyword is already an explicit authoring hint. Its complete
+	// stage result remains the source, so enabling this never doubles its color.
+	if (stage->glow)
+		return true;
+
+	// Conservative fallback for stock FX: only a standalone, unlit additive
+	// pass. Exclude lightall/lightmap, detail and sky passes so bright diffuse
+	// materials and baked lighting cannot be mistaken for emission.
+	const int blendBits = stage->stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
+	if (blendBits != (GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE)
+		|| stage->glslShaderGroup == tr.lightallShader
+		|| stage->isDetail
+		|| (tess.shader->surfaceFlags & SURF_SKY)
+		|| stage->bundle[0].isLightmap
+		|| stage->bundle[TB_LIGHTMAP].image[0])
+	{
+		return false;
+	}
+
+	switch (stage->rgbGen)
+	{
+		case CGEN_IDENTITY_LIGHTING:
+		case CGEN_IDENTITY:
+		case CGEN_ENTITY:
+		case CGEN_ONE_MINUS_ENTITY:
+		case CGEN_EXACT_VERTEX:
+		case CGEN_VERTEX:
+		case CGEN_ONE_MINUS_VERTEX:
+		case CGEN_WAVEFORM:
+		case CGEN_CONST:
+			return true;
+		default:
+			return false;
+	}
+}
+
 static void BindEmissiveStage( shaderStage_t *stage, UniformDataWriter& uniforms,
 	SamplerBindingsWriter& samplers )
 {
@@ -1645,6 +1686,12 @@ static void BindEmissiveStage( shaderStage_t *stage, UniformDataWriter& uniforms
 		// encode it into the legacy display-encoded scene buffer before adding.
 		params[3] = tr.linearLight ? 1.0f : -1.0f;
 		samplers.AddAnimatedImage(&stage->bundle[TB_EMISSIVEMAP], TB_EMISSIVEMAP);
+	}
+	else if (IsAutoEmissiveStage(stage))
+	{
+		// Magnitude 2 selects the source-only compatibility path in GLSL. The
+		// already rendered stage color is exported without adding it a second time.
+		params[3] = tr.linearLight ? 2.0f : -2.0f;
 	}
 	uniforms.SetUniformVec4(UNIFORM_EMISSIVEPARAMS, params);
 }
