@@ -38,6 +38,12 @@ layout(std140) uniform SurfaceSprite
 	float u_FxAlphaEnd;
 };
 
+// These match the visible camera even while the sprite is submitted to a
+// sun-cascade depth view.  The projection itself still comes from Camera.
+uniform vec3 u_SpriteViewOrigin;
+uniform vec3 u_SpriteViewLeft;
+uniform vec3 u_SpriteViewUp;
+
 #if defined(VELOCITY_PASS)
 layout(std140) uniform TemporalInfo
 {
@@ -104,14 +110,14 @@ vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fad
 	vec3 offset = offsets[vertex_id];
 
 #if defined(FACE_CAMERA)
-	offset = (offset.x * normalize(u_ViewLeft)) + (offset.z * normalize(u_ViewUp));
+	offset = (offset.x * normalize(u_SpriteViewLeft)) + (offset.z * normalize(u_SpriteViewUp));
 #elif defined(FACE_FLATTENED)
 	// Make this sprite face in some direction
 	vec3 fwdVec = cross(attr_Normal, vec3(0.0, 0.0, 1.0));
 	offset.xy = (offset.x * attr_Normal.xy) + (offset.y * width * fwdVec.xy);
 #elif !defined(FACE_UP)
 	// Make this sprite face in some direction in direction of the camera
-	vec3 lftVec = normalize(u_ViewLeft);
+	vec3 lftVec = normalize(u_SpriteViewLeft);
 	vec3 fwdVec = cross(lftVec, vec3(0.0, 0.0, 1.0));
 	offset.xy = (offset.x * normalize(attr_Normal.xy + 2.0 * lftVec.xy)) + (offset.y * width * fwdVec.xy);
 #endif
@@ -128,7 +134,7 @@ vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fad
 
 void main()
 {
-	vec3 V = u_ViewOrigin - attr_Position.xyz;
+	vec3 V = u_SpriteViewOrigin - attr_Position.xyz;
 	float distanceToCamera = length(V);
 	float fadeScale = smoothstep(u_FadeStartDistance, u_FadeEndDistance,
 						distanceToCamera);

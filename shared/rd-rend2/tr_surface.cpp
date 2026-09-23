@@ -2589,6 +2589,16 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 	shaderStage_t *firstStage = shader->stages[0];
 	shaderProgram_t *programGroup = firstStage->glslShaderGroup;
 	const surfaceSprite_t *ss = surf->sprite;
+	const bool modernSunShadow =
+		(backEnd.viewParms.flags & VPF_SHADOWCASCADES) &&
+		r_sunShadowMode->integer;
+	if (modernSunShadow && !r_sunShadowAlphaCasters->integer)
+	{
+		// Surface sprites are foliage generated at map load time.  The feature
+		// switch disables their new sun-shadow caster path as well as authored
+		// q3map_alphashadow casters.
+		return;
+	}
 
 	uint32_t shaderFlags = 0;
 	/*if ( surf->alphaTestType != ALPHA_TEST_NONE )
@@ -2627,6 +2637,23 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 	// FIXME: Use entity block for this
 	uniformDataWriter.SetUniformMatrix4x4(
 		UNIFORM_MODELVIEWPROJECTIONMATRIX, glState.modelviewProjection);
+
+	// A surface sprite must keep the same billboard orientation and distance
+	// fade while rendering the camera and sun-cascade views.  Using the light
+	// Camera UBO here rotates/fades the grass relative to each cascade and is
+	// the source of disappearing or swimming foliage shadows.
+	const vec3_t *spriteViewOrigin = &backEnd.viewParms.ori.origin;
+	const vec3_t *spriteViewLeft = &backEnd.viewParms.ori.axis[1];
+	const vec3_t *spriteViewUp = &backEnd.viewParms.ori.axis[2];
+	if (modernSunShadow)
+	{
+		spriteViewOrigin = &backEnd.refdef.vieworg;
+		spriteViewLeft = &backEnd.refdef.viewaxis[1];
+		spriteViewUp = &backEnd.refdef.viewaxis[2];
+	}
+	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWORIGIN, *spriteViewOrigin);
+	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWLEFT, *spriteViewLeft);
+	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWUP, *spriteViewUp);
 
 	uniformDataWriter.SetUniformInt(
 		UNIFORM_ALPHA_TEST_TYPE, surf->alphaTestType);
@@ -2703,6 +2730,11 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 
 		DrawItem item = {};
 		item.renderState.stateBits = firstStage->stateBits;
+		if (modernSunShadow)
+		{
+			item.renderState.stateBits &= ~(GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
+			item.renderState.stateBits |= GLS_DEPTHMASK_TRUE;
+		}
 		if (ss->facing == SURFSPRITE_FACING_UP)
 			item.renderState.stateBits |= GLS_POLYGON_OFFSET_FILL;
 		item.renderState.cullType = CT_TWO_SIDED;

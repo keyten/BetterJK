@@ -1843,8 +1843,14 @@ void R_AddDrawSurf(
 		return;
 	}
 
+	const bool alphaSunCaster =
+		(tr.viewParms.flags & VPF_SHADOWCASCADES) &&
+		r_sunShadowMode->integer &&
+		r_sunShadowAlphaCasters->integer &&
+		drawShader->alphaShadow;
 	if (tr.viewParms.flags & VPF_DEPTHSHADOW &&
-		(postRender == qtrue || drawShader->sort != SS_OPAQUE))
+		(postRender == qtrue ||
+		 (drawShader->sort != SS_OPAQUE && !alphaSunCaster)))
 	{
 		return;
 	}

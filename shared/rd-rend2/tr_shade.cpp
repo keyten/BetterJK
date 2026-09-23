@@ -1733,6 +1733,20 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 		stateBits = pStage->stateBits;
 
+		const bool alphaSunCaster =
+			(backEnd.viewParms.flags & VPF_SHADOWCASCADES) &&
+			r_sunShadowMode->integer &&
+			r_sunShadowAlphaCasters->integer &&
+			input->shader->alphaShadow;
+		if (alphaSunCaster)
+		{
+			// A blended foliage stage is only a source of its cutout silhouette in
+			// the shadow map.  Color blending is meaningless in a depth-only FBO,
+			// and many stock q3map_alphashadow stages do not request depth writes.
+			stateBits &= ~(GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
+			stateBits |= GLS_DEPTHMASK_TRUE;
+		}
+
 		if (backEnd.currentEntity)
 		{
 			assert(backEnd.currentEntity->e.renderfx >= 0);
@@ -1985,8 +1999,14 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		const float parallaxBias = r_forceParallaxBias->value > 0.0f ? r_forceParallaxBias->value : pStage->parallaxBias;
 		uniformDataWriter.SetUniformFloat(UNIFORM_PARALLAXBIAS, parallaxBias);
 
-		const AlphaTestType alphaTestType =
+		AlphaTestType alphaTestType =
 			useAlphaTestGE192 ? ALPHA_TEST_GE192 : pStage->alphaTestType;
+		if (alphaSunCaster && alphaTestType == ALPHA_TEST_NONE)
+		{
+			// Stock foliage such as fern3b/plant uses alpha blending together
+			// with q3map_alphashadow instead of an explicit alphaFunc.
+			alphaTestType = ALPHA_TEST_GE128;
+		}
 		uniformDataWriter.SetUniformInt(UNIFORM_ALPHA_TEST_TYPE, alphaTestType);
 
 		if (forceRefraction)
@@ -2007,7 +2027,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		}
 		else if ( backEnd.depthFill )
 		{
-			if (pStage->alphaTestType == ALPHA_TEST_NONE)
+			if (alphaTestType == ALPHA_TEST_NONE)
 				samplerBindingsWriter.AddStaticImage(tr.whiteImage, 0);
 			else if ( pStage->bundle[TB_COLORMAP].image[0] != 0 )
 				samplerBindingsWriter.AddAnimatedImage(&pStage->bundle[TB_COLORMAP], TB_COLORMAP);

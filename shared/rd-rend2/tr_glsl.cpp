@@ -116,6 +116,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_FogColorMask", GLSL_VEC4, 1 },
 
 	{ "u_ModelViewProjectionMatrix", GLSL_MAT4x4, 1 },
+	{ "u_SpriteViewOrigin", GLSL_VEC3, 1 },
+	{ "u_SpriteViewLeft",   GLSL_VEC3, 1 },
+	{ "u_SpriteViewUp",     GLSL_VEC3, 1 },
 
 	{ "u_VertexLerp" ,   GLSL_FLOAT, 1 },
 	{ "u_NormalScale",   GLSL_VEC4, 1 },

@@ -2827,6 +2827,15 @@ static qboolean ParseShader( const char **text )
 				shader.clampTime = atof(token);
 			}
 		}
+		// q3map normally consumes this keyword at map compile time.  Keep it as
+		// an explicit runtime opt-in too: Shadows 2.0 can then render authored
+		// foliage/cutout silhouettes without treating every blended material
+		// (glass, smoke, effects) as an opaque shadow caster.
+		else if ( !Q_stricmp( token, "q3map_alphashadow" ) ) {
+			shader.alphaShadow = qtrue;
+			SkipRestOfLine( text );
+			continue;
+		}
 		// skip stuff that only the q3map needs
 		else if ( !Q_stricmpn( token, "q3map", 5 ) ) {
 			SkipRestOfLine( text );

@@ -251,6 +251,7 @@ cvar_t  *r_shadowCascadeZNear;
 cvar_t  *r_shadowCascadeZFar;
 cvar_t  *r_shadowCascadeZBias;
 cvar_t  *r_sunShadowMode;
+cvar_t  *r_sunShadowAlphaCasters;
 cvar_t  *r_shadowCascadeBlend;
 cvar_t  *r_shadowDepthBias;
 cvar_t  *r_shadowNormalBias;
@@ -1824,6 +1825,8 @@ void R_Register( void )
 	r_shadowCascadeZBias = ri_Cvar_Get_NoComm( "r_shadowCascadeZBias", "-320", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	r_sunShadowMode = ri_Cvar_Get_NoComm( "r_sunShadowMode", "1", CVAR_ARCHIVE | CVAR_LATCH, "Sun shadows: 0 legacy, 1 stabilized blended PCSS" );
 	ri.Cvar_CheckRange( r_sunShadowMode, 0, 1, qtrue );
+	r_sunShadowAlphaCasters = ri_Cvar_Get_NoComm( "r_sunShadowAlphaCasters", "1", CVAR_ARCHIVE, "Shadows 2.0 foliage/cutout sun casters (q3map_alphashadow and surfaceSprites)" );
+	ri.Cvar_CheckRange( r_sunShadowAlphaCasters, 0, 1, qtrue );
 	r_shadowCascadeBlend = ri_Cvar_Get_NoComm( "r_shadowCascadeBlend", "0.10", CVAR_ARCHIVE, "Cascade transition width as a fraction of the smaller adjacent cascade" );
 	ri.Cvar_CheckRange( r_shadowCascadeBlend, 0.0f, 0.3f, qfalse );
 	r_shadowDepthBias = ri_Cvar_Get_NoComm( "r_shadowDepthBias", "0.15", CVAR_ARCHIVE, "Sun shadow constant receiver bias in world units" );

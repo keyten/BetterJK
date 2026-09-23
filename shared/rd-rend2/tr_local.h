@@ -272,6 +272,7 @@ extern cvar_t  *r_shadowCascadeZNear;
 extern cvar_t  *r_shadowCascadeZFar;
 extern cvar_t  *r_shadowCascadeZBias;
 extern cvar_t  *r_sunShadowMode;
+extern cvar_t  *r_sunShadowAlphaCasters;
 extern cvar_t  *r_shadowCascadeBlend;
 extern cvar_t  *r_shadowDepthBias;
 extern cvar_t  *r_shadowNormalBias;
@@ -1174,6 +1175,7 @@ typedef struct shader_s {
 										// the same name, we don't try looking for it again
 
 	qboolean	explicitlyDefined;		// found in a .shader file
+	qboolean	alphaShadow;			// q3map_alphashadow: use the base alpha as a sun-shadow cutout
 
 	int			surfaceFlags;			// if explicitlyDefined, this will have SURF_* flags
 	int			contentFlags;
@@ -1657,6 +1659,9 @@ typedef enum
 	UNIFORM_FOGCOLORMASK,
 
 	UNIFORM_MODELVIEWPROJECTIONMATRIX,
+	UNIFORM_SPRITEVIEWORIGIN,
+	UNIFORM_SPRITEVIEWLEFT,
+	UNIFORM_SPRITEVIEWUP,
 
 	UNIFORM_VERTEXLERP,
 	UNIFORM_NORMALSCALE,
@@ -3220,6 +3225,7 @@ extern  cvar_t  *r_shadowCascadeZNear;
 extern  cvar_t  *r_shadowCascadeZFar;
 extern  cvar_t  *r_shadowCascadeZBias;
 extern  cvar_t  *r_sunShadowMode;
+extern  cvar_t  *r_sunShadowAlphaCasters;
 extern  cvar_t  *r_shadowCascadeBlend;
 extern  cvar_t  *r_shadowDepthBias;
 extern  cvar_t  *r_shadowNormalBias;

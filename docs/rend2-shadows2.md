@@ -82,6 +82,7 @@ PCSS visibility; it never replaces it.
 | Cvar | Default | Meaning |
 | --- | ---: | --- |
 | `r_sunShadowMode` | 1 | 0 legacy, 1 shadows 2.0; latched |
+| `r_sunShadowAlphaCasters` | 1 | sun-shadow cutouts for `q3map_alphashadow` foliage and `surfaceSprites`; live toggle |
 | `r_shadowCascadeBlend` | 0.10 | overlap as fraction of smaller adjacent span |
 | `r_shadowDepthBias` | 0.15 | constant world-space receiver bias |
 | `r_shadowNormalBias` | 0.75 | normal offset in cascade texels |
@@ -100,6 +101,22 @@ The contact controls are `r_contactShadows`, `r_contactShadowLength`,
 `r_shadowDebug` values are: 1 cascade colors, 2 raw depth, 3 fixed-radius PCF,
 4 average blocker depth, 5 penumbra radius, 6 PCSS visibility, 7 contact-only,
 8 final CSM/PCSS times contact visibility, and 9 effective bias.
+
+### Alpha-tested foliage casters
+
+With `r_sunShadowMode 1` and `r_sunShadowAlphaCasters 1`, the runtime keeps the
+legacy `q3map_alphashadow` keyword as an explicit caster hint. Such materials
+may enter the sun cascade pass even when their visible sort is blended. The
+shadow draw uses the authored `alphaFunc`; when the material only declares
+alpha blending, it uses a 0.5 cutout. Blending is disabled and depth writes are
+forced only for this depth-only draw. Glass, smoke and other unmarked blended
+materials remain excluded.
+
+Generated `surfaceSprites` use their normal alpha test and retain the visible
+camera's billboard axes, distance fade and wind phase in every cascade. This
+prevents the light view from rotating or distance-culling grass independently
+in each shadow map. Setting `r_sunShadowAlphaCasters 0` disables both new paths
+immediately; legacy sun shadows and dynamic-light shadow maps are unchanged.
 
 ## Performance and validation
 
