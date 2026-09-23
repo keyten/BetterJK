@@ -231,6 +231,7 @@ cvar_t  *r_ssrEmitterMaxRoughness;
 
 cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
+cvar_t  *r_diffuseBRDF;
 
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
@@ -1739,6 +1740,8 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
 	r_autoPBRDebug = ri.Cvar_Get( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );
 	ri.Cvar_CheckRange( r_autoPBRDebug, 0, 2, qtrue );
+	r_diffuseBRDF = ri.Cvar_Get( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );
+	ri.Cvar_CheckRange( r_diffuseBRDF, 0, 1, qtrue );
 
 	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );

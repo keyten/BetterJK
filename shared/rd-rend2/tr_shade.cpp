@@ -2008,6 +2008,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			vec4_t materialDebug = {};
 			R_AutoPBRDebugColor(pStage, materialDebug);
 			uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
+			uniformDataWriter.SetUniformInt(UNIFORM_DIFFUSEBRDF, r_diffuseBRDF->integer);
 			if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
 				pStage->pbrDrawn = qtrue;
 		}

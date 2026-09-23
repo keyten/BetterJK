@@ -262,6 +262,7 @@ extern cvar_t  *r_ssrEmitterMaxRoughness;
 
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
+extern cvar_t  *r_diffuseBRDF;
 
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
@@ -1721,6 +1722,7 @@ typedef enum
 	UNIFORM_NORMALSCALE,
 	UNIFORM_SPECULARSCALE,
 	UNIFORM_MATERIALDEBUG,	// r_autoPBRDebug: rgb = color, a = 1 when on (tr_autopbr.cpp)
+	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
 	UNIFORM_VIEWINFO, // znear, zfar, width/2, height/2

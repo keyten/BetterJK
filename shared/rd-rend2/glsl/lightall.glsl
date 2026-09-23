@@ -479,6 +479,8 @@ uniform vec4 u_NormalScale;
 uniform vec4 u_SpecularScale;
 // r_autoPBRDebug (tr_autopbr.cpp): rgb = material class / source color, a = 1 when on
 uniform vec4 u_MaterialDebug;
+// Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
+uniform int u_DiffuseBRDF;
 uniform float u_ParallaxBias;
 
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_CUBEMAP)
@@ -1171,6 +1173,10 @@ vec3 CalcDiffuse(
 {
 	//Using #if to define our diffuse's is a good idea.
 #if !defined(USE_CLOTH_BRDF) //should define this as the base BRDF
+	if (u_DiffuseBRDF == 1)
+	{
+		return diffuse * Diff_Burley(roughness, clamp(NE, 0.0, 1.0), NL, LH);
+	}
 	return Diffuse_Lambert(diffuse);
 #else //and define this as the cloth diffuse
 	//this cloth model has a wrapped diffuse, we can be energy conservant here.
@@ -1308,11 +1314,23 @@ vec3 CalcDynamicLightContribution(
 		#if defined(USE_SPECULARMAP)
 		vec3  H  = normalize(L + E);
 		float LH = clamp(dot(L, H), 0.0, 1.0);
-		float NH = clamp(dot(N, H), 0.0, 1.0);
-		float VH = clamp(dot(E, H), 0.0, 1.0);
-		vec3 reflectance = diffuse + CalcSpecular(specular, NH, NL, NE, LH, VH, roughness);
+		#elif !defined(USE_CLOTH_BRDF)
+		float LH = 0.0;
+		if (u_DiffuseBRDF == 1)
+		{
+			vec3 H = normalize(L + E);
+			LH = clamp(dot(L, H), 0.0, 1.0);
+		}
+		#endif
+		#if !defined(USE_CLOTH_BRDF)
+		vec3 reflectance = M_PI * CalcDiffuse(diffuse, NE, NL, LH, roughness);
 		#else
 		vec3 reflectance = diffuse;
+		#endif
+		#if defined(USE_SPECULARMAP)
+		float NH = clamp(dot(N, H), 0.0, 1.0);
+		float VH = clamp(dot(E, H), 0.0, 1.0);
+		reflectance += CalcSpecular(specular, NH, NL, NE, LH, VH, roughness);
 		#endif
 		outColor += light.color * reflectance * attenuation * NL;
 	}
@@ -1568,10 +1586,9 @@ void main()
 	ambientColor = max(ambientColor - lightColor * surfNL, 0.0);
   #endif
 
-	// Scale lightColor by PI because we need want to have the same output intensity
-	// as in vanilla, but we also want correct computation formulas
-	// Lambiertian Diffuse divides by PI, so multiply light before to get the same intensity
-	// HDR Lightsources are scaled on upload accordingly
+	// Lambert and Burley diffuse both contain 1 / PI. Compensate it here to
+	// preserve Rend2's legacy lightmap, vertex-light and light-grid intensity.
+	// Dynamic lights apply the same compensation to their diffuse term locally.
 	lightColor *= M_PI;
 
 	// Dont scale ambient as we dont compute lambertian diffuse for it
