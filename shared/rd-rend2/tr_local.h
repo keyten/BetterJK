@@ -271,6 +271,7 @@ extern cvar_t  *r_ssrEmitterMaxRoughness;
 
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
+extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 
 extern cvar_t  *r_forwardPlus;
@@ -1134,6 +1135,9 @@ typedef enum
 	PBR_SOURCE_DISCOVERED,	// <diffuse>_specGloss / _rmo / _orm found next to the diffuse
 	PBR_SOURCE_SCALAR,		// no map, but specularScale / roughness / gloss ... keywords
 	PBR_SOURCE_LEGACY,		// diffuse only: white ORMS + specularScale fallback, r_autoPBR applies
+	PBR_SOURCE_LEGACY_SPEC,	// converted legacy shader (r_autoPBRConvert): ORMS built from its
+							// alphaGen lightingSpecular mask, r_autoPBR applies
+	PBR_SOURCE_COUNT
 } pbrSource_t;
 
 // heuristic material classes of legacy stages (r_autoPBR 2)
@@ -1200,6 +1204,8 @@ typedef struct {
 	const char     *materialReason;	// static string: rule that picked materialClass
 	const char     *materialToken;	// static string: token that matched, or NULL
 	qboolean        pbrDrawn;		// drawn since registration, for pbr_dumpMaterials
+	image_t        *legacySpecImage;	// r_autoPBRConvert: mask of the removed lightingSpecular stage
+	qboolean        legacyEnvDropped;	// r_autoPBRConvert: fake tcGen environment stage removed
 	struct shaderProgram_s *glslShaderGroup;
 	int glslShaderIndex;
 
@@ -1296,6 +1302,7 @@ typedef struct shader_s {
 
 	void		(*optimalStageIteratorFunc)( void );
 	qboolean	isHDRLit;
+	const char	*lightallSkipReason;	// static string: why CollapseStagesToGLSL kept the legacy path
 	depthPrepass_t	depthPrepass;
 	qboolean	useDistortion;
 
@@ -4360,6 +4367,7 @@ void R_AddDecals( void );
 image_t	*R_FindImageFile( const char *name, imgType_t type, int flags );
 void R_LoadPackedMaterialImage(shaderStage_t *stage, const char *packedImageName, int flags);
 image_t *R_BuildSDRSpecGlossImage(shaderStage_t *stage, const char *specImageName, int flags);
+image_t *R_BuildLegacySpecORMSImage(const char *specImageName, int flags);
 qhandle_t RE_RegisterShader( const char *name );
 qhandle_t RE_RegisterShaderNoMip( const char *name );
 const char		*RE_ShaderNameFromIndex(int index);
@@ -4401,6 +4409,8 @@ void R_ClassifyMaterial(shaderStage_t *stage, const char *shaderName, const char
 qboolean R_AutoPBRSpecularScale(const shaderStage_t *stage, vec4_t out);
 qboolean R_AutoPBRDebugColor(const shaderStage_t *stage, vec4_t out);
 const char *R_MaterialClassName(materialClass_t cls);
+qboolean R_IsAutoPBRSource(pbrSource_t source);
+qboolean R_IsGouraudStage(const shaderStage_t *stage);
 void R_PBRDumpMaterials_f(void);
 void RB_AODebugOverlay(void);
 

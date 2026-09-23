@@ -84,6 +84,22 @@ static const vec3_t debugColorExplicit   = { 0.10f, 0.90f, 0.20f };
 static const vec3_t debugColorDiscovered = { 0.10f, 0.80f, 0.90f };
 static const vec3_t debugColorAuto       = { 1.00f, 0.55f, 0.05f };
 static const vec3_t debugColorLegacy     = { 0.45f, 0.45f, 0.45f };
+static const vec3_t debugColorLegacySpec = { 1.00f, 0.15f, 0.85f };
+// both views: lit stage still on the vertex lit generic path
+static const vec3_t debugColorGouraud    = { 1.00f, 0.08f, 0.05f };
+
+qboolean R_IsAutoPBRSource( pbrSource_t source )
+{
+	return (qboolean)(source == PBR_SOURCE_LEGACY || source == PBR_SOURCE_LEGACY_SPEC);
+}
+
+// lit by the entity light (rgbGen lightingDiffuse) but not collapsed to
+// lightall: generic.glsl lights it per vertex
+qboolean R_IsGouraudStage( const shaderStage_t *stage )
+{
+	return (qboolean)(stage->glslShaderGroup != tr.lightallShader &&
+		(stage->rgbGen == CGEN_LIGHTING_DIFFUSE || stage->rgbGen == CGEN_LIGHTING_DIFFUSE_ENTITY));
+}
 
 const char *R_MaterialClassName( materialClass_t cls )
 {
@@ -107,7 +123,7 @@ static const materialDefaults_t *R_AutoPBRDefaults( const shaderStage_t *stage )
 
 qboolean R_AutoPBRSpecularScale( const shaderStage_t *stage, vec4_t out )
 {
-	if ( stage->pbrSource != PBR_SOURCE_LEGACY || !r_autoPBR->integer )
+	if ( !R_IsAutoPBRSource( stage->pbrSource ) || !r_autoPBR->integer )
 		return qfalse;
 
 	const materialDefaults_t *m = R_AutoPBRDefaults( stage );
@@ -122,7 +138,17 @@ qboolean R_AutoPBRDebugColor( const shaderStage_t *stage, vec4_t out )
 {
 	const vec_t *color;
 
-	if ( !r_autoPBRDebug->integer || stage->pbrSource == PBR_SOURCE_NONE )
+	if ( !r_autoPBRDebug->integer )
+		return qfalse;
+
+	if ( R_IsGouraudStage( stage ) )
+	{
+		VectorCopy( debugColorGouraud, out );
+		out[3] = 1.0f;
+		return qtrue;
+	}
+
+	if ( stage->pbrSource == PBR_SOURCE_NONE )
 		return qfalse;
 
 	if ( r_autoPBRDebug->integer == 2 )
@@ -137,6 +163,9 @@ qboolean R_AutoPBRDebugColor( const shaderStage_t *stage, vec4_t out )
 				break;
 			case PBR_SOURCE_SCALAR:
 				color = debugColorScalar;
+				break;
+			case PBR_SOURCE_LEGACY_SPEC:
+				color = debugColorLegacySpec;
 				break;
 			default:
 				color = r_autoPBR->integer ? debugColorAuto : debugColorLegacy;
@@ -505,6 +534,8 @@ static const char *PBRSourceName( const shaderStage_t *stage )
 			return "authored:scalar";
 		case PBR_SOURCE_LEGACY:
 			return r_autoPBR->integer ? "auto" : "legacy";
+		case PBR_SOURCE_LEGACY_SPEC:
+			return r_autoPBR->integer ? "auto+specmask" : "legacy+specmask";
 		default:
 			return "none";
 	}
@@ -514,11 +545,13 @@ static const char *PBRSourceName( const shaderStage_t *stage )
 ===============
 R_PBRDumpMaterials_f
 
-pbr_dumpMaterials [used|all|auto|authored|<class>]
+pbr_dumpMaterials [used|all|auto|authored|gouraud|<class>]
 
-Lists the lit lightall stages of the registered shaders (this level and the
-models loaded for it) with the parameters r_autoPBR currently gives them.
-Default: only stages drawn since they were registered.
+Lists the lit stages of the registered shaders (this level and the models
+loaded for it): lightall stages with the parameters r_autoPBR currently gives
+them, and lit stages still on the vertex lit generic path ("gouraud", with the
+reason CollapseStagesToGLSL kept them there). Default: only stages drawn since
+they were registered.
 ===============
 */
 void R_PBRDumpMaterials_f( void )
@@ -528,12 +561,15 @@ void R_PBRDumpMaterials_f( void )
 	const qboolean usedOnly = (qboolean)!Q_stricmp( filter, "used" );
 	const qboolean autoOnly = (qboolean)!Q_stricmp( filter, "auto" );
 	const qboolean authoredOnly = (qboolean)!Q_stricmp( filter, "authored" );
+	const qboolean gouraudOnly = (qboolean)!Q_stricmp( filter, "gouraud" );
 	int classFilter = -1;
 	int perClass[MATCLASS_COUNT] = {};
-	int perSource[PBR_SOURCE_LEGACY + 1] = {};
+	int perSource[PBR_SOURCE_COUNT] = {};
+	int gouraud = 0;
+	int envDropped = 0;
 	int listed = 0;
 
-	if ( !all && !usedOnly && !autoOnly && !authoredOnly )
+	if ( !all && !usedOnly && !autoOnly && !authoredOnly && !gouraudOnly )
 	{
 		for ( int c = 0; c < MATCLASS_COUNT; c++ )
 		{
@@ -542,7 +578,7 @@ void R_PBRDumpMaterials_f( void )
 		}
 		if ( classFilter < 0 )
 		{
-			ri.Printf( PRINT_ALL, "usage: pbr_dumpMaterials [used|all|auto|authored|generic|metal|skin|cloth|leather|plastic|hair]\n" );
+			ri.Printf( PRINT_ALL, "usage: pbr_dumpMaterials [used|all|auto|authored|gouraud|generic|metal|skin|cloth|leather|plastic|hair]\n" );
 			return;
 		}
 	}
@@ -550,8 +586,9 @@ void R_PBRDumpMaterials_f( void )
 	if ( !r_specularMapping->integer )
 		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "r_specularMapping is 0: lightall has no specular path, r_autoPBR has no effect\n" );
 
-	ri.Printf( PRINT_ALL, "r_autoPBR %d. AO / rough / metal / F0 are the values lightall receives now.\n", r_autoPBR->integer );
-	ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4s %5s %5s %6s  diffuse\n",
+	ri.Printf( PRINT_ALL, "r_autoPBR %d, r_autoPBRConvert %d. AO / rough / metal / F0 are the values lightall receives now"
+		" (x: multiplied per texel by the spec mask).\n", r_autoPBR->integer, r_autoPBRConvert->integer );
+	ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4s %6s %6s %6s  diffuse\n",
 		"used", "shader", "source", "class", "reason", "AO", "rough", "metal", "F0" );
 
 	for ( int i = 0; i < tr.numShaders; i++ )
@@ -560,20 +597,38 @@ void R_PBRDumpMaterials_f( void )
 		for ( int s = 0; s < MAX_SHADER_STAGES; s++ )
 		{
 			const shaderStage_t *stage = sh->stages[s];
-			if ( !stage || !stage->active || stage->pbrSource == PBR_SOURCE_NONE )
+			if ( !stage || !stage->active )
 				continue;
 			// lightstyle copies of a stage share its material
 			if ( stage->rgbGen == CGEN_LIGHTMAPSTYLE )
 				continue;
-
-			const qboolean isLegacy = (qboolean)(stage->pbrSource == PBR_SOURCE_LEGACY);
 			if ( usedOnly && !stage->pbrDrawn )
 				continue;
-			if ( autoOnly && !isLegacy )
+
+			const image_t *diffuse = stage->bundle[TB_DIFFUSEMAP].image[0];
+
+			if ( R_IsGouraudStage( stage ) )
+			{
+				if ( autoOnly || authoredOnly || classFilter >= 0 )
+					continue;
+				ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4s %6s %6s %6s  %s\n",
+					stage->pbrDrawn ? "*" : "", sh->name, "GOURAUD", "-",
+					sh->lightallSkipReason ? sh->lightallSkipReason : "not collapsed",
+					"-", "-", "-", "-", diffuse ? diffuse->imgName : "-" );
+				listed++;
+				gouraud++;
 				continue;
-			if ( authoredOnly && isLegacy )
+			}
+
+			if ( gouraudOnly || stage->pbrSource == PBR_SOURCE_NONE )
 				continue;
-			if ( classFilter >= 0 && (!isLegacy || stage->materialClass != classFilter) )
+
+			const qboolean isAuto = R_IsAutoPBRSource( stage->pbrSource );
+			if ( autoOnly && !isAuto )
+				continue;
+			if ( authoredOnly && isAuto )
+				continue;
+			if ( classFilter >= 0 && (!isAuto || stage->materialClass != classFilter) )
 				continue;
 
 			// what the shader decodes, see the header of this file
@@ -582,26 +637,30 @@ void R_PBRDumpMaterials_f( void )
 				VectorCopy4( stage->specularScale, scale );
 
 			char reason[64];
-			if ( !isLegacy )
+			if ( !isAuto )
 				Q_strncpyz( reason, "-", sizeof( reason ) );
 			else if ( stage->materialToken )
 				Com_sprintf( reason, sizeof( reason ), "%s:%s", stage->materialReason, stage->materialToken );
 			else
 				Q_strncpyz( reason, stage->materialReason ? stage->materialReason : "?", sizeof( reason ) );
 
-			const image_t *diffuse = stage->bundle[TB_DIFFUSEMAP].image[0];
-			if ( isLegacy || stage->pbrSource == PBR_SOURCE_SCALAR )
+			if ( isAuto || stage->pbrSource == PBR_SOURCE_SCALAR )
 			{
-				ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4.2f %5.2f %5.2f %6.3f  %s\n",
+				// legacy spec mask: rough and metal are multiplied per texel
+				const qboolean masked = (qboolean)(stage->pbrSource == PBR_SOURCE_LEGACY_SPEC);
+				ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4.2f %5.2f%s %5.2f%s %6.3f  %s%s%s%s\n",
 					stage->pbrDrawn ? "*" : "", sh->name, PBRSourceName( stage ),
-					isLegacy ? R_MaterialClassName( stage->materialClass ) : "-", reason,
-					scale[2], scale[3], scale[0], 0.08f * scale[1],
-					diffuse ? diffuse->imgName : "-" );
+					isAuto ? R_MaterialClassName( stage->materialClass ) : "-", reason,
+					scale[2], scale[3], masked ? "x" : " ", scale[0], masked ? "x" : " ", 0.08f * scale[1],
+					diffuse ? diffuse->imgName : "-",
+					masked ? " mask " : "",
+					masked && stage->legacySpecImage ? stage->legacySpecImage->imgName : "",
+					stage->legacyEnvDropped ? " (env stage dropped)" : "" );
 			}
 			else
 			{
 				// texture driven, the scale only multiplies the map
-				ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4s %5s %5s %6s  %s (map %s)\n",
+				ri.Printf( PRINT_ALL, "%-4s %-44s %-20s %-8s %-18s %4s %6s %6s %6s  %s (map %s)\n",
 					stage->pbrDrawn ? "*" : "", sh->name, PBRSourceName( stage ), "-", reason,
 					"map", "map", "map", "map",
 					diffuse ? diffuse->imgName : "-",
@@ -610,16 +669,22 @@ void R_PBRDumpMaterials_f( void )
 
 			listed++;
 			perSource[stage->pbrSource]++;
-			if ( isLegacy )
+			if ( stage->legacyEnvDropped )
+				envDropped++;
+			if ( isAuto )
 				perClass[stage->materialClass]++;
 		}
 	}
 
-	ri.Printf( PRINT_ALL, "%d stages: %d explicit maps, %d discovered maps, %d scalar keywords, %d legacy (auto PBR)\n",
+	ri.Printf( PRINT_ALL, "%d stages: %d explicit maps, %d discovered maps, %d scalar keywords, %d legacy (auto PBR), "
+		"%d converted with spec mask (%d env stages dropped), %d still gouraud\n",
 		listed, perSource[PBR_SOURCE_EXPLICIT], perSource[PBR_SOURCE_DISCOVERED],
-		perSource[PBR_SOURCE_SCALAR], perSource[PBR_SOURCE_LEGACY] );
-	ri.Printf( PRINT_ALL, "legacy classes:" );
+		perSource[PBR_SOURCE_SCALAR], perSource[PBR_SOURCE_LEGACY], perSource[PBR_SOURCE_LEGACY_SPEC],
+		envDropped, gouraud );
+	ri.Printf( PRINT_ALL, "auto PBR classes:" );
 	for ( int c = 0; c < MATCLASS_COUNT; c++ )
 		ri.Printf( PRINT_ALL, " %s %d", materialDefaults[c].name, perClass[c] );
 	ri.Printf( PRINT_ALL, "\n" );
+	if ( gouraud && !r_autoPBRConvert->integer )
+		ri.Printf( PRINT_ALL, "gouraud stages are vertex lit (generic.glsl); r_autoPBRConvert 1 + vid_restart converts the lightingSpecular ones\n" );
 }

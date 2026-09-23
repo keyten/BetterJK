@@ -235,6 +235,7 @@ cvar_t  *r_ssrEmitterMaxRoughness;
 
 cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
+cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 
 cvar_t  *r_forwardPlus;
@@ -1790,6 +1791,8 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
 	r_autoPBRDebug = ri_Cvar_Get_NoComm( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );
 	ri.Cvar_CheckRange( r_autoPBRDebug, 0, 2, qtrue );
+	r_autoPBRConvert = ri_Cvar_Get_NoComm( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
+	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );
 	ri.Cvar_CheckRange( r_diffuseBRDF, 0, 1, qtrue );
 

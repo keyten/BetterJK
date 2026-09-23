@@ -2921,6 +2921,71 @@ image_t *R_BuildSDRSpecGlossImage(shaderStage_t *stage, const char *specImageNam
 	return outImage;
 }
 
+/*
+===============
+R_BuildLegacySpecORMSImage
+
+r_autoPBRConvert: turns the mask of a legacy "alphaGen lightingSpecular"
+stage (models/players/stormtrooper/armor_spec, c3po_leg_s, ...) into an ORMS
+map for lightall. The channels are multipliers of the draw time
+specularScale (tr_autopbr.cpp), so r_autoPBR still picks the material:
+
+  O = 1
+  R = mix(1.0, 0.45, sqrt(l))       shinier where the mask is bright, the
+                                    class roughness is the maximum
+  M = smoothstep(0.08, 0.35, l)     metal only where the mask shines, scaled
+                                    by the class metalness (0 if not metal)
+  S = 1
+
+l = linear luminance of the mask. Cached as <mask>_lORMS.
+===============
+*/
+image_t *R_BuildLegacySpecORMSImage(const char *specImageName, int flags)
+{
+	char	ormsName[MAX_QPATH];
+	int		width, height;
+	byte	*pic;
+
+	if (!specImageName || !specImageName[0])
+		return NULL;
+
+	flags &= ~(IMGFLAG_SRGB | IMGFLAG_GENNORMALMAP);
+	flags |= IMGFLAG_NOLIGHTSCALE;
+
+	COM_StripExtension(specImageName, ormsName, sizeof(ormsName));
+	Q_strcat(ormsName, sizeof(ormsName), "_lORMS");
+
+	image_t *image = R_GetLoadedImage(ormsName, flags);
+	if (image != NULL)
+		return image;
+
+	R_LoadImage(specImageName, &pic, &width, &height);
+	if (pic == NULL)
+		return NULL;
+
+	for (int i = 0; i < width * height * 4; i += 4)
+	{
+		const float r = (float)sRGBtoRGB(ByteToFloat(pic[i + 0]));
+		const float g = (float)sRGBtoRGB(ByteToFloat(pic[i + 1]));
+		const float b = (float)sRGBtoRGB(ByteToFloat(pic[i + 2]));
+		const float l = Com_Clamp(0.0f, 1.0f, 0.2126f * r + 0.7152f * g + 0.0722f * b);
+
+		const float rough = 1.0f - 0.55f * sqrtf(l);
+		float metal = Com_Clamp(0.0f, 1.0f, (l - 0.08f) / (0.35f - 0.08f));
+		metal = metal * metal * (3.0f - 2.0f * metal);
+
+		pic[i + 0] = 255;
+		pic[i + 1] = FloatToByte(rough);
+		pic[i + 2] = FloatToByte(metal);
+		pic[i + 3] = 255;
+	}
+
+	image = R_CreateImage(ormsName, pic, width, height, IMGTYPE_COLORALPHA, flags, 0);
+	Z_Free(pic);
+
+	return image;
+}
+
 static void R_CreateNormalMap ( const char *name, byte *pic, int width, int height, int flags )
 {
 	char normalName[MAX_QPATH];

@@ -268,6 +268,7 @@ def parse_shader_body(body):
         if cur is not None:
             cur.append(line.lower().split())
     info = {'diffuse': None, 'explicit': None, 'scalar': False, 'shiny': False, 'stages': len(stages)}
+    info['convert'] = lightall_status(stages)
     for st in stages:
         kw = {l[0]: l[1:] for l in st if l}
         m = kw.get('map') or kw.get('clampmap') or kw.get('animmap')
@@ -282,6 +283,76 @@ def parse_shader_body(body):
                 and 'glow' not in kw and not m[0].startswith('*'):
             info['diffuse'] = strip_ext(m[-1] if kw.get('animmap') else m[0])
     return info
+
+
+def lightall_status(stages):
+    """
+    Port of CollapseStagesToGLSL's skip test plus ConvertLegacyShinyStages
+    (tr_shader.cpp), assuming r_cubeMapping 1 and r_detailTextures 1.
+    Returns (status, detail): 'lightall', 'converted' (+ 'env dropped'),
+    'skip' (+ reason) or 'unlit'.
+    """
+    parsed = []
+    for st in stages:
+        kw = {}
+        for l in st:
+            if l:
+                kw.setdefault(l[0], l[1:])
+        parsed.append(kw)
+
+    def blend(kw):
+        b = kw.get('blendfunc')
+        if not b:
+            return None
+        if b[0] == 'add':
+            return ('gl_one', 'gl_one')
+        if b[0] == 'filter':
+            return ('gl_dst_color', 'gl_zero')
+        if b[0] == 'blend':
+            return ('gl_src_alpha', 'gl_one_minus_src_alpha')
+        return tuple(b[:2])
+
+    tcgen = lambda kw: (kw.get('tcgen') or ['texture'])[0]
+    has_lightmap = any((kw.get('map') or [''])[0] == '$lightmap' for kw in parsed)
+    lit = has_lightmap or any((kw.get('rgbgen') or [''])[0] in ('lightingdiffuse', 'lightingdiffuseentity') for kw in parsed)
+    if not lit:
+        return ('unlit', '')
+
+    active = list(parsed)
+    diffuse = None
+    converted = False
+    env = False
+    for kw in parsed:
+        spec = (kw.get('alphagen') or [''])[0] == 'lightingspecular'
+        if diffuse is None:
+            model_lit = (kw.get('rgbgen') or [''])[0] in ('lightingdiffuse', 'lightingdiffuseentity')
+            m = (kw.get('map') or kw.get('clampmap') or kw.get('animmap') or [''])[0]
+            if 'glow' not in kw and not spec and tcgen(kw) in ('texture', 'base') and m != '$lightmap' \
+                    and (model_lit or has_lightmap):
+                diffuse = kw
+            continue
+        if spec:
+            if blend(kw) == ('gl_src_alpha', 'gl_one') and tcgen(kw) in ('texture', 'base') and not converted:
+                converted = True
+                active.remove(kw)
+            continue
+        diffuse_model_lit = (diffuse.get('rgbgen') or [''])[0] in ('lightingdiffuse', 'lightingdiffuseentity')
+        if tcgen(kw) == 'environment' and diffuse_model_lit and 'glow' not in kw and \
+                blend(kw) in (('gl_dst_color', 'gl_src_color'), ('gl_one', 'gl_one')):
+            env = True
+            active.remove(kw)
+
+    for kw in active:
+        a = (kw.get('alphagen') or [''])[0]
+        if a == 'lightingspecular':
+            return ('skip', 'alphaGen lightingSpecular')
+        if a == 'portal':
+            return ('skip', 'alphaGen portal')
+        if tcgen(kw) not in ('texture', 'base', 'lightmap', 'environment', 'vector'):
+            return ('skip', 'tcGen ' + tcgen(kw))
+    if converted:
+        return ('converted', 'env dropped' if env else '')
+    return ('lightall', 'env dropped' if env else '')
 
 
 def material_source(idx, shader, diffuse):
@@ -396,6 +467,32 @@ def main():
             sc[s][r['cls']] += 1
     for s, c in sorted(sc.items(), key=lambda kv: -sum(kv[1].values()))[:24]:
         print('- %s: %s' % (s, ', '.join('%s %d' % kv for kv in c.most_common())))
+
+    print('\n## Lightall conversion of lit shaders (r_autoPBRConvert 1)\n')
+    print('| area | lightall today | converted (spec mask) | +env dropped | still vertex lit |')
+    print('|---|---|---|---|---|')
+    conv = collections.defaultdict(collections.Counter)
+    still = collections.Counter()
+    for name, info in idx.shaders.items():
+        st, detail = info['convert']
+        if st == 'unlit':
+            continue
+        area = '/'.join(name.split('/')[:2])
+        c = conv[area]
+        c['converted' if st == 'converted' else ('skip' if st == 'skip' else 'lightall')] += 1
+        if st == 'converted' and detail:
+            c['env'] += 1
+        if st == 'skip':
+            still[detail] += 1
+    tot = collections.Counter()
+    for area, c in sorted(conv.items(), key=lambda kv: -sum(kv[1].values())):
+        tot.update(c)
+        if area.startswith('models/') or sum(c.values()) > 60:
+            print('| %s | %d | %d | %d | %d |' % (area, c['lightall'], c['converted'], c['env'], c['skip']))
+    print('| **all** | %d | %d | %d | %d |' % (tot['lightall'], tot['converted'], tot['env'], tot['skip']))
+    print('\nStill vertex lit, by reason: ' + ', '.join('%s %d' % kv for kv in still.most_common()))
+    left = sorted(n for n, i in idx.shaders.items() if i['convert'] == ('skip', 'alphaGen lightingSpecular'))
+    print('\nlightingSpecular shaders the pattern does not match: ' + ', '.join(left[:40]))
 
     print('\n## Legacy shaders with env-map / lightingSpecular stages (legacy "shiny" hint)\n')
     sh = collections.Counter(r['cls'] for r in legacy if r['shiny'])

@@ -4,10 +4,83 @@ Experimental. Gives Jedi Academy materials that have no authored PBR data sensib
 parameters. It extends the existing `lightall` material path; it is not a new material system.
 With the default `r_autoPBR 0`, rendering is unchanged.
 
-Status (2026-09-23): implemented. Verified by MSVC builds (SP + MP), offline GLSL compiles of
+Status (2026-09-23): implemented, part 2 (`r_autoPBRConvert`) added the same day. Verified by MSVC builds (SP + MP), offline GLSL compiles of
 lightall (Intel UHD + RTX 2060), and a PK3 inventory plus classifier dry run whose C++ and Python
 outputs are identical on 4000 materials. **Not yet run in game:** no screenshots or A/B captures
 exist yet. The capture checklist is at the end.
+
+## Part 2: legacy "shiny" shaders were never PBR (`r_autoPBRConvert`)
+
+First in-game feedback: stormtroopers still looked vertex lit, protocol droids got no cubemap or SSR,
+and `r_autoPBRDebug 1` showed them dark grey. Root cause:
+
+- `CollapseStagesToGLSL` (`tr_shader.cpp`) **skips the whole shader** when any stage has
+  `alphaGen lightingSpecular`. The shader then never becomes lightall, and `r_autoPBR` cannot touch it.
+- Skipped lit stages are drawn by `generic.glsl` `CalcColor()`: `u_DirectedLight * N·L + u_AmbientLight`
+  **per vertex**, plus a fake `pow(R·V, 4)` highlight times the `_spec` texture. That is Gouraud
+  shading: no normal map, GGX, cubemap, SSR or sun shadows.
+- The grey was not an unknown class. These stages got no debug colour at all, and the debug view turns
+  off tone mapping for the frame.
+- It hits exactly the hard, shiny content: 138 lit shaders. That is 85 player shaders (every trooper,
+  boba_fett, protocol, mark1, saber_droid, r5d2, remote, swoop, x-wing, lambdashuttle, rancor …), 29 of
+  the 34 `weapons2` shaders, and 20 map_objects.
+
+The legacy pattern (players.shader, weapons.shader …):
+
+```
+{ map <diffuse>  rgbGen lightingDiffuse }                                  lit diffuse
+{ map gfx/effects/chr_inv  blendFunc GL_DST_COLOR GL_SRC_COLOR  tcGen environment }   fake chrome (optional)
+{ map <diffuse>_spec  blendFunc GL_SRC_ALPHA GL_ONE  detail  alphaGen lightingSpecular }  highlight mask
+```
+
+With **`r_autoPBRConvert 1`** (latched, needs `vid_restart`), `ConvertLegacyShinyStages` runs before
+the skip test:
+
+1. The diffuse is the first non-glow `tcGen texture` stage lit by `rgbGen lightingDiffuse(Entity)`, or
+   any such stage in a shader that has a lightmap.
+2. The first following `alphaGen lightingSpecular` stage with `blendFunc GL_SRC_ALPHA GL_ONE` is
+   removed. Its image becomes the diffuse stage's `legacySpecImage`.
+3. `tcGen environment` stages with `GL_DST_COLOR GL_SRC_COLOR` or `GL_ONE GL_ONE` blending after a
+   model-lit diffuse are removed when `r_cubeMapping` is on, since cubemap IBL and SSR replace them
+   (no double reflection).
+4. Everything else is unchanged. A shader whose `lightingSpecular` stage does not match still skips,
+   and `shader.lightallSkipReason` records why.
+
+In `CollapseStagesToLightall`, when no authored map exists, `R_BuildLegacySpecORMSImage`
+(`tr_image.cpp`) turns the mask into an ORMS texture (`<mask>_lORMS`). With `l` = linear luminance of
+the mask:
+
+| channel | value | meaning |
+|---|---|---|
+| O | 1 | |
+| R | `1 - 0.55·sqrt(l)` | roughness **multiplier**: the class roughness is the maximum, bright mask areas are glossier |
+| M | `smoothstep(0.08, 0.35, l)` | metal **mask**, multiplied by the class metalness (0 for non-metal classes) |
+| S | 1 | |
+
+The stage becomes `PBR_SOURCE_LEGACY_SPEC` with `specularType = SPEC_ORMS`. `r_autoPBR` still picks the
+class values at draw time: `ORMS *= specularScale.zwxy`. Examples:
+
+- stormtrooper armour, plastic: roughness 0.60 in matte areas, down to 0.27 where the mask is white;
+- protocol droid, metal: gold panels metallic, dark joints dielectric;
+- weapons, metal: metallic only where the old highlight mask was bright.
+
+`CollapseStagesToLightall` is otherwise unchanged, so `_nh`/`_n` lookup and generated normal maps
+(`r_genNormalMaps`) apply to the converted stages as well.
+
+With `r_autoPBRConvert 0` the shader setup is unchanged, and so is rendering (the debug uniform is 0).
+
+Inventory (`tools/rend2_pbr_inventory.py`, "Lightall conversion" section):
+
+| area | lightall today | converted | env stage dropped | still vertex lit |
+|---|---|---|---|---|
+| models/players | 173 | 84 | 4 | 1 |
+| models/weapons2 | 5 | 29 | 0 | 0 |
+| models/map_objects | 300 | 20 | 0 | 0 |
+| all lit shaders | 1641 | 133 | 4 | 5 |
+
+Still vertex lit: `models/players/reborn/boss_torso` (its spec stage blends `GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA`, not additive) and four
+slick-floor test shaders (`textures/bespin/floor_slick_nodamage`, `textures/tests/*`). The
+`protocol/imp_*` variant uses `rgbGen identity` (not entity lit), so it is left alone.
 
 ## Current legacy material path (as found in the code)
 
@@ -127,8 +200,9 @@ Skin SSS, hair anisotropy and runtime spatial roughness are out of scope.
 | name | default | flags | meaning |
 |---|---|---|---|
 | `r_autoPBR` | 0 | archive, runtime | 0 = current rend2 fallback, 1 = generic dielectric for every legacy material, 2 = heuristic classes |
-| `r_autoPBRDebug` | 0 | cheat | 1 = class colours (authored white, scalar cyan), 2 = source: explicit map green, discovered map teal, scalar cyan, auto orange, legacy with `r_autoPBR 0` grey. Unlit; bypasses tone mapping, sun rays and glow like `r_shadowDebug`. Forces the SSR contribution to 0 on those pixels. |
-| `pbr_dumpMaterials [used\|all\|auto\|authored\|<class>]` | `used` | | Lists the lit lightall stages of the registered shaders: `used` = drawn since registration, `*` marks drawn stages. Columns: shader, source, class, reason:token, and the AO / rough / metal / F0 the shader receives *now*. Ends with per-source and per-class totals. |
+| `r_autoPBRDebug` | 0 | cheat | 1 = class colours (authored white, scalar cyan), 2 = source: explicit map green, discovered map teal, scalar cyan, auto orange, converted with spec mask magenta, legacy with `r_autoPBR 0` grey. **Red in both views = lit stage still vertex lit** (generic.glsl, not lightall). Unlit; bypasses tone mapping, sun rays and glow like `r_shadowDebug`. Forces the SSR contribution to 0 on those pixels. |
+| `r_autoPBRConvert` | 0 | archive, **latch** | 1 = convert `alphaGen lightingSpecular` / fake `tcGen environment` shaders (vertex lit today) to lightall, mask → ORMS. Needs `vid_restart`. |
+| `pbr_dumpMaterials [used\|all\|auto\|authored\|gouraud\|<class>]` | `used` | | Lists the lit lightall stages of the registered shaders: `used` = drawn since registration, `*` marks drawn stages. Columns: shader, source, class, reason:token, and the AO / rough / metal / F0 the shader receives *now*. Converted stages show `auto+specmask`, `x` after rough and metal (multiplied per texel), the mask image, and `(env stage dropped)`. Vertex-lit stages show as `GOURAUD` with the skip reason. Ends with per-source and per-class totals. |
 
 The roughness and F0 views reuse the existing `r_ssrDebug 2` (roughness) and `r_ssrDebug 3`
 (specular reflectance), which need `r_ssr 1`.
@@ -147,6 +221,10 @@ The roughness and F0 views reuse the existing `r_ssrDebug 2` (roughness) and `r_
 - `shared/rd-rend2/glsl/lightall.glsl`: `u_MaterialDebug` and the debug early-out (a uniform branch,
   no new define)
 - `shared/rd-rend2/tr_ao.cpp`: `RB_AODebugBypassesToneMap` includes `r_autoPBRDebug`
+- part 2: `tr_shader.cpp` (`ConvertLegacyShinyStages`, `lightallSkipReason`, mask hookup),
+  `tr_image.cpp` (`R_BuildLegacySpecORMSImage`), `tr_autopbr.cpp` (`PBR_SOURCE_LEGACY_SPEC`, gouraud
+  debug colour, dump), `tr_shade.cpp` (debug uniform for every stage), `glsl/generic.glsl`
+  (`u_MaterialDebug`), both `tr_init.cpp` (`r_autoPBRConvert`)
 - `code/rd-rend2/tr_init.cpp`, `codemp/rd-rend2/tr_init.cpp`: cvars and command
 - `code/rd-rend2/CMakeLists.txt`, `codemp/rd-rend2/CMakeLists.txt`: new source file
 - new `tools/rend2_pbr_inventory.py` (read-only PK3 inventory and classifier port),
@@ -218,6 +296,16 @@ highlight" risk). Check them first in game, e.g. `models/players/protocol/c3po_*
 
 ## In-game validation checklist (to do: not run yet)
 
+Part 2 first: `seta r_autoPBRConvert 1; vid_restart`. Then:
+
+- `r_autoPBRDebug 2`: troopers, protocol droids and first-person weapons should be magenta, **not red**.
+  Red means the model is still vertex lit.
+- `pbr_dumpMaterials gouraud` lists what is still vertex lit and why.
+- Stormtrooper: a smooth per-pixel highlight that follows the old spec mask, and cubemap/SSR reflections
+  on the white plates. There should be no second, vertex-lit highlight.
+- Protocol droid: metallic reflections in the gold, no `chr_inv` fake chrome swimming on top.
+- Compare `r_autoPBRConvert 0/1` (with `vid_restart`) at the same spot.
+
 `exec autopbr_ab.cfg` (copy it from `tools/` to `base/`), then `devmap <map>`, `npc spawn <npc>`, and F8
 for each scene/subject. F8 captures `r_autoPBR 0/1/2` + `r_autoPBRDebug 1/2`, F7 = `pbr_dumpMaterials`.
 
@@ -230,3 +318,12 @@ for each scene/subject. F8 captures `r_autoPBR 0/1/2` + `r_autoPBRDebug 1/2`, F7
   softer than the plastic class); baked diffuse highlights get a second large specular lobe (watch
   the legacy shiny-stage shaders above); metal goes black in dark areas without a cubemap.
 - Tune only `materialDefaults[]` in `tr_autopbr.cpp`, then update the class table here.
+
+## Next realism levers (not in this task)
+
+- **Model ambient.** Models get one light-grid direction plus a flat `u_AmbientLight`. The flat
+  ambient flattens everything not facing the grid light, and it contributes more to the "toy" look
+  than the BRDF does. Directional ambient, from spherical harmonics out of the light grid or diffuse
+  IBL from the cubemaps, is the next big step.
+- **Normal maps.** Only 42 of 1191 player textures have `_n`/`_nh`. Generated normal quality
+  (`r_genNormalMaps`) or hand-made normal maps for key characters matter a lot for per-pixel lighting.

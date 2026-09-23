@@ -3332,6 +3332,24 @@ static void CollapseStagesToLightall(shaderStage_t *stage, shaderStage_t *lightm
 					Q_strcat(imageName, MAX_QPATH, "_orm");
 					stage->specularType = SPEC_ORM;
 					R_LoadPackedMaterialImage(stage, imageName, specularFlags);
+					if (!stage->bundle[TB_ORMSMAP].image[0] && stage->legacySpecImage)
+					{
+						// r_autoPBRConvert: spatial ORMS from the removed
+						// lightingSpecular mask, class values at draw time
+						image_t *ormsImg = R_BuildLegacySpecORMSImage(stage->legacySpecImage->imgName, specularFlags);
+						if (ormsImg)
+						{
+							stage->bundle[TB_ORMSMAP] = stage->bundle[0];
+							stage->bundle[TB_ORMSMAP].numImageAnimations = 0;
+							stage->bundle[TB_ORMSMAP].image[0] = ormsImg;
+							stage->specularType = SPEC_ORMS;
+							stage->specularScale[0] = 0.0f;
+							stage->specularScale[2] =
+							stage->specularScale[3] = 1.0f;
+							stage->specularScale[1] = 0.5f;
+							stage->pbrSource = PBR_SOURCE_LEGACY_SPEC;
+						}
+					}
 					if (!stage->bundle[TB_ORMSMAP].image[0])
 					{
 						// constant ORMS through whiteImage: AO 1, roughness 1,
@@ -3376,6 +3394,92 @@ static void CollapseStagesToLightall(shaderStage_t *stage, shaderStage_t *lightm
 }
 
 
+/*
+===============
+ConvertLegacyShinyStages
+
+r_autoPBRConvert: CollapseStagesToGLSL keeps every shader with an
+"alphaGen lightingSpecular" stage on the vertex lit generic path. Most of
+them follow one pattern (troopers, droids, weapons ...):
+
+  { map <diffuse>  rgbGen lightingDiffuse }                       lit diffuse
+  { map gfx/effects/chr_inv  blendFunc GL_DST_COLOR GL_SRC_COLOR
+    tcGen environment }                                           fake chrome
+  { map <diffuse>_spec  blendFunc GL_SRC_ALPHA GL_ONE  detail
+    alphaGen lightingSpecular }                                   highlight mask
+
+The mask stage is removed and kept on the diffuse stage (legacySpecImage,
+turned into an ORMS map by CollapseStagesToLightall), the fake environment
+stage is removed when cubemaps replace it. Anything else stays untouched and
+still skips.
+===============
+*/
+static void ConvertLegacyShinyStages(void)
+{
+	shaderStage_t *diffuse = NULL;
+	qboolean hasLightmap = qfalse;
+
+	for (int i = 0; i < MAX_SHADER_STAGES; i++)
+	{
+		const shaderStage_t *pStage = &stages[i];
+		if (pStage->active &&
+			pStage->bundle[0].tcGen >= TCGEN_LIGHTMAP && pStage->bundle[0].tcGen <= TCGEN_LIGHTMAP3)
+			hasLightmap = qtrue;
+	}
+
+	for (int i = 0; i < MAX_SHADER_STAGES; i++)
+	{
+		shaderStage_t *pStage = &stages[i];
+		if (!pStage->active)
+			continue;
+
+		const uint32_t blendBits = pStage->stateBits & (GLS_DSTBLEND_BITS | GLS_SRCBLEND_BITS);
+		const qboolean specular = (qboolean)(
+			pStage->alphaGen == AGEN_LIGHTING_SPECULAR ||
+			pStage->alphaGen == AGEN_LIGHTING_SPECULAR_STATIC);
+
+		if (!diffuse)
+		{
+			const qboolean modelLit = (qboolean)(
+				pStage->rgbGen == CGEN_LIGHTING_DIFFUSE ||
+				pStage->rgbGen == CGEN_LIGHTING_DIFFUSE_ENTITY);
+			if (pStage->type == ST_COLORMAP && !pStage->glow && !specular &&
+				pStage->bundle[0].tcGen == TCGEN_TEXTURE && (modelLit || hasLightmap))
+			{
+				diffuse = pStage;
+			}
+			continue;
+		}
+
+		if (specular)
+		{
+			if (blendBits == (GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE) &&
+				pStage->bundle[0].tcGen == TCGEN_TEXTURE &&
+				pStage->bundle[0].image[0] &&
+				!diffuse->legacySpecImage)
+			{
+				diffuse->legacySpecImage = pStage->bundle[0].image[0];
+				pStage->active = qfalse;
+			}
+			continue;
+		}
+
+		const qboolean envMapped = (qboolean)(
+			pStage->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED ||
+			pStage->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED_SP);
+		const qboolean diffuseModelLit = (qboolean)(
+			diffuse->rgbGen == CGEN_LIGHTING_DIFFUSE ||
+			diffuse->rgbGen == CGEN_LIGHTING_DIFFUSE_ENTITY);
+		if (envMapped && diffuseModelLit && !pStage->glow && r_cubeMapping->integer &&
+			(blendBits == (GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_SRC_COLOR) ||
+			 blendBits == (GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE)))
+		{
+			diffuse->legacyEnvDropped = qtrue;
+			pStage->active = qfalse;
+		}
+	}
+}
+
 static qboolean CollapseStagesToGLSL(void)
 {
 	int i, j, numStages;
@@ -3387,8 +3491,12 @@ static qboolean CollapseStagesToGLSL(void)
 	if (shader.numDeforms == 1)
 	{
 		skip = qtrue;
+		shader.lightallSkipReason = "deformVertexes";
 		ri.Printf (PRINT_DEVELOPER, "> Shader has vertex deformations. Aborting stage collapsing\n");
 	}
+
+	if (!skip && r_autoPBRConvert->integer)
+		ConvertLegacyShinyStages();
 
 	ri.Printf (PRINT_DEVELOPER, "> Original shader stage order:\n");
 
@@ -3417,6 +3525,7 @@ static qboolean CollapseStagesToGLSL(void)
 			if (pStage->adjustColorsForFog)
 			{
 				skip = qtrue;
+				shader.lightallSkipReason = "fog color adjust";
 				break;
 			}
 
@@ -3430,6 +3539,7 @@ static qboolean CollapseStagesToGLSL(void)
 					&& blendBits != (GLS_DSTBLEND_ONE | GLS_SRCBLEND_ONE)) //lightstyle lightmap stages
 				{
 					skip = qtrue;
+					shader.lightallSkipReason = "lightmap blend";
 					break;
 				}
 			}
@@ -3448,14 +3558,19 @@ static qboolean CollapseStagesToGLSL(void)
 					break;
 				default:
 					skip = qtrue;
+					shader.lightallSkipReason = "tcGen";
 					break;
 			}
 
 			switch(pStage->alphaGen)
 			{
 				case AGEN_PORTAL:
+					skip = qtrue;
+					shader.lightallSkipReason = "alphaGen portal";
+					break;
 				case AGEN_LIGHTING_SPECULAR:
 					skip = qtrue;
+					shader.lightallSkipReason = "alphaGen lightingSpecular";
 					break;
 				default:
 					break;

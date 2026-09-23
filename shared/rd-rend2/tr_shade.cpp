@@ -2003,15 +2003,16 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			VectorCopy4(pStage->specularScale, specularScale);
 		uniformDataWriter.SetUniformVec4(UNIFORM_SPECULARSCALE, specularScale);
 
+		// r_autoPBRDebug: lightall stages show their material, lit stages still
+		// on the vertex lit generic path show up red (generic.glsl)
+		vec4_t materialDebug = {};
+		R_AutoPBRDebugColor(pStage, materialDebug);
+		uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
+		if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
+			pStage->pbrDrawn = qtrue;
+
 		if (pStage->glslShaderGroup == tr.lightallShader)
-		{
-			vec4_t materialDebug = {};
-			R_AutoPBRDebugColor(pStage, materialDebug);
-			uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
 			uniformDataWriter.SetUniformInt(UNIFORM_DIFFUSEBRDF, r_diffuseBRDF->integer);
-			if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
-				pStage->pbrDrawn = qtrue;
-		}
 
 		const float parallaxBias = r_forceParallaxBias->value > 0.0f ? r_forceParallaxBias->value : pStage->parallaxBias;
 		uniformDataWriter.SetUniformFloat(UNIFORM_PARALLAXBIAS, parallaxBias);

@@ -557,6 +557,9 @@ uniform int u_AlphaTestType;
 uniform vec4 u_EnableTextures;
 // rgb = linear scale; |w| = 0 disabled, 1 explicit, 2 auto source; sign = legacy/linear scene
 uniform vec4 u_EmissiveParams;
+// r_autoPBRDebug (tr_autopbr.cpp): a = 1 marks a lit stage that is still
+// vertex lit here instead of lightall, drawn as a flat rgb color
+uniform vec4 u_MaterialDebug;
 
 in vec2 var_DiffuseTex;
 in vec4 var_Color;
@@ -733,6 +736,15 @@ void main()
 
 	if (abs(u_EmissiveParams.w) == 2.0)
 		emissive = color.rgb;
+
+	if (u_MaterialDebug.a > 0.0)
+	{
+		// keep the vertex lighting as shading so the shape stays readable
+		float shade = clamp(dot(var_Color.rgb, vec3(0.3333)), 0.0, 1.0);
+		out_Color = vec4(u_MaterialDebug.rgb * (0.35 + 0.65 * shade), color.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, color.a);
+		return;
+	}
 
 	out_Color = color;
 	out_Glow = mix(vec4(emissive, color.a), color, u_EnableTextures.x);
