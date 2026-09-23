@@ -195,6 +195,10 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_VolumetricSunGrid",	GLSL_INT, 1 },
 	{ "u_FroxelSlice",			GLSL_INT, 1 },
 	{ "u_FroxelNoise",			GLSL_INT, 1 },
+
+	{ "u_FPlusLights",			GLSL_INT, 1 },
+	{ "u_FPlusGridMap",			GLSL_INT, 1 },
+	{ "u_FPlusIndexMap",		GLSL_INT, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -2180,6 +2184,10 @@ static int GLSL_LoadGPUProgramLightAll(
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SSAOMAP,     TB_SSAOMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
+		// always set: an unset buffer sampler would alias unit 0 (u_DiffuseMap)
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSLIGHTS,  TB_FPLUS_LIGHTS);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSINDICES, TB_FPLUS_INDICES);
 		qglUseProgram(0);
 
 		GLSL_FinishGPUShader(&tr.lightallShader[i]);

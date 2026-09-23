@@ -147,6 +147,15 @@ static qboolean	R_CullSurface( msurface_t *surf, int entityNum ) {
 }
 
 
+// all lights of the scene as a legacy surface mask. (1 << 32) - 1 is undefined
+// (0 on x86: world surfaces lost every dlight when exactly 32 were present)
+static int R_LegacyDlightMask( int numDlights )
+{
+	if ( numDlights >= 32 )
+		return ~0;
+	return (int)((1u << numDlights) - 1u);
+}
+
 /*
 ====================
 R_DlightSurface
@@ -339,9 +348,17 @@ static void R_AddWorldSurface(
 
 	// check for dlighting
 	// TODO: implement dlight culling for non worldspawn surfaces
-	if ( dlightBits ) {
+	if ( R_ForwardPlusActive() )
+	{
+		// Forward+: the cluster light lists pick the lights per pixel, the
+		// surface bit only means "receives dynamic light". Brush models keep
+		// the R_DlightBmodel test (needDlights).
+		if ( entityNum == REFENTITYNUM_WORLD )
+			dlightBits = (tr.refdef.num_dlights > 0 && !(tr.viewParms.flags & VPF_DEPTHSHADOW)) ? 1 : 0;
+	}
+	else if ( dlightBits ) {
 		if (entityNum != REFENTITYNUM_WORLD)
-			dlightBits = (1 << tr.refdef.num_dlights) - 1;
+			dlightBits = R_LegacyDlightMask(tr.refdef.num_dlights);
 		else
 			dlightBits = R_DlightSurface( surf, dlightBits );
 	}
@@ -881,7 +898,10 @@ void R_AddWorldSurfaces( viewParms_t *viewParms, trRefdef_t *refdef ) {
 	ClearBounds(viewParms->visBounds[0], viewParms->visBounds[1]);
 
 	// perform frustum culling and flag all the potentially visible surfaces
-	refdef->num_dlights = Q_min(refdef->num_dlights, 32);
+	// legacy: one bit per light. Forward+ keeps up to MAX_RENDER_DLIGHTS and
+	// skips the per node / per surface masks (see R_AddWorldSurface)
+	if (!R_ForwardPlusActive())
+		refdef->num_dlights = Q_min(refdef->num_dlights, LEGACY_DLIGHT_LIMIT);
 	refdef->num_pshadows = Q_min(refdef->num_pshadows, 32);
 
 	planeBits = (viewParms->flags & VPF_FARPLANEFRUSTUM) ? 31 : 15;
@@ -893,7 +913,7 @@ void R_AddWorldSurfaces( viewParms_t *viewParms, trRefdef_t *refdef ) {
 	}
 	else
 	{
-		dlightBits = (1 << refdef->num_dlights) - 1;
+		dlightBits = R_ForwardPlusActive() ? 0 : R_LegacyDlightMask(refdef->num_dlights);
 		if (r_shadows->integer == 4)
 			pshadowBits = (1 << refdef->num_pshadows) - 1;
 		else

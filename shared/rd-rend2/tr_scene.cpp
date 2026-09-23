@@ -262,7 +262,9 @@ void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, floa
 	if ( !tr.registered ) {
 		return;
 	}
-	if ( r_numdlights >= MAX_DLIGHTS ) {
+	// MAX_DLIGHTS, or MAX_RENDER_DLIGHTS with r_forwardPlus 1 (per frame)
+	if ( r_numdlights >= R_DlightCapacity() ) {
+		R_ForwardPlusNoteDroppedLight();
 		return;
 	}
 	if ( intensity <= 0 ) {
@@ -485,6 +487,9 @@ void RE_BeginScene(const refdef_t *fd)
 	tr.refdef.num_entities = r_numentities - r_firstSceneEntity;
 	tr.refdef.entities = &backEndData->entities[r_firstSceneEntity];
 
+	// r_spawnTestLights (developer only), before the scene takes its lights
+	R_ForwardPlusAddTestLights(fd);
+
 	tr.refdef.num_dlights = r_numdlights - r_firstSceneDlight;
 	tr.refdef.dlights = &backEndData->dlights[r_firstSceneDlight];
 
@@ -639,6 +644,8 @@ void RE_RenderScene( const refdef_t *fd )
 			"%s %i",
 			viewParmTypeNames[tr.cachedViewParms[i].viewParmType],
 			i));
+		if (tr.cachedViewParms[i].viewParmType == VPT_MAIN)
+			R_ForwardPlusSetMainViewTimer(timer);
 		tr.refdef.numDrawSurfs = 0;
 		R_RenderView(&tr.cachedViewParms[i]);
 		R_IssuePendingRenderCommands();

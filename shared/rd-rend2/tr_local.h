@@ -78,6 +78,15 @@ typedef unsigned int glIndex_t;
 #define MAX_DRAWN_PSHADOWS    32 // do not increase past 32, because bit flags are used on surfaces
 #define PSHADOW_MAP_SIZE      1024
 #define DSHADOW_MAP_SIZE      512
+
+// Dynamic lights. The legacy path keeps MAX_DLIGHTS (rd-common/tr_types.h, 32:
+// one bit per light in the surface dlight masks). Forward+ (r_forwardPlus,
+// tr_forwardplus.cpp) raises the renderer side capacity to MAX_RENDER_DLIGHTS
+// without changing the public API. Point light shadow cubes stay limited to
+// the MAX_DLIGHTS * 6 layers of pointShadowArrayImage.
+#define LEGACY_DLIGHT_LIMIT   MAX_DLIGHTS
+#define MAX_RENDER_DLIGHTS    256
+#define MAX_DLIGHT_SHADOWS    MAX_DLIGHTS
 #define CUBE_MAP_MIPS      8
 #define CUBE_MAP_ROUGHNESS_MIPS CUBE_MAP_MIPS - 2
 #define CUBE_MAP_SIZE      (1 << CUBE_MAP_MIPS)
@@ -263,6 +272,15 @@ extern cvar_t  *r_ssrEmitterMaxRoughness;
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
 extern cvar_t  *r_diffuseBRDF;
+
+extern cvar_t  *r_forwardPlus;
+extern cvar_t  *r_forwardPlusTileSize;
+extern cvar_t  *r_forwardPlusSlices;
+extern cvar_t  *r_forwardPlusNearSlice;
+extern cvar_t  *r_forwardPlusMaxLightsPerCluster;
+extern cvar_t  *r_forwardPlusDebug;
+extern cvar_t  *r_forwardPlusDebugLight;
+extern cvar_t  *r_dynamicShadowMaxLights;
 
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
@@ -454,6 +472,7 @@ typedef enum
 	IMGFLAG_2D_ARRAY       = 0x0800,
 	IMGFLAG_3D             = 0x1000,
 	IMGLFAG_SHADOWCOMP     = 0x2000,
+	IMGFLAG_TEXBUFFER      = 0x4000,	// buffer texture (GL_TEXTURE_BUFFER), tr_forwardplus.cpp
 } imgFlags_t;
 
 typedef enum
@@ -852,6 +871,11 @@ struct CameraBlock
 	float pad2;
 	vec3_t viewUp;
 	float pad3;
+	// Forward+ cluster grid of this view (tr_forwardplus.cpp), lightall only
+	int fplusGrid[4];		// grid texel base, light texel base, tiles x, tiles y
+	vec4_t fplusParams;		// tile size (pixels), depth slices, slice scale, slice bias
+	vec4_t fplusParams2;	// viewport x, viewport y, enabled, near slice distance
+	vec4_t fplusDebug;		// r_forwardPlusDebug, selected light, max lights per cluster, unused
 };
 
 struct SceneBlock
@@ -1062,7 +1086,13 @@ enum
 	TB_SHADOWMAPARRAY  = 8,
 	TB_SSAOMAP     = 9,
 	TB_EMISSIVEMAP = 10,
-	NUM_TEXTURE_BUNDLES = 11
+	NUM_TEXTURE_BUNDLES = 11,
+
+	// Forward+ buffer textures of lightall (not shader stage bundles)
+	TB_FPLUS_LIGHTS  = 11,
+	TB_FPLUS_GRID    = 12,
+	TB_FPLUS_INDICES = 13,
+	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
 // linear depth mip levels of the GTAO depth chain (tr_ao.cpp)
@@ -1794,6 +1824,10 @@ typedef enum
 	UNIFORM_VOLUMETRICSUNGRID,		// baked sun part of the light grid
 	UNIFORM_FROXELSLICE,	// slice rendered by the injection / integration pass
 	UNIFORM_FROXELNOISE,	// tiling density noise
+
+	UNIFORM_FPLUSLIGHTS,	// Forward+ light data (buffer texture)
+	UNIFORM_FPLUSGRID,		// Forward+ cluster offset / count (buffer texture)
+	UNIFORM_FPLUSINDICES,	// Forward+ cluster light indexes (buffer texture)
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -2629,7 +2663,7 @@ struct bufferBinding_t
 
 // the renderer front end should never modify glstate_t
 typedef struct glstate_s {
-	int			currenttextures[NUM_TEXTURE_BUNDLES];
+	int			currenttextures[MAX_TEXTURE_UNITS];
 	int			currenttmu;
 	int			texEnv[2];
 	int			faceCulling;
@@ -2696,6 +2730,7 @@ typedef struct {
 	int textureCompression;
 	int uniformBufferOffsetAlignment;
 	int maxUniformBlockSize;
+	int maxTextureBufferSize;	// texels, Forward+ buffer capacity
 	int maxUniformBufferBindings;
 
 	qboolean immutableTextures;
@@ -4254,7 +4289,7 @@ typedef struct backEndData_s {
 	GLuint *frameUbos;
 
 	drawSurf_t	drawSurfs[MAX_DRAWSURFS];
-	dlight_t	dlights[MAX_DLIGHTS];
+	dlight_t	dlights[MAX_RENDER_DLIGHTS];	// MAX_DLIGHTS used unless Forward+
 	trRefEntity_t	entities[MAX_REFENTITIES];
 	srfPoly_t	*polys;//[MAX_POLYS];
 	polyVert_t	*polyVerts;//[MAX_POLYVERTS];
@@ -4404,6 +4439,35 @@ void RB_VolumetricBuild(void);
 qboolean RB_VolumetricCompositeActive(void);
 void RB_VolumetricComposite(void);
 void RB_VolumetricDebugOverlay(void);
+
+/*
+============================================================
+
+FORWARD+ / CLUSTERED DYNAMIC LIGHTS, tr_forwardplus.cpp
+
+============================================================
+*/
+
+qboolean R_ForwardPlusActive(void);
+int R_DlightCapacity(void);
+void R_ForwardPlusBeginFrame(void);
+void R_ForwardPlusAddTestLights(const refdef_t *fd);
+void R_ForwardPlusNoteDroppedLight(void);
+void R_ForwardPlusPrepareScene(const trRefdef_t *refdef);
+int R_ForwardPlusNumShadowSlots(void);
+int R_ForwardPlusShadowSlotLight(int slot);
+int R_GetUboDlights(const trRefdef_t *refdef, int *lightIndexes, int *shadowLayers);
+void RB_UpdateForwardPlus(struct gpuFrame_t *frame, const trRefdef_t *refdef);
+void RB_ForwardPlusCameraParams(int viewParm, CameraBlock *cameraBlock);
+qboolean RB_ForwardPlusViewEnabled(int viewParm);
+void RB_ForwardPlusBindTextures(SamplerBindingsWriter& samplers);
+qboolean RB_ForwardPlusDebugBypassesToneMap(void);
+void R_ForwardPlusSetMainViewTimer(int timerHandle);
+void R_ForwardPlusCollectGpuTimes(struct gpuFrame_t *frame);
+void R_ShutdownForwardPlus(void);
+void R_ForwardPlusStats_f(void);
+void R_SpawnTestLights_f(void);
+void R_ForwardPlusBenchmark_f(void);
 
 /*
 ============================================================

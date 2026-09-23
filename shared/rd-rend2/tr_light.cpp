@@ -85,6 +85,11 @@ void R_DlightBmodel( bmodel_t *bmodel, trRefEntity_t *ent ) {
 		}
 
 		// we need to check this light
+		if ( R_ForwardPlusActive() ) {
+			// Forward+: no per light bits, only "lit" (cluster lists pick the lights)
+			mask = 1;
+			break;
+		}
 		mask |= 1 << i;
 	}
 
@@ -502,7 +507,12 @@ int R_DLightsForPoint(const vec3_t point, const float radius)
 		radiusSum = radius + currentDlight.radius;
 
 		if (distance < radiusSum)
+		{
+			// Forward+: only "lit", the cluster lists pick the lights
+			if (R_ForwardPlusActive())
+				return 1;
 			dlightBits |= 1 << i;
+		}
 	}
 	return dlightBits;
 }

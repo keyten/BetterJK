@@ -2727,13 +2727,21 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 
 	if (!(refdef->rdflags & RDF_NOWORLDMODEL))
 	{
-		// dlight shadowmaps
-		if (refdef->num_dlights && r_dlightMode->integer >= 2)
+		// Forward+: light importance order and shadow slot budget of this scene
+		R_ForwardPlusPrepareScene(refdef);
+
+		// dlight shadowmaps. Legacy: cube i for light i. Forward+: cube s for
+		// the light owning shadow slot s (r_dynamicShadowMaxLights)
+		const int numShadowCubes = R_ForwardPlusActive() ?
+			R_ForwardPlusNumShadowSlots() : refdef->num_dlights;
+		if (numShadowCubes && r_dlightMode->integer >= 2)
 		{
-			for (int i = 0; i < refdef->num_dlights; i++)
+			for (int i = 0; i < numShadowCubes; i++)
 			{
 				viewParms_t		shadowParms;
 				int j;
+				const int lightNum = R_ForwardPlusActive() ?
+					R_ForwardPlusShadowSlotLight(i) : i;
 
 				Com_Memset(&shadowParms, 0, sizeof(shadowParms));
 
@@ -2748,10 +2756,10 @@ void R_GatherFrameViews(trRefdef_t *refdef)
 				shadowParms.fovY = 90;
 
 				shadowParms.flags = VPF_DEPTHSHADOW | VPF_NOVIEWMODEL | VPF_POINTSHADOW;
-				shadowParms.zFar = refdef->dlights[i].radius;
+				shadowParms.zFar = refdef->dlights[lightNum].radius;
 				shadowParms.zNear = 1.0f;
 
-				VectorCopy(refdef->dlights[i].origin, shadowParms.ori.origin);
+				VectorCopy(refdef->dlights[lightNum].origin, shadowParms.ori.origin);
 
 				for (j = 0; j < 6; j++)
 				{

@@ -233,6 +233,15 @@ cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
 cvar_t  *r_diffuseBRDF;
 
+cvar_t  *r_forwardPlus;
+cvar_t  *r_forwardPlusTileSize;
+cvar_t  *r_forwardPlusSlices;
+cvar_t  *r_forwardPlusNearSlice;
+cvar_t  *r_forwardPlusMaxLightsPerCluster;
+cvar_t  *r_forwardPlusDebug;
+cvar_t  *r_forwardPlusDebugLight;
+cvar_t  *r_dynamicShadowMaxLights;
+
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
 cvar_t  *r_deluxeMapping;
@@ -1524,6 +1533,9 @@ static consoleCommand_t	commands[] = {
 	{ "imagelist",			R_ImageList_f },
 	{ "shaderlist",			R_ShaderList_f },
 	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
+	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
+	{ "r_spawnTestLights",	R_SpawnTestLights_f },
+	{ "r_forwardPlusBenchmark",	R_ForwardPlusBenchmark_f },
 	{ "skinlist",			R_SkinList_f },
 	{ "fontlist",			R_FontList_f },
 	{ "screenshot",			R_ScreenShotJPEG_f },
@@ -1742,6 +1754,23 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_autoPBRDebug, 0, 2, qtrue );
 	r_diffuseBRDF = ri.Cvar_Get( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );
 	ri.Cvar_CheckRange( r_diffuseBRDF, 0, 1, qtrue );
+
+	// Forward+ / clustered dynamic lights (tr_forwardplus.cpp), off by default
+	r_forwardPlus = ri.Cvar_Get( "r_forwardPlus", "0", CVAR_ARCHIVE, "Dynamic lights: 0 = legacy (32 lights, per surface masks), 1 = Forward+ clustered light lists (up to 256 lights)" );
+	ri.Cvar_CheckRange( r_forwardPlus, 0, 1, qtrue );
+	r_forwardPlusTileSize = ri.Cvar_Get( "r_forwardPlusTileSize", "64", CVAR_ARCHIVE, "Forward+: screen tile size in pixels" );
+	ri.Cvar_CheckRange( r_forwardPlusTileSize, 16, 256, qtrue );
+	r_forwardPlusSlices = ri.Cvar_Get( "r_forwardPlusSlices", "16", CVAR_ARCHIVE, "Forward+: logarithmic depth slices per tile (1 = 2D tiles only)" );
+	ri.Cvar_CheckRange( r_forwardPlusSlices, 1, 64, qtrue );
+	r_forwardPlusNearSlice = ri.Cvar_Get( "r_forwardPlusNearSlice", "48", CVAR_ARCHIVE, "Forward+: view depth covered by the first depth slice" );
+	ri.Cvar_CheckRange( r_forwardPlusNearSlice, 1.0f, 1024.0f, qfalse );
+	r_forwardPlusMaxLightsPerCluster = ri.Cvar_Get( "r_forwardPlusMaxLightsPerCluster", "64", CVAR_ARCHIVE, "Forward+: lights kept per cluster, the least important ones are dropped" );
+	ri.Cvar_CheckRange( r_forwardPlusMaxLightsPerCluster, 1, 255, qtrue );
+	r_forwardPlusDebug = ri.Cvar_Get( "r_forwardPlusDebug", "0", CVAR_CHEAT, "Forward+ debug view: 1 tiles, 2 depth slice, 3 cluster, 4 lights per cluster, 5 overflow, 6 shadowed lights, 7 unshadowed lights, 8 light spheres, 9 light r_forwardPlusDebugLight" );
+	ri.Cvar_CheckRange( r_forwardPlusDebug, 0, 9, qtrue );
+	r_forwardPlusDebugLight = ri.Cvar_Get( "r_forwardPlusDebugLight", "0", CVAR_CHEAT, "Forward+: light index shown by r_forwardPlusDebug 9" );
+	r_dynamicShadowMaxLights = ri.Cvar_Get( "r_dynamicShadowMaxLights", "4", CVAR_ARCHIVE, "Forward+: dynamic lights with a shadow cube (needs r_dlightMode 2), the most important ones get them" );
+	ri.Cvar_CheckRange( r_dynamicShadowMaxLights, 0, MAX_DLIGHT_SHADOWS, qtrue );
 
 	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );
@@ -2470,6 +2499,7 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		FBO_Shutdown();
 		R_DeleteTextures();
 		R_DestroyGPUBuffers();
+		R_ShutdownForwardPlus();
 
 		if (!destroyWindow && !restarting)
 		{

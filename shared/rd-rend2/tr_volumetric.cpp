@@ -850,7 +850,11 @@ static float R_VolumetricSliceDistance( int k, float nearZ, float farZ, int numS
 // dynamic lights overlapping each slice of the main view frustum
 static void R_VolumetricCullLights( const viewParms_t *view, const trRefdef_t *refdef, const vec3_t forward )
 {
-	const int numLights = MIN(refdef->num_dlights, MAX_DLIGHTS);
+	// the lights of the Lights block, bit i = u_Lights[i] (Forward+: the most
+	// important MAX_DLIGHTS, tr_forwardplus.cpp)
+	int lightIndexes[MAX_DLIGHTS];
+	int shadowLayers[MAX_DLIGHTS];
+	const int numLights = R_GetUboDlights(refdef, lightIndexes, shadowLayers);
 	for ( int k = 0; k < s_vf.depth; k++ )
 	{
 		const float sliceNear = R_VolumetricSliceDistance(k, s_vf.nearZ, s_vf.farZ, s_vf.depth);
@@ -859,7 +863,7 @@ static void R_VolumetricCullLights( const viewParms_t *view, const trRefdef_t *r
 
 		for ( int i = 0; i < numLights; i++ )
 		{
-			const dlight_t *dl = refdef->dlights + i;
+			const dlight_t *dl = refdef->dlights + lightIndexes[i];
 			const float radius = dl->radius;
 			if ( radius <= 0.0f )
 				continue;

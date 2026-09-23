@@ -66,6 +66,8 @@ void GL_Bind( image_t *image ) {
 			qglBindTexture(GL_TEXTURE_3D, texnum);
 		else if (image->flags & IMGFLAG_2D_ARRAY)
 			qglBindTexture(GL_TEXTURE_2D_ARRAY, texnum);
+		else if (image->flags & IMGFLAG_TEXBUFFER)
+			qglBindTexture(GL_TEXTURE_BUFFER, texnum);
 		else
 			qglBindTexture( GL_TEXTURE_2D, texnum );
 	}
@@ -113,6 +115,8 @@ void GL_BindToTMU( image_t *image, int tmu )
 			qglBindTexture(GL_TEXTURE_3D, texnum);
 		else if (image && (image->flags & IMGFLAG_2D_ARRAY))
 			qglBindTexture(GL_TEXTURE_2D_ARRAY, texnum);
+		else if (image && (image->flags & IMGFLAG_TEXBUFFER))
+			qglBindTexture(GL_TEXTURE_BUFFER, texnum);
 		else
 			qglBindTexture( GL_TEXTURE_2D, texnum );
 	}
@@ -2349,6 +2353,7 @@ static void RB_UpdateCameraConstants(gpuFrame_t *frame)
 		VectorCopy(viewBasis[1], cameraBlock.viewLeft);
 		VectorCopy(viewBasis[2], cameraBlock.viewUp);
 		VectorCopy(tr.cachedViewParms[i].ori.origin, cameraBlock.viewOrigin);
+		RB_ForwardPlusCameraParams(tr.cachedViewParms[i].currentViewParm, &cameraBlock);
 
 		if (backEnd.viewParms.viewParmType == VPT_MAIN && frame->currentScene == 0)
 			memcpy(frame->viewProjectionMatrix, cameraBlock.viewProjectionMatrix, sizeof(matrix_t));
@@ -2444,18 +2449,23 @@ static void RB_UpdateLightsConstants(gpuFrame_t *frame, const trRefdef_t *refdef
 	VectorSet4(lightsBlock.shadowDebug,
 		(float)Com_Clampi(0, 9, r_shadowDebug->integer), 0.0f, 0.0f, 0.0f);
 
-	lightsBlock.numLights = MIN(refdef->num_dlights, MAX_DLIGHTS);
+	// legacy: the first MAX_DLIGHTS lights, shadow cube i. Forward+: the most
+	// important ones (froxel fog), shadow slot or -1 (tr_forwardplus.cpp)
+	int lightIndexes[MAX_DLIGHTS];
+	int shadowLayers[MAX_DLIGHTS];
+	lightsBlock.numLights = R_GetUboDlights(refdef, lightIndexes, shadowLayers);
 	for (int i = 0; i < lightsBlock.numLights; ++i)
 	{
-		const dlight_t *dlight = refdef->dlights + i;
+		const dlight_t *dlight = refdef->dlights + lightIndexes[i];
 		LightsBlock::Light *lightData = lightsBlock.lights + i;
 
+		// w = shadow cube layer (lightall uses the index in the legacy loop)
 		VectorSet4(
 			lightData->origin,
 			dlight->origin[0],
 			dlight->origin[1],
 			dlight->origin[2],
-			1.0f);
+			(float)shadowLayers[i]);
 		VectorCopy(dlight->color, lightData->color);
 		lightData->radius = dlight->radius;
 	}
@@ -2882,6 +2892,8 @@ void RB_UpdateConstants(const trRefdef_t *refdef)
 	gpuFrame_t *frame = backEndData->currentFrame;
 	RB_BeginConstantsUpdate(frame);
 
+	// cluster light lists first: the camera blocks carry their grid parameters
+	RB_UpdateForwardPlus(frame, refdef);
 	RB_UpdateCameraConstants(frame);
 	RB_UpdateSceneConstants(frame, refdef);
 	RB_UpdateTemporalConstants(frame, backEndData->previousFrame, refdef);

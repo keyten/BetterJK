@@ -38,6 +38,11 @@ layout(std140) uniform Camera
 	vec3 u_ViewForward;
 	vec3 u_ViewLeft;
 	vec3 u_ViewUp;
+	// Forward+ cluster grid of this view (tr_forwardplus.cpp, CameraBlock)
+	ivec4 u_FPlusGrid;    // grid texel base, light texel base, tiles x, tiles y
+	vec4 u_FPlusParams;   // tile size, depth slices, slice scale, slice bias
+	vec4 u_FPlusParams2;  // viewport x, viewport y, enabled, near slice distance
+	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, unused
 };
 
 layout(std140) uniform Entity
@@ -387,6 +392,11 @@ layout(std140) uniform Camera
 	vec3 u_ViewForward;
 	vec3 u_ViewLeft;
 	vec3 u_ViewUp;
+	// Forward+ cluster grid of this view (tr_forwardplus.cpp, CameraBlock)
+	ivec4 u_FPlusGrid;    // grid texel base, light texel base, tiles x, tiles y
+	vec4 u_FPlusParams;   // tile size, depth slices, slice scale, slice bias
+	vec4 u_FPlusParams2;  // viewport x, viewport y, enabled, near slice distance
+	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, unused
 };
 
 layout(std140) uniform Entity
@@ -425,6 +435,10 @@ layout(std140) uniform Lights
 };
 
 uniform int u_LightMask;
+// Forward+ (tr_forwardplus.cpp): light data, cluster offset / count, light indexes
+uniform samplerBuffer  u_FPlusLights;
+uniform usamplerBuffer u_FPlusGridMap;
+uniform usamplerBuffer u_FPlusIndexMap;
 uniform sampler2D u_DiffuseMap;
 
 #if defined(USE_LIGHTMAP)
@@ -1273,7 +1287,167 @@ float getLightDepth(in vec3 Vec, in float f)
 }
 #endif
 
+/*
+Dynamic lights. EvaluateDynamicLight / EvaluateDynamicLightSimple are the one
+place where the radiance of a single dynamic light is computed. The legacy loop
+(u_LightMask bits over the Lights block) and the Forward+ loop (cluster light
+list, tr_forwardplus.cpp) only differ in which lights they iterate.
+*/
+
+// Forward+: the cluster of this fragment and its light list
+#define FPLUS_HARD_CAP 256		// guards the loop against corrupted counts
+#define FPLUS_LIGHT_TEXELS 3
+
+struct FPlusLight
+{
+	vec3  origin;
+	float radius;
+	vec3  color;
+	float type;			// 0 = point
+	int   shadowSlot;	// < 0 = unshadowed
+};
+
+bool FPlusEnabled()
+{
+	return u_FPlusParams2.z > 0.0;
+}
+
+// must match R_ForwardPlusSlice (tr_forwardplus.cpp)
+int FPlusSlice(in vec3 position)
+{
+	int numSlices = int(u_FPlusParams.y);
+	if (numSlices <= 1)
+		return 0;
+	float depth = dot(position - u_ViewOrigin, normalize(u_ViewForward));
+	if (depth <= u_FPlusParams2.w)
+		return 0;
+	return clamp(1 + int(floor(log(depth) * u_FPlusParams.z + u_FPlusParams.w)), 1, numSlices - 1);
+}
+
+ivec2 FPlusTile()
+{
+	ivec2 tile = ivec2((gl_FragCoord.xy - u_FPlusParams2.xy) / u_FPlusParams.x);
+	return clamp(tile, ivec2(0), u_FPlusGrid.zw - ivec2(1));
+}
+
+int FPlusCluster(in vec3 position)
+{
+	ivec2 tile = FPlusTile();
+	return (FPlusSlice(position) * u_FPlusGrid.w + tile.y) * u_FPlusGrid.z + tile.x;
+}
+
+// x = first entry in the index list, y = light count
+ivec2 FPlusClusterLights(in vec3 position)
+{
+	uvec4 cell = texelFetch(u_FPlusGridMap, u_FPlusGrid.x + FPlusCluster(position));
+	return ivec2(int(cell.x), min(int(cell.y), FPLUS_HARD_CAP));
+}
+
+int FPlusLightIndex(in int entry)
+{
+	return int(texelFetch(u_FPlusIndexMap, entry).x);
+}
+
+FPlusLight FPlusFetchLight(in int lightIndex)
+{
+	int base = u_FPlusGrid.y + lightIndex * FPLUS_LIGHT_TEXELS;
+	vec4 t0 = texelFetch(u_FPlusLights, base);
+	vec4 t1 = texelFetch(u_FPlusLights, base + 1);
+	vec4 t2 = texelFetch(u_FPlusLights, base + 2);
+	FPlusLight light;
+	light.origin = t0.xyz;
+	light.radius = t0.w;
+	light.color = t1.rgb;
+	light.type = t1.w;
+	light.shadowSlot = int(t2.x);
+	return light;
+}
+
+// r_forwardPlusDebug 6 / 7 / 9 only show some lights
+bool FPlusDebugSkipLight(in FPlusLight light, in int lightIndex)
+{
+	int mode = int(u_FPlusDebug.x);
+	if (mode == 6)
+		return light.shadowSlot < 0;
+	if (mode == 7)
+		return light.shadowSlot >= 0;
+	if (mode == 9)
+		return lightIndex != int(u_FPlusDebug.y);
+	return false;
+}
+
 #if defined(PER_PIXEL_LIGHTING)
+struct DLightSurface
+{
+	vec3  position;
+	vec3  N;
+	vec3  E;
+	float NE;
+	vec3  diffuse;
+	vec3  specular;
+	float roughness;
+	vec3  vertexNormal;
+};
+
+// receiver side visibility of one light (hook for e.g. parallax self
+// shadowing), 1 = not occluded
+float DynamicLightReceiverVisibility(in DLightSurface s, in vec3 L)
+{
+	return 1.0;
+}
+
+// shadowLayer: cube index in u_ShadowMap2 (6 layers each), < 0 = unshadowed
+vec3 EvaluateDynamicLight(
+	in DLightSurface s,
+	in vec3 lightOrigin,
+	in vec3 lightColor,
+	in float lightRadius,
+	in int shadowLayer)
+{
+	vec3  L  = lightOrigin - s.position;
+	float sqrLightDist = dot(L, L);
+
+	float attenuation = CalcLightAttenuation(lightRadius * lightRadius / sqrLightDist);
+
+	#if defined(USE_DSHADOWS)
+		vec3 sampleVector = L;
+		L /= sqrt(sqrLightDist);
+		if (shadowLayer >= 0)
+		{
+			sampleVector += L * tan(acos(dot(s.vertexNormal, -L)));
+			float distance = getLightDepth(sampleVector, lightRadius);
+			attenuation *= pcfShadow(u_ShadowMap2, L, distance, shadowLayer);
+		}
+	#else
+		L /= sqrt(sqrLightDist);
+	#endif
+	attenuation *= DynamicLightReceiverVisibility(s, L);
+
+	float NL = clamp(dot(s.N, L), 0.0, 1.0);
+	#if defined(USE_SPECULARMAP)
+	vec3  H  = normalize(L + s.E);
+	float LH = clamp(dot(L, H), 0.0, 1.0);
+	#elif !defined(USE_CLOTH_BRDF)
+	float LH = 0.0;
+	if (u_DiffuseBRDF == 1)
+	{
+		vec3 H = normalize(L + s.E);
+		LH = clamp(dot(L, H), 0.0, 1.0);
+	}
+	#endif
+	#if !defined(USE_CLOTH_BRDF)
+	vec3 reflectance = M_PI * CalcDiffuse(s.diffuse, s.NE, NL, LH, s.roughness);
+	#else
+	vec3 reflectance = s.diffuse;
+	#endif
+	#if defined(USE_SPECULARMAP)
+	float NH = clamp(dot(s.N, H), 0.0, 1.0);
+	float VH = clamp(dot(s.E, H), 0.0, 1.0);
+	reflectance += CalcSpecular(s.specular, NH, NL, s.NE, LH, VH, s.roughness);
+	#endif
+	return lightColor * reflectance * attenuation * NL;
+}
+
 vec3 CalcDynamicLightContribution(
 	in float roughness,
 	in vec3 N,
@@ -1286,7 +1460,33 @@ vec3 CalcDynamicLightContribution(
 	in vec3 vertexNormal)
 {
 	vec3 outColor = vec3(0.0);
-	vec3 position = viewOrigin - viewDir;
+
+	DLightSurface s;
+	s.position = viewOrigin - viewDir;
+	s.N = N;
+	s.E = E;
+	s.NE = NE;
+	s.diffuse = diffuse;
+	s.specular = specular;
+	s.roughness = roughness;
+	s.vertexNormal = vertexNormal;
+
+	if (FPlusEnabled())
+	{
+		if (u_LightMask == 0)
+			return outColor;
+
+		ivec2 list = FPlusClusterLights(s.position);
+		for (int k = 0; k < list.y; k++)
+		{
+			int lightIndex = FPlusLightIndex(list.x + k);
+			FPlusLight light = FPlusFetchLight(lightIndex);
+			if (light.type != 0.0 || FPlusDebugSkipLight(light, lightIndex))
+				continue;
+			outColor += EvaluateDynamicLight(s, light.origin, light.color, light.radius, light.shadowSlot);
+		}
+		return outColor;
+	}
 
 	for ( int i = 0; i < min(u_NumLights, MAX_DLIGHTS); i++ )
 	{
@@ -1294,70 +1494,119 @@ vec3 CalcDynamicLightContribution(
 			continue;
 		}
 		Light light = u_Lights[i];
-
-		vec3  L  = light.origin.xyz - position;
-		float sqrLightDist = dot(L, L);
-
-		float attenuation = CalcLightAttenuation(light.radius * light.radius / sqrLightDist);
-
-		#if defined(USE_DSHADOWS)
-			vec3 sampleVector = L;
-			L /= sqrt(sqrLightDist);
-			sampleVector += L * tan(acos(dot(vertexNormal, -L)));
-			float distance = getLightDepth(sampleVector, light.radius);
-			attenuation *= pcfShadow(u_ShadowMap2, L, distance, i);
-		#else
-			L /= sqrt(sqrLightDist);
-		#endif
-
-		float NL = clamp(dot(N, L), 0.0, 1.0);
-		#if defined(USE_SPECULARMAP)
-		vec3  H  = normalize(L + E);
-		float LH = clamp(dot(L, H), 0.0, 1.0);
-		#elif !defined(USE_CLOTH_BRDF)
-		float LH = 0.0;
-		if (u_DiffuseBRDF == 1)
-		{
-			vec3 H = normalize(L + E);
-			LH = clamp(dot(L, H), 0.0, 1.0);
-		}
-		#endif
-		#if !defined(USE_CLOTH_BRDF)
-		vec3 reflectance = M_PI * CalcDiffuse(diffuse, NE, NL, LH, roughness);
-		#else
-		vec3 reflectance = diffuse;
-		#endif
-		#if defined(USE_SPECULARMAP)
-		float NH = clamp(dot(N, H), 0.0, 1.0);
-		float VH = clamp(dot(E, H), 0.0, 1.0);
-		reflectance += CalcSpecular(specular, NH, NL, NE, LH, VH, roughness);
-		#endif
-		outColor += light.color * reflectance * attenuation * NL;
+		outColor += EvaluateDynamicLight(s, light.origin.xyz, light.color, light.radius, i);
 	}
 	return outColor;
 }
 #else
+vec3 EvaluateDynamicLightSimple(
+	in vec3 position,
+	in vec3 N,
+	in vec3 lightOrigin,
+	in vec3 lightColor,
+	in float lightRadius)
+{
+	vec3 L = lightOrigin - position;
+	float sqrLightDist = dot(L, L);
+	float attenuation = CalcLightAttenuation(lightRadius * lightRadius / sqrLightDist);
+	L /= sqrt(sqrLightDist);
+	float NL = clamp(dot(N, L), 0.0, 1.0);
+	return lightColor * attenuation * NL;
+}
+
 vec3 CalcDynamicLightContribution(
 	in vec3 position,
 	in vec3 N )
 {
 	vec3 outLight = vec3(0.0);
+
+	if (FPlusEnabled())
+	{
+		if (u_LightMask == 0)
+			return outLight;
+
+		ivec2 list = FPlusClusterLights(position);
+		for (int k = 0; k < list.y; k++)
+		{
+			int lightIndex = FPlusLightIndex(list.x + k);
+			FPlusLight light = FPlusFetchLight(lightIndex);
+			if (light.type != 0.0 || FPlusDebugSkipLight(light, lightIndex))
+				continue;
+			outLight += EvaluateDynamicLightSimple(position, N, light.origin, light.color, light.radius);
+		}
+		return outLight;
+	}
+
 	for ( int i = 0; i < min(u_NumLights, MAX_DLIGHTS); i++ )
 	{
 		if ( ( u_LightMask & ( 1 << i ) ) == 0 ) {
 			continue;
 		}
 		Light light = u_Lights[i];
-		vec3 L = light.origin.xyz - position;
-		float sqrLightDist = dot(L, L);
-		float attenuation = CalcLightAttenuation(light.radius * light.radius / sqrLightDist);
-		L /= sqrt(sqrLightDist);
-		float NL = clamp(dot(N, L), 0.0, 1.0);
-		outLight += light.color * attenuation * NL;
+		outLight += EvaluateDynamicLightSimple(position, N, light.origin.xyz, light.color, light.radius);
 	}
 	return outLight;
 }
 #endif
+
+// r_forwardPlusDebug views that replace the lit color (1-5, 8); 6, 7 and 9
+// show the filtered dynamic light alone. False = not a debug view here.
+vec3 FPlusHashColor(in int n)
+{
+	return fract(sin(vec3(float(n)) * vec3(12.9898, 78.233, 37.719)) * 43758.5453) * 0.8 + 0.2;
+}
+
+bool FPlusDebugColor(in vec3 position, in vec3 litColor, in vec3 dynamicLight, out vec3 color)
+{
+	int mode = int(u_FPlusDebug.x);
+	color = litColor;
+	if (!FPlusEnabled() || mode <= 0)
+		return false;
+
+	if (mode == 6 || mode == 7 || mode == 9)
+	{
+		color = dynamicLight;
+		return true;
+	}
+
+	ivec2 list = FPlusClusterLights(position);
+	float maxLights = max(u_FPlusDebug.z, 1.0);
+	if (mode == 1)
+	{
+		vec2 p = mod(gl_FragCoord.xy - u_FPlusParams2.xy, u_FPlusParams.x);
+		bool edge = p.x < 1.0 || p.y < 1.0;
+		color = edge ? vec3(1.0, 0.85, 0.1) : litColor;
+	}
+	else if (mode == 2)
+		color = FPlusHashColor(FPlusSlice(position) + 7) * (0.35 + 0.65 * clamp(dot(litColor, vec3(0.333)), 0.0, 1.0));
+	else if (mode == 3)
+		color = FPlusHashColor(FPlusCluster(position));
+	else if (mode == 4)
+	{
+		// black = none, blue -> green -> red = up to the per cluster limit
+		float t = float(list.y) / maxLights;
+		color = list.y == 0 ? vec3(0.02) :
+			(t < 0.5 ? mix(vec3(0.0, 0.1, 1.0), vec3(0.0, 1.0, 0.1), t * 2.0) :
+				mix(vec3(0.0, 1.0, 0.1), vec3(1.0, 0.05, 0.0), t * 2.0 - 1.0));
+	}
+	else if (mode == 5)
+		color = float(list.y) >= maxLights ? vec3(1.0, 0.0, 0.0) : litColor * 0.25;
+	else if (mode == 8)
+	{
+		// lights whose sphere contains the point, tinted by index, brighter at the centre
+		vec3 sum = vec3(0.0);
+		for (int k = 0; k < list.y; k++)
+		{
+			int lightIndex = FPlusLightIndex(list.x + k);
+			FPlusLight light = FPlusFetchLight(lightIndex);
+			float d = length(light.origin - position) / max(light.radius, 1.0);
+			if (d < 1.0)
+				sum += FPlusHashColor(lightIndex) * (0.25 + 0.75 * (1.0 - d)) * 0.5;
+		}
+		color = litColor * 0.15 + sum;
+	}
+	return true;
+}
 
 float luma(vec3 color)
 {
@@ -1664,7 +1913,9 @@ void main()
 	out_Color.rgb  = lightColor * reflectance * (attenuation * NL);
 	out_Color.rgb += ambientColor * diffuse.rgb;
 
-	out_Color.rgb += CalcDynamicLightContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, diffuse.rgb, specular.rgb, vertexNormal);
+	// kept separately: r_forwardPlusDebug, later SSGI style consumers
+	vec3 dynamicLight = CalcDynamicLightContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, diffuse.rgb, specular.rgb, vertexNormal);
+	out_Color.rgb += dynamicLight;
 #if defined(USE_SSR)
 	vec3 cubemapReflection = CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specularAO, lightColor + ambientColor);
 	out_Color.rgb += cubemapReflection;
@@ -1731,6 +1982,19 @@ void main()
 		return;
 	}
   #endif
+
+	// r_forwardPlusDebug 1-9, written unlit (tone mapping is bypassed)
+	vec3 fplusDebugColor;
+	if (FPlusDebugColor(u_ViewOrigin - viewDir, out_Color.rgb, dynamicLight, fplusDebugColor))
+	{
+		out_Color = vec4(fplusDebugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
 
 	// r_autoPBRDebug 1-2, flat color with a little view facing shading so the
 	// shape stays readable; written unlit (tone mapping is bypassed)

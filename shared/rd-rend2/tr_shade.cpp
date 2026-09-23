@@ -2097,6 +2097,16 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				r_dlightMode->integer > 1)
 				samplerBindingsWriter.AddStaticImage(tr.pointShadowArrayImage, TB_SHADOWMAPARRAY);
 
+			// Forward+: the view's cluster lists pick the lights (u_LightMask
+			// only enables them); a view without a grid gets no dynamic light
+			if (enableDLights && R_ForwardPlusActive())
+			{
+				if (RB_ForwardPlusViewEnabled(backEnd.viewParms.currentViewParm))
+					RB_ForwardPlusBindTextures(samplerBindingsWriter);
+				else
+					enableDLights = false;
+			}
+
 			if (enableDLights)
 				uniformDataWriter.SetUniformInt(UNIFORM_LIGHTMASK, tess.dlightBits);
 			else

@@ -353,8 +353,10 @@ vec3 DynamicLights(in vec3 p, in vec3 viewDir, in float g)
 		float phase = FroxelPhase(g, dot(L / dist, viewDir));
 
 		float shadow = 1.0;
-		if (u_FroxelShadowParams.z > 0.5)
-			shadow = DynamicLightShadow(L, dist, dl.radius, i);
+		// origin.w = shadow cube layer (legacy: i, Forward+: slot or -1)
+		int shadowLayer = int(dl.origin.w);
+		if (u_FroxelShadowParams.z > 0.5 && shadowLayer >= 0)
+			shadow = DynamicLightShadow(L, dist, dl.radius, shadowLayer);
 
 		light += dl.color * attenuation * phase * shadow;
 	}

@@ -196,6 +196,7 @@ PFNGLFRAMEBUFFERTEXTURE2DPROC qglFramebufferTexture2D;
 PFNGLFRAMEBUFFERTEXTURE3DPROC qglFramebufferTexture3D;
 PFNGLFRAMEBUFFERTEXTUREPROC qglFramebufferTexture;
 PFNGLFRAMEBUFFERTEXTURELAYERPROC qglFramebufferTextureLayer;
+PFNGLTEXBUFFERPROC qglTexBuffer;
 PFNGLFRAMEBUFFERRENDERBUFFERPROC qglFramebufferRenderbuffer;
 PFNGLGETFRAMEBUFFERATTACHMENTPARAMETERIVPROC qglGetFramebufferAttachmentParameteriv;
 PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC qglRenderbufferStorageMultisample;
@@ -501,6 +502,10 @@ void GLimp_InitCoreFunctions()
 	GetGLFunction (qglFramebufferTexture3D, "glFramebufferTexture3D", qtrue);
 	GetGLFunction (qglFramebufferTexture, "glFramebufferTexture", qtrue);
 	GetGLFunction (qglFramebufferTextureLayer, "glFramebufferTextureLayer", qtrue);
+
+	// buffer textures (GL 3.1 core), Forward+ light lists
+	GetGLFunction (qglTexBuffer, "glTexBuffer", qtrue);
+	qglGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE, &glRefConfig.maxTextureBufferSize);
 	GetGLFunction (qglFramebufferRenderbuffer, "glFramebufferRenderbuffer", qtrue);
 	GetGLFunction (qglGetFramebufferAttachmentParameteriv, "glGetFramebufferAttachmentParameteriv", qtrue);
 	GetGLFunction (qglRenderbufferStorageMultisample, "glRenderbufferStorageMultisample", qtrue);

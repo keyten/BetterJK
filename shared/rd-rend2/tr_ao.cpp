@@ -589,7 +589,8 @@ qboolean RB_AODebugBypassesToneMap( void )
 	return (qboolean)(
 		(r_sunShadowMode->integer && r_shadowDebug->integer >= 1 && r_shadowDebug->integer <= 9) ||
 		(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9) ||
-		(r_autoPBRDebug->integer >= 1 && r_autoPBRDebug->integer <= 2));
+		(r_autoPBRDebug->integer >= 1 && r_autoPBRDebug->integer <= 2) ||
+		RB_ForwardPlusDebugBypassesToneMap());
 }
 
 // Full screen r_debugAO views of the AO buffers, drawn at the end of the post

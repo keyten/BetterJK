@@ -30,6 +30,9 @@ R_PerformanceCounters
 void R_PerformanceCounters( void ) {
 	gpuFrame_t *currentFrame = backEndData->frames + (backEndData->realFrameNumber % MAX_FRAMES);
 
+	// main view GPU time for r_forwardPlusStats / r_forwardPlusBenchmark
+	R_ForwardPlusCollectGpuTimes(currentFrame);
+
 	if ( !r_speeds->integer ) {
 		// clear the counters even if we aren't printing
 		Com_Memset( &tr.pc, 0, sizeof( tr.pc ) );
@@ -534,6 +537,8 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	gpuFrame_t *thisFrame = &backEndData->frames[frameNumber % MAX_FRAMES];
 	backEndData->currentFrame = thisFrame;
 	thisFrame->hasMainView = qfalse; // set by the first world scene, tr_motionblur.cpp
+	// latches r_forwardPlus for the whole frame (no switch between scenes)
+	R_ForwardPlusBeginFrame();
 	if ( thisFrame->sync )
 	{
 		GLsync sync = thisFrame->sync;
