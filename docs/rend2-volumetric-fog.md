@@ -108,7 +108,7 @@ Per froxel, one slice per draw:
    full froxel wide) when temporal accumulation is on, the dynamic lights at the froxel center.
 2. **Medium.** Sum of the extinction of the fog volumes that contain the point: their axial bounds and the plane
    of their visible side (the same `inFog` test as `CalcFog`); the global fog everywhere below its cap plane.
-   Albedo = extinction weighted fog color. Future height fog, noise and local density volumes go into
+   Albedo = extinction weighted fog color. The height fog and the density noise are in; future local density volumes go into
    `FroxelMedium`.
 3. **Baked light.** `volumetricStaticGrid` at the point, isotropic, `* r_volumetricFogStaticScale`.
 4. **Sun.** Phase `4 pi HG(g, dot(sunDir, viewDir))`, `* r_volumetricFogSunScale`:
@@ -213,6 +213,130 @@ r_vfog uniform 4000 [r g b]     uniform haze (falloff 65536, no ceiling)
 The sky: a finite falloff leaves almost no medium at the sky distance, so the sky stays clear behind the beams;
 a uniform haze continues to the sky through the tail and fogs it like the legacy fog cap.
 
+## Heterogeneous density (world space noise)
+
+Optional, off by default (`r_volumetricFogNoise 0`: every medium stays homogeneous and mode 2 is unchanged). The
+extinction of the selected media is multiplied by a world anchored noise field; nothing else changes. The light
+(baked grid, sun, dynamic lights) is not modulated: voids, clumps and broken beams come only from the changed
+scattering and extinction (emission = extinction * albedo * light).
+
+```
+sigma(p) = sigma_plain(p) + m(p) * sigma_noisy(p)        noisy: the media selected by r_volumetricFogNoise
+m(p)     = N_M(lod_M) f(n_M; c_M) * N_D(lod_D) f(n_D; c_D)       (detail factor only when c_D > 0)
+f(n; c)  = (1 + c) n^c
+n_M      = noise.r at  p / P_M - wind_M                            P_M = r_volumetricFogNoiseScale
+n_D      = noise.g at  R_z(30 deg) p / P_D + (0.37, 0.61, 0.23) - wind_D   P_D = r_volumetricFogNoiseDetailScale
+lod      = max(log2(sliceThickness(depth) * 64 / P) - 1, 0)
+```
+
+- **Mean.** The texels of both channels are uniformly distributed over 0..255 (histogram equalized), and
+  `E[(1 + c) n^c] = 1` for a uniform n and any c: the modulation keeps the average extinction (the mean optical
+  depth). Trilinear filtering and the mips lower the variance of n, so the CPU measures `E[f]` of the real filtered
+  texture at lod 0, 0.5, ..., 6 (32768 low discrepancy positions, the same trilinear / mip blend as the GPU) and
+  divides it out (`N`). Macro and detail are independent fields, so their product keeps the mean too.
+- **Contrast.** `c = 0` gives m = 1, the original homogeneous density. `c = 1` gives a density from 0 to 2x (voids
+  and clumps). `c = 3` gives sparse clumps up to 4x. With `c <= 1` the standard deviation of m is at most 0.57.
+- **Anti-aliasing.** The mip level follows the froxel: one level sharper than the slice thickness (the jittered
+  positions of the temporal filter average the rest). Far froxels see prefiltered noise with a lower contrast and
+  the same mean, so distant fog tends to homogeneous instead of shimmering. Medium preset (48 slices, far 4096):
+  macro (4096) lod 0 up to ~900 units, 1.1 at 2000, 2.2 at 4096; detail (900) 1.3 at 500, 3.3 at 2000.
+- **World anchoring.** The texture coordinates are world positions (no camera, froxel or screen coordinates). The
+  noise is sampled at the jittered position of the baked + sun term (the temporal filter supersamples it inside
+  the froxel) and at the froxel center for the dynamic lights (no history, stable).
+
+### Noise texture
+
+| | |
+|---|---|
+| image | `tr.froxelNoiseImage` (`*froxelNoise`), 3D, 64 x 64 x 64, `GL_RGBA8`, full mip chain (7 levels), `GL_REPEAT`, `LINEAR_MIPMAP_LINEAR` |
+| r | macro field |
+| g | detail field (independent seed) |
+| b, a | unused (0) |
+| memory | 1 MiB + mips = 1.14 MiB of VRAM; CPU copy of both channels with their mips 0.57 MiB (static, kept for the mean tables) |
+| created | at renderer init with `r_volumetricFog 2` only (`R_CreateVolumetricImages`), no asset |
+| CPU cost | generation ~120 ms once per process (the CPU copy survives `vid_restart`); mean table ~50 ms per channel, only when its contrast changes |
+
+Generation (`R_NoiseGenerateField`, deterministic, fixed seeds): per channel, a tileable gradient (Perlin) noise
+FBM of 3 octaves with lattice periods 4, 8 and 16 cells per tile (weights 1, 0.5, 0.25, quintic fade, 12 edge
+gradients from an integer hash of the lattice point modulo the period, so the tile wraps). Each octave is shifted
+by its own fraction of a cell, otherwise the lattice points of the three octaves (where gradient noise is 0)
+coincide and form a visible grid. Then rank based histogram equalization: every value 0..255 is taken by exactly
+1024 texels. `R_CreateImage3D` gained a `flags` argument (default `IMGFLAG_CLAMPTOEDGE`, as before for every other
+caller): without it the wrap is repeat, and `IMGFLAG_MIPMAP` allocates the mip chain (`glGenerateMipmap`).
+
+### Media
+
+`r_volumetricFogNoise` is a bit mask: 1 height fog, 2 BSP fog volumes, 4 the global fog. The flag of each fog
+volume travels in `fogMaxs[i].w`. There are no local density volumes in the renderer yet. With 0, or with both
+contrasts at 0, the injection takes a uniform branch and samples nothing.
+
+### Wind and the temporal filter
+
+`r_volumetricFogNoiseWind "x y z"` (units per second, default 0) moves the noise:
+`wind offset = fract(wind * t / P)` per octave, computed in double precision from the renderer time and wrapped
+to the tile (the detail wind is rotated like its coordinates). With no wind the noise is completely static in
+the world. The weather system's wind is not used (it is gusty, and exists only with weather effects).
+
+The history clamp works on radiance (emission / extinction), which a moving density does not change, so it cannot
+catch the drift. The history weight of the noisy media is lowered instead, so that the lag of the temporal filter
+stays under a tenth of the finest noise feature (`P / 16` of the finest active octave):
+
+```
+lag      = |wind| dt w / (1 - w)  <=  lambda = 0.1 P_finest / 16
+w_noise  = min(w, lambda / (lambda + |wind| dt))          dt = frame time, clamped to [1/240, 1/15] s
+w_froxel = mix(w, w_noise, noisy share of the froxel's extinction)
+```
+
+At 60 fps with `w = 0.9`: winds up to ~32 u/s keep the full weight. At 128 u/s the weight is 0.90 macro only and
+0.73 with detail (lag 19 / 6 units). At 512 u/s it is 0.75 / 0.40. Media without noise keep the full weight in
+every case. Changing the mask, a scale or a contrast resets the history.
+
+### Samples and cost
+
+| settings | noise fetches per froxel |
+|---|---|
+| `r_volumetricFogNoise 0` or no noisy medium at the froxel | 0 |
+| macro only (default contrasts) | 1, +1 in slices with dynamic lights |
+| macro + detail | 2, +2 in slices with dynamic lights |
+
+The medium at the froxel center (the dynamic light term) is now evaluated only in slices that have dynamic lights,
+which saves one `FroxelMedium` call per froxel elsewhere with or without noise (the output is identical). Each
+fetch is an explicit lod `textureLod` of a 1 MiB texture, plus one `pow` and a table lookup.
+
+**Timings: not measured** (the game has not been run with this change). Procedure: `r_speeds 100`, "Froxel fog
+inject", stationary camera on a fog map, 1920x1080. For each quality preset, compare three runs:
+`r_volumetricFogNoise 0`; `r_volumetricFogNoise 7`; `r_volumetricFogNoise 7` with
+`r_volumetricFogNoiseDetailContrast 1`.
+
+| preset | inject, noise off | macro | macro + detail |
+|---|---|---|---|
+| low | | | |
+| medium | | | |
+| high | | | |
+
+### Repetition
+
+Macro period 4096 by default, the same as the default froxel far: across the whole volume one tile is seen at most
+once. Beyond that, mip levels 2 and higher have removed most of the contrast of the finer octaves. Within a tile
+there are 4 x 4 x 4 coarse cells: features from ~1024 down to ~256 units. The detail field has a period of 900 (a
+non integer ratio of 4.55 to the macro), is rotated by 30 degrees around z and offset, so the product has no short
+common period and no shared axis. A top down 16384 x 16384 render of macro x detail shows no obvious tiling, while
+macro alone at 8192 wide (2048 period, the first default) did: that is why the default is 4096. Along z a tile
+is also 4096 high, and a thin height fog slab crosses a single layer.
+
+### Debug views
+
+| view | shows |
+|---|---|
+| 13 | m(p) at the scene surface, per pixel, finest mip, world space (no froxels): black 0, white 1, yellow to red 1 to 4 |
+| 14 | extinction of the froxel at the scene depth, the injection drops the noise (base sigma), heat of 512 units of it on the view 1 scale |
+| 15 | as 14 with the noise (modulated sigma) |
+
+Optical depth is view 1 and the final scattering is view 6 or 9. Views 11 and 12 split the media with the noise.
+**World space vs camera grid:** set `r_volumetricFogFreeze 1` and move. The frozen volume keeps its froxel
+grid, and inside it the pattern of view 15 must stay at the same world place as view 13 (which has no froxels at
+all). A pattern that follows the old frustum's cells, or the screen, is a grid artefact.
+
 ## Integration (`volumetric_integrate.glsl`)
 
 Front to back over the slices of every froxel column, with the medium constant inside a slice:
@@ -298,6 +422,12 @@ homogeneous solution: the largest absolute error of S or T after the trilinear l
 | `r_volumetricFogHeightMax` | 1 | height fog: maximum density below the base, multiple of the base density |
 | `r_volumetricFogHeightTop` | 0 | height fog: soft cutoff height above the base, 0 = none |
 | `r_volumetricFogHeightColor` | 0.7 0.75 0.8 | height fog: scattering color (albedo), as fogParms |
+| `r_volumetricFogNoise` | 0 | density noise media mask: 1 height fog, 2 BSP fog volumes, 4 global fog |
+| `r_volumetricFogNoiseScale` | 4096 | macro noise tile period (world units) |
+| `r_volumetricFogNoiseContrast` | 1 | macro contrast c, 0..4 (0 = homogeneous) |
+| `r_volumetricFogNoiseDetailScale` | 900 | detail noise tile period (world units) |
+| `r_volumetricFogNoiseDetailContrast` | 0 | detail contrast, 0 = off (no second fetch) |
+| `r_volumetricFogNoiseWind` | 0 0 0 | noise drift, world units per second |
 
 The existing `r_volumetricFogScale`, `r_volumetricFogDefaultScale` and the `volumetricFogScale` worldspawn key
 scale the extinction in both modes; `r_volumetricFogSamples` only concerns the legacy ray march. Mode 2 needs
@@ -323,6 +453,9 @@ mode 2 shows the legacy in-scattering of the baked light (static + baked sun == 
 | 10 | froxel slice at the scene depth (heat), froxel grid lines |
 | 11 | as 1, fog volumes only (the injection drops the height fog) |
 | 12 | as 1, height fog only (the injection drops the fog volumes) |
+| 13 | density noise m(p) at the scene surface (see Heterogeneous density) |
+| 14 | froxel extinction at the scene depth without the noise |
+| 15 | froxel extinction at the scene depth with the noise |
 
 Views 2 to 5 keep only that light term in the injection, so the scene behind the overlay also shows it. Changing
 the view resets the history. `r_volumetricFogFreeze 1` keeps the froxel volume and its camera: move away to see
@@ -368,6 +501,18 @@ vs `*-vfog.dll`).
 | height fog + fog volume | map with a fog volume near the ground | both visible, additive | 11, 12, 1 |
 | height fog + global fog | map with a global fog | global fog unchanged with `r_volumetricFogHeight 0` | 11 |
 | no fog map, defaults | any map without fog | no haze, no froxel timers in `r_speeds 100` | - |
+| noise, stationary | fog map, `r_volumetricFogNoise 7` | clumps and voids, no crawling | 13, 15, 1 |
+| noise, translation / rotation | walk, strafe, turn | the pattern stays in the world (compare with 13) | 15, 13 |
+| noise, rapid movement | run and spin fast | no smearing beyond the unnoised fog | 15, 8 |
+| noise, freeze | `r_volumetricFogFreeze 1`, move away | view 15 inside the frozen frustum matches view 13 | 15, 13 |
+| noise, fog boundary | walk through a noisy BSP fog volume boundary | no pop, the boundary stays sharp | 15, 11 |
+| noise, sun shaft | outdoor fog with doorways, `r_sunlightMode 2` | broken beams through clumps, no light change in voids | 3 |
+| noise, saber | saber on in noisy fog | blade haze follows the density, no flicker | 4 |
+| noise, wind | `r_volumetricFogNoiseWind "64 0 0"` | drift without trails; weight drops in 8 | 15, 8 |
+| noise, temporal off / on | `r_volumetricFogTemporal 0 / 1` | same mean density; off = sharper, some aliasing far away | 1, 15 |
+| noise, mean | `r_volumetricFogNoiseContrast 0` vs `1` / `3` | similar average fog (view 1 far away) | 1 |
+| noise, repetition | open outdoor fog, look far | no visible tiling at typical distances | 15, 6 |
+| noise timings | see Samples and cost | fill the table | - |
 
 ## Known limitations
 
@@ -383,12 +528,17 @@ vs `*-vfog.dll`).
 - Height fog: beyond `r_volumetricFogFar` the last slice extinction is extrapolated (constant along the ray);
   thin layers far away are limited by the slice depth; only mode 2 has it; one global layer set by cvars; the
   automatic base is the lowest floor, which can be a pit or a basement below the main ground level.
+- Density noise: 64^3 tile. With the macro field alone the period (4096) can show on huge open views when the
+  volume far is raised; turn the detail on or raise the scale. The same field modulates every noisy medium (no
+  per medium scale). No local density volumes. A fast wind lowers the history weight of the noisy media (more
+  jitter noise). The mean is kept within 1% (0.8% up to contrast 3, 1.2% at 4 between half mip levels): checked on
+  the CPU with the same generator code and the GPU's filtering.
 - Not run in game yet: correctness is verified by builds, offline compilation of every changed / new shader on
   the Intel and NVIDIA drivers, the legacy source comparison and the numeric checks above.
 
 ## Possible improvements (not implemented)
 
-- Noise modulated density in `FroxelMedium`, local density volumes, per map height fog settings.
+- Local density volumes, per map height fog / noise settings, per medium noise scale.
 - Per tile light lists instead of per slice masks.
 - Depth aware (minimum depth per froxel column) skipping of hidden froxels.
 - Blue noise instead of a Halton cycle for the jitter.
