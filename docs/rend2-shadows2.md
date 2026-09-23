@@ -108,14 +108,19 @@ With `r_sunShadowMode 1` and `r_sunShadowAlphaCasters 1`, the runtime keeps the
 legacy `q3map_alphashadow` keyword as an explicit caster hint. Such materials
 may enter the sun cascade pass even when their visible sort is blended. The
 shadow draw uses the authored `alphaFunc`; when the material only declares
-alpha blending, it uses a 0.5 cutout. Blending is disabled and depth writes are
-forced only for this depth-only draw. Glass, smoke and other unmarked blended
-materials remain excluded.
+alpha blending, it uses a 0.5 cutout. Non-converted blended materials disable
+blending and force depth writes only for depth-only draws. Glass, smoke and
+other unmarked blended materials remain excluded.
 
-Unlit base stages marked `q3map_alphashadow` use the light-grid lightall path so
-they can receive CSM. Blended cutouts also enter the camera depth prepass with
-the same 0.5 fallback threshold. This makes later transparent surfaces such as
-water respect the foliage depth while retaining blended texture edges.
+Simple one-stage unlit foliage such as `models/map_objects/yavin/fern3b` is
+converted from alpha blend to an alpha-tested, depth-writing cutout. Its color,
+camera depth and sun CSM use the same 0.5 silhouette, so later water cannot
+paint over visible leaf pixels. The base stage uses the lightall vertex-light
+path to receive CSM without sampling the world entity's light grid at the
+origin. This intentionally loses the legacy soft alpha fringe; setting
+`r_sunShadowAlphaCasters 0` restores the original blend after renderer restart.
+Other marked blended materials still receive a 0.5 fallback in depth passes,
+so their partially transparent fringes may not occlude later surfaces.
 
 Generated `surfaceSprites` use their normal alpha test and retain the visible
 camera's billboard axes, distance fade and wind phase in every cascade. This

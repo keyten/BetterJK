@@ -3782,18 +3782,17 @@ static qboolean CollapseStagesToGLSL(void)
 					pStage->glslShaderIndex |= LIGHTDEF_USE_TCGEN_AND_TCMOD;
 			}
 
-			// Some stock cutout foliage (notably yavin/fern3b) is authored as an
-			// unlit alpha-blended stage.  In Shadows 2.0, treat only its base stage
-			// as a light-grid receiver so the sun/CSM path can affect it.  This is
-			// latched with r_sunShadowAlphaCasters because it changes the required
-			// lightall permutation and vertex attributes.
+			// Opted-in unlit alpha foliage uses its authored base color as vertex
+			// light.  BSP foliage must not use LIGHT_VECTOR: the world entity's
+			// light-grid sample is taken at (0, 0, 0), not at each leaf.  This
+			// permutation can receive sun/CSM while preserving the base brightness.
 			if (i == 0 && shader.alphaShadow &&
 				r_sunShadowMode->integer && r_sunShadowAlphaCasters->integer &&
 				r_sunlightMode->integer &&
 				pStage->glslShaderGroup == tr.lightallShader &&
 				!(pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK))
 			{
-				pStage->glslShaderIndex |= LIGHTDEF_USE_LIGHT_VECTOR;
+				pStage->glslShaderIndex |= LIGHTDEF_USE_LIGHT_VERTEX;
 			}
 		}
 	}
@@ -4419,6 +4418,25 @@ static shader_t *FinishShader( void ) {
 	// opaque alpha tested shaders that have later blend passes
 	if ( !shader.sort ) {
 		shader.sort = SS_OPAQUE;
+	}
+
+	// A one-stage q3map_alphashadow foliage material such as yavin/fern3b
+	// cannot use blended color with a cutout-only depth pass: the visible
+	// translucent pixels have no depth, so later water can paint over them.
+	// Use one alpha-tested silhouette for color, camera depth and sun CSM.
+	if (r_sunShadowMode->integer && r_sunShadowAlphaCasters->integer &&
+		shader.alphaShadow && shader.sort == SS_BLEND0 &&
+		stage == 1 && shader.numDeforms == 0 &&
+		stages[0].rgbGen == CGEN_IDENTITY_LIGHTING &&
+		stages[0].alphaTestType == ALPHA_TEST_NONE &&
+		(stages[0].stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS)) ==
+			(GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA))
+	{
+		stages[0].stateBits &= ~(GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS);
+		stages[0].stateBits |= GLS_DEPTHMASK_TRUE;
+		stages[0].alphaTestType = ALPHA_TEST_GE128;
+		stages[0].adjustColorsForFog = ACFF_NONE;
+		shader.sort = SS_SEE_THROUGH;
 	}
 
 	//
