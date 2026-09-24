@@ -262,6 +262,11 @@ extern cvar_t  *r_weatherWetDarkening;
 extern cvar_t  *r_weatherWetNormal;
 extern cvar_t  *r_weatherWetBias;
 extern cvar_t  *r_weatherWetnessDebug;
+extern cvar_t  *r_weatherPuddles;
+extern cvar_t  *r_puddleCoverage;
+extern cvar_t  *r_puddleRoughness;
+extern cvar_t  *r_puddleSlope;
+extern cvar_t  *r_puddleScale;
 extern cvar_t  *r_ssrQuality;
 extern cvar_t  *r_ssrSteps;
 extern cvar_t  *r_ssrRefineSteps;
@@ -2028,6 +2033,8 @@ typedef enum
 	UNIFORM_WEATHERMVP,			// world -> weather depth clip space
 	UNIFORM_WETNESSPARAMS,		// strength, roughness scale, darkening, normal flattening
 	UNIFORM_WETNESSPARAMS2,		// depth bias, normal offset, debug mode, split x
+	UNIFORM_PUDDLEPARAMS,		// coverage (<= 0 off, < 0 ineligible), roughness, slope min, slope max
+	UNIFORM_PUDDLEPARAMS2,		// 1 / scale
 
 	UNIFORM_COUNT
 } uniform_t;

@@ -1671,6 +1671,7 @@ void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
 		const vec4_t off = {};
 		uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS, off);
 		uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS2, off);
+		uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS, off);
 		return;
 	}
 
@@ -1695,6 +1696,29 @@ void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
 	};
 	uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS, params);
 	uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS2, params2);
+
+	// puddles: static world geometry only, never entities (characters,
+	// weapons, props, movers). coverage < 0 marks an ineligible draw for
+	// r_weatherWetnessDebug 10, 0 turns the layer off.
+	float coverage = 0.0f;
+	if (r_weatherPuddles->integer)
+	{
+		const bool world = !backEnd.currentEntity || backEnd.currentEntity == &tr.worldEntity;
+		coverage = (eligible && world) ? Com_Clamp(0.001f, 1.0f, r_puddleCoverage->value) : -1.0f;
+	}
+	float slopeMin = 0.90f, slopeMax = 0.98f;
+	sscanf(r_puddleSlope->string, "%f %f", &slopeMin, &slopeMax);
+	slopeMin = Com_Clamp(0.0f, 0.999f, slopeMin);
+	slopeMax = Com_Clamp(slopeMin + 0.001f, 1.0f, slopeMax);
+	const vec4_t puddle = {
+		coverage,
+		Com_Clamp(0.02f, 1.0f, r_puddleRoughness->value),
+		slopeMin,
+		slopeMax
+	};
+	const vec4_t puddle2 = { 1.0f / MAX(r_puddleScale->value, 8.0f), 0.0f, 0.0f, 0.0f };
+	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS, puddle);
+	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS2, puddle2);
 	uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, ws->weatherMVP);
 	samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_WEATHERDEPTH);
 }

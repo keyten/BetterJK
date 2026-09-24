@@ -658,6 +658,8 @@ uniform sampler2D u_WeatherDepthMap; // static top-down rain occlusion depth (D1
 uniform mat4 u_WeatherMvp;
 uniform vec4 u_WetnessParams;  // strength (< 0: excluded draw), roughness scale, darkening, normal flattening
 uniform vec4 u_WetnessParams2; // depth bias, normal offset (world), debug view, split x
+uniform vec4 u_PuddleParams;   // coverage (0: off, < 0: excluded draw), roughness, slope min, slope max
+uniform vec4 u_PuddleParams2;  // 1 / pattern scale (world)
 #endif
 // Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
 uniform int u_DiffuseBRDF;
@@ -1955,6 +1957,34 @@ float ComputeRainExposure(in vec3 worldPosition, in vec3 geometricNormal)
 	float e11 = step(z, texelFetch(u_WeatherDepthMap, clamp(base + ivec2(1, 1), ivec2(0), maxTexel), 0).r);
 	return mix(mix(e00, e10, f.x), mix(e01, e11, f.x), f.y);
 }
+
+// Procedural puddles: world anchored low frequency value noise, one domain
+// warp and two octaves (3 noise evaluations, 12 hashes), 0..1.
+float PuddleHash(vec2 p)
+{
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+
+float PuddleValueNoise(vec2 p)
+{
+	vec2 i = floor(p);
+	vec2 f = p - i;
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	float a = PuddleHash(i);
+	float b = PuddleHash(i + vec2(1.0, 0.0));
+	float c = PuddleHash(i + vec2(0.0, 1.0));
+	float d = PuddleHash(i + vec2(1.0, 1.0));
+	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float PuddleField(vec2 p)
+{
+	float w = PuddleValueNoise(p * 0.5 + 17.3);
+	vec2 q = p + (w - 0.5) * 0.8;
+	return 0.65 * PuddleValueNoise(q) + 0.35 * PuddleValueNoise(q * 2.3 + 5.1);
+}
 #endif
 
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_SSAO)
@@ -2198,6 +2228,10 @@ void main()
 	// cubemap IBL, SSR and SSGI all see the same wet material.
 	float rainExposure = 0.0;
 	float wetness = 0.0;
+	float puddleSlope = 0.0;
+	float puddleField = 0.0;
+	float puddle = 0.0;
+	float puddleEdge = 0.0;
 	if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z > 0.0)
 	{
 		vec3 wetGeoNormal = normalize(vertexNormal);
@@ -2209,6 +2243,24 @@ void main()
 		if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
 			wetness = 0.0;	// dry / wet split
 		N = normalize(mix(N, wetGeoNormal, wetness * u_WetnessParams.w));
+
+		// Puddles: rain exposure x flat geometric normal x world noise x
+		// world-only eligibility. The normal map is not used for the slope.
+		puddleSlope = smoothstep(u_PuddleParams.z, u_PuddleParams.w, wetGeoNormal.z);
+		float exposureP = smoothstep(0.5, 1.0, rainExposure);
+		bool puddleDebug = u_WetnessParams2.z >= 5.0 && u_WetnessParams2.z <= 10.0;
+		if (u_PuddleParams.x > 0.0 && ((wetness > 0.0 && puddleSlope * exposureP > 0.0) || puddleDebug))
+		{
+			puddleField = PuddleField((u_ViewOrigin - viewDir).xy * u_PuddleParams2.x);
+			float t = 1.0 - u_PuddleParams.x;
+			float gate = puddleSlope * exposureP * step(0.0, u_WetnessParams.x);
+			puddle = smoothstep(t, t + 0.06, puddleField) * gate;
+			puddleEdge = smoothstep(t - 0.10, t, puddleField) * gate;
+			if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
+				puddle = puddleEdge = 0.0;
+			// smooth water surface: underlying detail fades in the core
+			N = normalize(mix(N, wetGeoNormal, max(puddle, puddleEdge * 0.5)));
+		}
 	}
   #endif
 
@@ -2308,6 +2360,19 @@ void main()
     #endif
 		diffuse.rgb *= 1.0 - wetness * u_WetnessParams.z * porosity;
 		roughness = mix(roughness, max(roughness * u_WetnessParams.y, 0.08), wetness);
+	}
+	if (puddleEdge > 0.0)
+	{
+		// standing water: fringe intermediate, core near mirror; F0 kept
+		// (no metal, no tint), the dielectric Fresnel / IBL / SSR reflect it
+		float metal = 0.0;
+    #if defined(USE_SPECULARMAP) && !defined(USE_SPECGLOSS)
+		metal = ORMS.z;
+    #endif
+		float fringeRough = min(roughness, mix(roughness, u_PuddleParams.y, 0.5));
+		roughness = mix(roughness, fringeRough, puddleEdge);
+		roughness = mix(roughness, u_PuddleParams.y, puddle);
+		diffuse.rgb *= 1.0 - 0.25 * puddle * (1.0 - metal);
 	}
   #endif
 
@@ -2531,7 +2596,7 @@ void main()
 
   #if defined(USE_WETNESS)
 	// r_weatherWetnessDebug 1-3, written unlit (tone mapping is bypassed)
-	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 3.0)
+	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 10.0 && u_WetnessParams2.z != 4.0)
 	{
 		float shade = 0.35 + 0.65 * NE;
 		vec3 debugColor;
@@ -2540,8 +2605,21 @@ void main()
 		else if (u_WetnessParams2.z == 2.0)
 			debugColor = u_WetnessParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) * shade :
 				mix(vec3(0.25), vec3(0.1, 0.35, 1.0), wetness) * shade;
-		else
+		else if (u_WetnessParams2.z == 3.0 || u_WetnessParams2.z == 9.0)
 			debugColor = vec3(roughness);
+		else if (u_WetnessParams2.z == 5.0)
+			debugColor = mix(vec3(0.6, 0.1, 0.1), vec3(0.1, 0.8, 0.1), puddleSlope) * shade;
+		else if (u_WetnessParams2.z == 6.0)
+			debugColor = u_PuddleParams.x > 0.0 ? mix(vec3(puddleField),
+				vec3(0.1, 0.35, 1.0), 0.5 * step(1.0 - u_PuddleParams.x, puddleField)) : vec3(0.25) * shade;
+		else if (u_WetnessParams2.z == 7.0)
+			debugColor = vec3(smoothstep(0.5, 1.0, rainExposure) * puddleSlope) * shade;
+		else if (u_WetnessParams2.z == 8.0)
+			debugColor = mix(mix(vec3(0.25), vec3(0.2, 0.9, 0.9), puddleEdge),
+				vec3(0.05, 0.2, 1.0), puddle) * shade;
+		else // 10: eligibility
+			debugColor = (u_PuddleParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) :
+				u_PuddleParams.x > 0.0 ? vec3(0.1, 0.8, 0.1) : vec3(0.25)) * shade;
 		out_Color = vec4(debugColor, diffuse.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
     #if defined(USE_SSR) && defined(USE_SPECULARMAP)
