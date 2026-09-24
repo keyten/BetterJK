@@ -1956,6 +1956,13 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			RB_GetColorGrading(&colorGradingLut, colorGradingParams);
 			uniformDataWriter.SetUniformVec4(UNIFORM_COLORGRADINGPARAMS, colorGradingParams);
 			samplerBindingsWriter.AddStaticImage(colorGradingLut, TB_COLORGRADINGLUT);
+			vec4_t bloomParams = {0, 0, 0, 0};
+			if (RB_ModernBloomActive())
+			{
+				bloomParams[0] = r_bloomIntensity->value;
+				samplerBindingsWriter.AddStaticImage(tr.glowFboScaled[1]->colorImage[0], TB_SPECULARMAP);
+			}
+			uniformDataWriter.SetUniformVec4(UNIFORM_BLOOMPARAMS, bloomParams);
 		}
 
 #ifdef REND2_SP_GORE

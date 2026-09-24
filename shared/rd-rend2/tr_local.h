@@ -1845,6 +1845,9 @@ typedef enum
 	UNIFORM_CHUNK_PARTICLES,
 
 	UNIFORM_BLOOMSTRENGTH,
+	UNIFORM_BLOOMMAP,
+	UNIFORM_BLOOMPARAMS,
+	UNIFORM_BLOOMSCENEMAP,
 
 	UNIFORM_AODEPTHMAP,
 	UNIFORM_AOMAP,
@@ -3113,6 +3116,7 @@ typedef struct trGlobals_s {
 	shaderProgram_t gaussianBlurShader[2];
 	shaderProgram_t dglowDownsample;
 	shaderProgram_t dglowUpsample;
+	shaderProgram_t bloomPrefilter;
 	shaderProgram_t spriteShader[SSDEF_COUNT];
 	shaderProgram_t weatherUpdateShader;
 	shaderProgram_t weatherShader;
@@ -3457,6 +3461,12 @@ extern cvar_t	*r_dynamicGlowSoft;
 extern cvar_t	*r_dynamicGlowWidth;
 extern cvar_t	*r_dynamicGlowHeight;
 extern cvar_t	*r_dynamicGlowBloom;
+extern cvar_t	*r_bloom;
+extern cvar_t	*r_bloomIntensity;
+extern cvar_t	*r_bloomThreshold;
+extern cvar_t	*r_bloomKnee;
+extern cvar_t	*r_bloomScatter;
+extern cvar_t	*r_bloomSceneIntensity;
 
 extern cvar_t	*r_debugContext;
 extern cvar_t	*r_debugWeather;

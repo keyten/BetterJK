@@ -43,6 +43,18 @@ vec3 sRGBToLinear( in vec3 color )
 	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
 }
 
+// Bloom is accumulated in scene-linear HDR before the shared output transform.
+// Legacy gamma-space scene buffers are decoded only for this addition and encoded
+// back to their original domain so the existing legacy tonemapper stays unchanged.
+vec3 AddBloomToScene(vec3 scene, vec3 bloom)
+{
+#if defined(USE_LINEAR_LIGHT)
+	return scene + bloom;
+#else
+	return LinearTosRGB(sRGBToLinear(scene) + bloom);
+#endif
+}
+
 //
 // Legacy Rend2 operator: John Hable's filmic curve, normalized so that
 // toneMax - toneMin maps to white. Unchanged from the original tonemap.glsl.

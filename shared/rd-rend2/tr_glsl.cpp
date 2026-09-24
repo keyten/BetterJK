@@ -149,6 +149,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_RandomOffset",			GLSL_VEC4, 1 },
 	{ "u_ChunkParticles",		GLSL_INT, 1 },
 	{ "u_BloomStrength",		GLSL_FLOAT, 1 },
+	{ "u_BloomMap",			GLSL_INT, 1 },
+	{ "u_BloomParams",			GLSL_VEC4, 1 },
+	{ "u_BloomSceneMap",		GLSL_INT, 1 },
 
 	{ "u_AODepthMap",			GLSL_INT, 1 },
 	{ "u_AOMap",				GLSL_INT, 1 },
@@ -1997,6 +2000,7 @@ static int GLSL_LoadGPUProgramRefraction(
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_LEVELSMAP, TB_LEVELSMAP);
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_SCREENDEPTHMAP, TB_SHADOWMAP);
 		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_COLORGRADINGLUT, TB_COLORGRADINGLUT);
+		GLSL_SetUniformInt(&tr.refractionShader[i], UNIFORM_BLOOMMAP, TB_SPECULARMAP);
 		qglUseProgram(0);
 
 		GLSL_FinishGPUShader(&tr.refractionShader[i]);
@@ -2453,6 +2457,7 @@ static int GLSL_LoadGPUProgramTonemap(
 		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_TEXTUREMAP, TB_COLORMAP);
 		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_LEVELSMAP, TB_LEVELSMAP);
 		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_COLORGRADINGLUT, TB_COLORGRADINGLUT);
+		GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_BLOOMMAP, TB_SPECULARMAP);
 		if (r_smaa->integer == 1)
 			GLSL_SetUniformInt(&tr.tonemapShader[i], UNIFORM_BLENDMAP, 2);
 
@@ -2959,6 +2964,20 @@ static int GLSL_LoadGPUProgramDynamicGlowDownsample(
 	return 1;
 }
 
+static int GLSL_LoadGPUProgramBloomPrefilter(
+	ShaderProgramBuilder& builder, Allocator& scratchAlloc)
+{
+	GLSL_LoadGPUProgramBasic(builder, scratchAlloc, &tr.bloomPrefilter,
+		"bloom_prefilter", fallback_bloom_prefilterProgram, 0);
+	GLSL_InitUniforms(&tr.bloomPrefilter);
+	qglUseProgram(tr.bloomPrefilter.program);
+	GLSL_SetUniformInt(&tr.bloomPrefilter, UNIFORM_TEXTUREMAP, TB_COLORMAP);
+	GLSL_SetUniformInt(&tr.bloomPrefilter, UNIFORM_BLOOMSCENEMAP, TB_LIGHTMAP);
+	qglUseProgram(0);
+	GLSL_FinishGPUShader(&tr.bloomPrefilter);
+	return 1;
+}
+
 static int GLSL_LoadGPUProgramSurfaceSprites(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
@@ -3315,6 +3334,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramGaussianBlur(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDynamicGlowUpsample(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDynamicGlowDownsample(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramBloomPrefilter(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramSurfaceSprites(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramWeather(builder, allocator);
 	if (r_smaa->integer)
@@ -3414,6 +3434,7 @@ void GLSL_ShutdownGPUShaders(void)
 
 	GLSL_DeleteGPUShader(&tr.dglowDownsample);
 	GLSL_DeleteGPUShader(&tr.dglowUpsample);
+	GLSL_DeleteGPUShader(&tr.bloomPrefilter);
 
 	for (i = 0; i < SSDEF_COUNT; ++i)
 		GLSL_DeleteGPUShader(&tr.spriteShader[i]);

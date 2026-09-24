@@ -61,6 +61,8 @@ uniform vec3 u_ToneMinAvgMaxLinear;
 uniform vec4 u_ToneMapParams;
 uniform sampler3D u_ColorGradingLut;
 uniform vec4 u_ColorGradingParams;
+uniform sampler2D u_BloomMap;
+uniform vec4 u_BloomParams;
 
 in vec2 var_TexCoords;
 
@@ -136,6 +138,11 @@ void main()
 	#else
 	vec4 color = texture(u_TextureMap, var_TexCoords) * u_Color;
 	#endif
+	if (u_BloomParams.x > 0.0)
+	{
+		vec3 bloom = texture(u_BloomMap, var_TexCoords).rgb * u_Color.rgb * u_BloomParams.x;
+		color.rgb = AddBloomToScene(color.rgb, bloom);
+	}
 
 	// Exposure, tone mapping and display encoding are shared with refraction.glsl,
 	// see output_transform.glsl

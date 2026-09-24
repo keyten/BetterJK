@@ -3157,7 +3157,32 @@ Downscaled glow / bloom source for the dynamic glow composite
 */
 static void RB_DynamicGlowPrepare(void)
 {
-	if (!r_dynamicGlow->integer)
+	if (RB_ModernBloomActive())
+	{
+		// Preserve the dedicated emissive/glow MRT. Optional scene energy is
+		// extracted with a soft knee; its default weight is zero so white
+		// diffuse surfaces do not automatically become light sources.
+		FBO_Bind(tr.glowFboScaled[0]);
+		GL_Cull(CT_TWO_SIDED);
+		GL_State(GLS_DEPTHTEST_DISABLE);
+		GL_SetViewportAndScissor(0, 0, tr.glowFboScaled[0]->width, tr.glowFboScaled[0]->height);
+		GLSL_BindProgram(&tr.bloomPrefilter);
+		GL_BindToTMU(tr.glowImage, TB_COLORMAP);
+		GL_BindToTMU(tr.renderImage, TB_LIGHTMAP);
+		vec4_t bloomParams = {r_bloomThreshold->value, r_bloomKnee->value,
+			r_bloomSceneIntensity->value, tr.linearLight ? 1.0f : 0.0f};
+		GLSL_SetUniformVec4(&tr.bloomPrefilter, UNIFORM_BLOOMPARAMS, bloomParams);
+		qglDrawArrays(GL_TRIANGLES, 0, 3);
+
+		int numPasses = Com_Clampi(2, ARRAY_LEN(tr.glowFboScaled), r_dynamicGlowPasses->integer);
+		for (int i = 1; i < numPasses; i++)
+			RB_BloomDownscale(tr.glowFboScaled[i - 1], tr.glowFboScaled[i]);
+		for (int i = numPasses - 2; i >= 1; i--)
+			RB_BloomUpscaleModern(tr.glowFboScaled[i + 1], tr.glowFboScaled[i], r_bloomScatter->value);
+		return;
+	}
+
+	if (r_bloom->integer != -1 || !r_dynamicGlow->integer)
 		return;
 
 	GL_Cull(CT_TWO_SIDED);
@@ -3290,7 +3315,7 @@ const void *RB_PostProcess(const void *data)
 		FBO_FastBlit(tr.renderFbo, NULL, tr.msaaResolveFbo, NULL, GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 		srcFbo = tr.msaaResolveFbo;
 
-		if ( r_dynamicGlow->integer )
+		if ( (r_bloom->integer == -1 && r_dynamicGlow->integer) || RB_ModernBloomActive() )
 		{
 			FBO_FastBlitIndexed(tr.renderFbo, tr.msaaResolveFbo, 1, 1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 		}
@@ -3461,7 +3486,7 @@ const void *RB_PostProcess(const void *data)
 	}
 #endif
 
-	if (r_dynamicGlow->integer != 0 && !RB_AODebugBypassesToneMap())
+	if (r_bloom->integer == -1 && r_dynamicGlow->integer != 0 && !RB_AODebugBypassesToneMap())
 	{
 		// Composite the glow/bloom texture
 		int blendFunc = 0;

@@ -156,6 +156,13 @@ void RB_ToneMap(FBO_t *hdrFbo, vec4i_t hdrBox, FBO_t *ldrFbo, vec4i_t ldrBox, in
 	GL_State(GLS_DEPTHTEST_DISABLE);
 	GLSL_BindProgram(shader);
 	GL_BindToTMU(hdrFbo->colorImage[0], TB_COLORMAP);
+	vec4_t bloomParams = {0, 0, 0, 0};
+	if (RB_ModernBloomActive())
+	{
+		bloomParams[0] = r_bloomIntensity->value;
+		GL_BindToTMU(tr.glowFboScaled[1]->colorImage[0], TB_SPECULARMAP);
+	}
+	GLSL_SetUniformVec4(shader, UNIFORM_BLOOMPARAMS, bloomParams);
 	GLSL_SetUniformVec4(shader, UNIFORM_COLOR, color);
 	GLSL_SetUniformVec2(shader, UNIFORM_AUTOEXPOSUREMINMAX, tr.refdef.autoExposureMinMax);
 	GLSL_SetUniformVec3(shader, UNIFORM_TONEMINAVGMAXLINEAR, tr.refdef.toneMinAvgMaxLinear);
@@ -592,9 +599,31 @@ void RB_BloomUpscale(FBO_t *sourceFBO, FBO_t *destFBO)
 	qglClearBufferfv(GL_COLOR, 0, colorBlack);
 
 	GLSL_BindProgram(&tr.dglowUpsample);
+	GLSL_SetUniformFloat(&tr.dglowUpsample, UNIFORM_BLOOMSTRENGTH, 1.0f);
 	GLSL_SetUniformVec2(&tr.dglowUpsample, UNIFORM_INVTEXRES, invTexRes);
 	GL_BindToTMU(sourceImage, 0);
 
 	// Draw fullscreen triangle
+	qglDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+bool RB_ModernBloomActive()
+{
+	return r_bloom->integer == 1 && r_hdr->integer &&
+		(r_toneMap->integer || r_forceToneMap->integer) && r_bloomIntensity->value > 0.0f;
+}
+
+void RB_BloomUpscaleModern(FBO_t *sourceFBO, FBO_t *destFBO, float scatter)
+{
+	image_t *sourceImage = sourceFBO->colorImage[0];
+	vec2_t invTexRes = { 1.0f / sourceImage->width, 1.0f / sourceImage->height };
+
+	FBO_Bind(destFBO);
+	GL_State(GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE);
+	GL_SetViewportAndScissor(0, 0, destFBO->width, destFBO->height);
+	GLSL_BindProgram(&tr.dglowUpsample);
+	GLSL_SetUniformVec2(&tr.dglowUpsample, UNIFORM_INVTEXRES, invTexRes);
+	GLSL_SetUniformFloat(&tr.dglowUpsample, UNIFORM_BLOOMSTRENGTH, scatter);
+	GL_BindToTMU(sourceImage, 0);
 	qglDrawArrays(GL_TRIANGLES, 0, 3);
 }

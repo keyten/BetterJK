@@ -453,6 +453,8 @@ uniform vec3 u_ToneMinAvgMaxLinear;
 uniform vec4 u_ToneMapParams;
 uniform sampler3D u_ColorGradingLut;
 uniform vec4 u_ColorGradingParams;
+uniform sampler2D u_BloomMap;
+uniform vec4 u_BloomParams;
 
 #if defined(USE_ALPHA_TEST)
 uniform int u_AlphaTestType;
@@ -509,6 +511,14 @@ void main()
 #endif
 
 #if defined(USE_TONEMAPPING)
+	if (u_BloomParams.x > 0.0)
+	{
+		vec3 bloom;
+		bloom.r = texture(u_BloomMap, texR).r;
+		bloom.g = texture(u_BloomMap, texG).g;
+		bloom.b = texture(u_BloomMap, texB).b;
+		color.rgb = AddBloomToScene(color.rgb, bloom * var_Color.rgb * u_Color.rgb * u_BloomParams.x);
+	}
 	// Same output transform as the main view, see output_transform.glsl
 	vec3 minAvgMax = texture(u_LevelsMap, texG).rgb;
 	color.rgb = OutputTransform(color.rgb, minAvgMax, u_AutoExposureMinMax,

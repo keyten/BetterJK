@@ -413,6 +413,12 @@ cvar_t	*r_dynamicGlowSoft;
 cvar_t	*r_dynamicGlowWidth;
 cvar_t	*r_dynamicGlowHeight;
 cvar_t	*r_dynamicGlowBloom;
+cvar_t	*r_bloom;
+cvar_t	*r_bloomIntensity;
+cvar_t	*r_bloomThreshold;
+cvar_t	*r_bloomKnee;
+cvar_t	*r_bloomScatter;
+cvar_t	*r_bloomSceneIntensity;
 
 cvar_t *r_debugContext;
 cvar_t *r_debugWeather;
@@ -1619,6 +1625,18 @@ void R_Register( void )
 	r_dynamicGlowHeight					= ri.Cvar_Get( "r_dynamicGlowHeight",		"240",		CVAR_ARCHIVE|CVAR_LATCH, "" );
 	r_dynamicGlowBloom					= ri.Cvar_Get( "r_dynamicGlowBloom",		"0.0",		CVAR_ARCHIVE, "");
 	ri.Cvar_CheckRange(r_dynamicGlowBloom, 0.f, 2.f, qfalse);
+	r_bloom = ri.Cvar_Get("r_bloom", "-1", CVAR_ARCHIVE, "-1: legacy glow, 0: off, 1: HDR bloom");
+	ri.Cvar_CheckRange(r_bloom, -1, 1, qtrue);
+	r_bloomIntensity = ri.Cvar_Get("r_bloomIntensity", "0.15", CVAR_ARCHIVE, "HDR bloom strength");
+	ri.Cvar_CheckRange(r_bloomIntensity, 0.f, 4.f, qfalse);
+	r_bloomThreshold = ri.Cvar_Get("r_bloomThreshold", "2.0", CVAR_ARCHIVE, "Scene-linear bloom threshold");
+	ri.Cvar_CheckRange(r_bloomThreshold, 0.f, 64.f, qfalse);
+	r_bloomKnee = ri.Cvar_Get("r_bloomKnee", "0.5", CVAR_ARCHIVE, "Bloom threshold soft knee fraction");
+	ri.Cvar_CheckRange(r_bloomKnee, 0.f, 1.f, qfalse);
+	r_bloomScatter = ri.Cvar_Get("r_bloomScatter", "0.7", CVAR_ARCHIVE, "Bloom pyramid upscale scatter");
+	ri.Cvar_CheckRange(r_bloomScatter, 0.f, 1.f, qfalse);
+	r_bloomSceneIntensity = ri.Cvar_Get("r_bloomSceneIntensity", "0", CVAR_ARCHIVE, "Optional HDR scene bloom, independent of emissive bloom");
+	ri.Cvar_CheckRange(r_bloomSceneIntensity, 0.f, 2.f, qfalse);
 
 	r_debugContext						= ri.Cvar_Get( "r_debugContext",			"0",		CVAR_LATCH, "" );
 	r_debugWeather						= ri.Cvar_Get( "r_debugWeather",			"0",		CVAR_ARCHIVE, "" );
