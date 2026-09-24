@@ -1717,8 +1717,26 @@ void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
 		slopeMax
 	};
 	const vec4_t puddle2 = { 1.0f / MAX(r_puddleScale->value, 8.0f), 0.0f, 0.0f, 0.0f };
+
+	// height aware puddles: only materials with a normalHeightMap (the
+	// USE_PARALLAXMAP shaders) and a relief of at least a few steps, the
+	// others keep the macro mask (y = 0)
+	vec4_t puddleHeight = {
+		0.0f,
+		0.0f,
+		Com_Clamp(0.01f, 0.5f, r_puddleHeightSoftness->value),
+		Com_Clamp(-1.0f, 1.0f, r_puddleHeightFill->value)
+	};
+	const image_t *heightImage = pStage->bundle[TB_NORMALMAP].image[0];
+	if (r_puddleHeight->integer && heightImage && heightImage->type == IMGTYPE_NORMALHEIGHT &&
+		heightImage->heightRange[1] - heightImage->heightRange[0] >= 4.0f / 255.0f)
+	{
+		puddleHeight[0] = heightImage->heightRange[0];
+		puddleHeight[1] = 1.0f / (heightImage->heightRange[1] - heightImage->heightRange[0]);
+	}
 	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS, puddle);
 	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS2, puddle2);
+	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEHEIGHT, puddleHeight);
 	uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, ws->weatherMVP);
 	samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_WEATHERDEPTH);
 }

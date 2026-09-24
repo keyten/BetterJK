@@ -660,6 +660,7 @@ uniform vec4 u_WetnessParams;  // strength (< 0: excluded draw), roughness scale
 uniform vec4 u_WetnessParams2; // depth bias, normal offset (world), debug view, split x
 uniform vec4 u_PuddleParams;   // coverage (0: off, < 0: excluded draw), roughness, slope min, slope max
 uniform vec4 u_PuddleParams2;  // 1 / pattern scale (world)
+uniform vec4 u_PuddleHeight;   // relief depth low, 1 / (high - low) (0: no usable height), softness, fill bias
 #endif
 // Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
 uniform int u_DiffuseBRDF;
@@ -1239,6 +1240,16 @@ PomSurface g_pom;
 float g_pomLightWeight = 0.0;	// self shadow weight of the dynamic light being evaluated
 float g_pomLocalShadow = 1.0;	// r_pomDebug 5: darkest local light self shadow
 
+// The one reading of the material height field, shared by POM and the height
+// aware puddles: the normalHeightMap alpha is flipped on load (R_FindImageFile)
+// and swizzled into red (RawImage_SwizzleRA), so this is the depth below the
+// top of the relief, 0 = highest point, 1 = deepest (pom_silhouette.glsl
+// PomSampleDepth is the same).
+float SampleMaterialDepth(in sampler2D normalMap, in vec2 uv, in vec2 gradX, in vec2 gradY)
+{
+	return textureGrad(normalMap, uv, gradX, gradY).r;
+}
+
 // r_pomFadeStart / r_pomFadeEnd: 1 near, 0 beyond the end (normal mapping)
 float PomDistanceFade(in float viewDistance)
 {
@@ -1299,7 +1310,7 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 		depth += size;
 
 		// height is flipped before uploaded to the gpu
-		float t = textureGrad(normalMap, dp + ds * depth, dx, dy).r;
+		float t = SampleMaterialDepth(normalMap, dp + ds * depth, dx, dy);
 		g_pom.viewSamples += 1.0;
 
 		if(depth >= t)
@@ -1319,7 +1330,7 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 		size *= 0.5;
 
 		// height is flipped before uploaded to the gpu
-		float t = textureGrad(normalMap, dp + ds * depth, dx, dy).r;
+		float t = SampleMaterialDepth(normalMap, dp + ds * depth, dx, dy);
 
 		if(depth >= t)
 		{
@@ -1331,8 +1342,8 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 	}
 	g_pom.viewSamples += float(binarySearchSteps) + 2.0;
 
-	float beforeDepth = textureGrad(normalMap,  dp + ds * (depth-size), dx, dy).r - depth + size;
-	float afterDepth  = textureGrad(normalMap, dp + ds * depth, dx, dy).r - depth;
+	float beforeDepth = SampleMaterialDepth(normalMap, dp + ds * (depth-size), dx, dy) - depth + size;
+	float afterDepth  = SampleMaterialDepth(normalMap, dp + ds * depth, dx, dy) - depth;
 	float deltaDepth = beforeDepth - afterDepth;
 	float weight = mix(0.0, beforeDepth / deltaDepth , deltaDepth > 0);
 	bestDepth += weight*size;
@@ -1385,7 +1396,7 @@ float GetPomSelfShadow(in vec3 L)
 				float f = (float(i) + 0.5) * invSteps;
 				float s = s0 * (1.0 - f);
 				// height is flipped before uploaded to the gpu
-				float h = textureGrad(u_NormalMap, g_pom.uv + duv * (g_pom.depth - s), g_pom.gradX, g_pom.gradY).r;
+				float h = SampleMaterialDepth(u_NormalMap, g_pom.uv + duv * (g_pom.depth - s), g_pom.gradX, g_pom.gradY);
 				g_pom.shadowSamples += 1.0;
 				occlusion = max(occlusion, (s - h) * u_PomShadow.w * (1.0 - f));
 			}
@@ -2231,6 +2242,30 @@ float PuddleField(vec2 p)
 	vec2 q = p + (w - 0.5) * 0.8;
 	return 0.65 * PuddleValueNoise(q) + 0.35 * PuddleValueNoise(q * 2.3 + 5.1);
 }
+
+#if defined(USE_PARALLAXMAP)
+// Height aware puddles (r_puddleHeight): the macro basin (0 where the macro
+// puddle fringe starts, 1 in its core) sets a static water level inside the
+// relief of the material, depth = PuddleRelief (1 = deepest). The
+// deepest cracks fill first, then the low areas, the core covers the peaks.
+// x = shallow film (bumps still show), y = submerged, z = normal flattening.
+vec3 PuddleMicro(in float basin, in float depth)
+{
+	float soft = u_PuddleHeight.z;
+	float fill = basin * (1.0 + 2.0 * soft + u_PuddleHeight.w) - soft;
+	float level = 1.0 - fill;
+	float edge = smoothstep(level - soft, level, depth);
+	float core = smoothstep(level, level + soft, depth);
+	return vec3(edge, core, max(smoothstep(level, level + 2.0 * soft, depth), 0.5 * edge));
+}
+
+// SampleMaterialDepth rescaled to the relief this height map really uses
+// (2nd..98th percentile, image_t heightRange): 0 = its peaks, 1 = its deepest
+float PuddleRelief(in float materialDepth)
+{
+	return clamp((materialDepth - u_PuddleHeight.x) * u_PuddleHeight.y, 0.0, 1.0);
+}
+#endif
 #endif
 
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_SSAO)
@@ -2493,6 +2528,9 @@ void main()
 	float puddleField = 0.0;
 	float puddle = 0.0;
 	float puddleEdge = 0.0;
+	float puddleMacro = 0.0;
+	float puddleMacroEdge = 0.0;
+	float puddleDepth = -1.0;	// material depth of the height aware path, < 0: none
 	if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z > 0.0)
 	{
 		vec3 wetGeoNormal = normalize(vertexNormal);
@@ -2509,18 +2547,34 @@ void main()
 		// world-only eligibility. The normal map is not used for the slope.
 		puddleSlope = smoothstep(u_PuddleParams.z, u_PuddleParams.w, wetGeoNormal.z);
 		float exposureP = smoothstep(0.5, 1.0, rainExposure);
-		bool puddleDebug = u_WetnessParams2.z >= 5.0 && u_WetnessParams2.z <= 10.0;
+		bool puddleDebug = u_WetnessParams2.z >= 5.0 && u_WetnessParams2.z <= 15.0;
 		if (u_PuddleParams.x > 0.0 && ((wetness > 0.0 && puddleSlope * exposureP > 0.0) || puddleDebug))
 		{
 			puddleField = PuddleField((u_ViewOrigin - viewDir).xy * u_PuddleParams2.x);
 			float t = 1.0 - u_PuddleParams.x;
 			float gate = puddleSlope * exposureP * step(0.0, u_WetnessParams.x);
-			puddle = smoothstep(t, t + 0.06, puddleField) * gate;
-			puddleEdge = smoothstep(t - 0.10, t, puddleField) * gate;
-			if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
-				puddle = puddleEdge = 0.0;
+			puddleMacro = smoothstep(t, t + 0.06, puddleField) * gate;
+			puddleMacroEdge = smoothstep(t - 0.10, t, puddleField) * gate;
+			puddle = puddleMacro;
+			puddleEdge = puddleMacroEdge;
 			// smooth water surface: underlying detail fades in the core
-			N = normalize(mix(N, wetGeoNormal, max(puddle, puddleEdge * 0.5)));
+			float flatten = max(puddle, puddleEdge * 0.5);
+    #if defined(USE_PARALLAXMAP)
+			// the real height field of the shaded (POM displaced) point decides
+			// where inside the macro puddle the water stands
+			if (u_PuddleHeight.y > 0.0)
+			{
+				puddleDepth = PuddleRelief(SampleMaterialDepth(u_NormalMap, texCoords, g_pom.gradX, g_pom.gradY));
+				float basin = clamp((puddleField - (t - 0.10)) / 0.16, 0.0, 1.0);
+				vec3 micro = PuddleMicro(basin, puddleDepth) * gate;
+				puddleEdge = micro.x;
+				puddle = micro.y;
+				flatten = micro.z;
+			}
+    #endif
+			if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
+				puddle = puddleEdge = flatten = 0.0;
+			N = normalize(mix(N, wetGeoNormal, flatten));
 		}
 	}
   #endif
@@ -2865,12 +2919,46 @@ void main()
   #endif
 
   #if defined(USE_WETNESS)
-	// r_weatherWetnessDebug 1-3, written unlit (tone mapping is bypassed)
-	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 10.0 && u_WetnessParams2.z != 4.0)
+	// r_weatherWetnessDebug 1-15 (not 4), written unlit (tone mapping is bypassed)
+	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 15.0 && u_WetnessParams2.z != 4.0)
 	{
 		float shade = 0.35 + 0.65 * NE;
 		vec3 debugColor;
-		if (u_WetnessParams2.z == 1.0)
+		// 11-15: material depth of the shaded point (raw, and rescaled to the
+		// relief), < 0 without usable height (no normalHeightMap, flat height
+		// or r_puddleHeight 0): magenta in 11, 12, 14
+		float debugRawDepth = -1.0;
+		float debugDepth = -1.0;
+    #if defined(USE_PARALLAXMAP)
+		if (u_PuddleHeight.y > 0.0)
+		{
+			debugRawDepth = SampleMaterialDepth(u_NormalMap, texCoords, g_pom.gradX, g_pom.gradY);
+			debugDepth = PuddleRelief(debugRawDepth);
+		}
+    #endif
+		if (u_WetnessParams2.z >= 11.0 && u_WetnessParams2.z != 13.0 && u_WetnessParams2.z != 15.0 && debugDepth < 0.0)
+			debugColor = vec3(1.0, 0.0, 1.0) * shade;
+		else if (u_WetnessParams2.z == 11.0)	// raw sampled height, white = 1 (top of the 0..1 range)
+			debugColor = vec3(1.0 - debugRawDepth);
+		else if (u_WetnessParams2.z == 12.0)	// interpreted relief: deepest dark blue, peaks orange
+			debugColor = mix(vec3(0.02, 0.05, 0.4), vec3(1.0, 0.55, 0.1), 1.0 - debugDepth);
+		else if (u_WetnessParams2.z == 13.0)	// macro puddle mask only
+			debugColor = mix(mix(vec3(0.25), vec3(0.2, 0.9, 0.9), puddleMacroEdge),
+				vec3(0.05, 0.2, 1.0), puddleMacro) * shade;
+		else if (u_WetnessParams2.z == 14.0)	// micro mask at a half filled basin, ungated
+		{
+    #if defined(USE_PARALLAXMAP)
+			vec3 micro = PuddleMicro(0.5, debugDepth);
+			debugColor = mix(mix(vec3(0.15 + 0.5 * (1.0 - debugDepth)), vec3(0.2, 0.9, 0.9), micro.x),
+				vec3(0.05, 0.2, 1.0), micro.y);
+    #else
+			debugColor = vec3(1.0, 0.0, 1.0);
+    #endif
+		}
+		else if (u_WetnessParams2.z == 15.0)	// combined puddle over the relief
+			debugColor = mix(mix(vec3(0.15 + 0.5 * (1.0 - max(puddleDepth, 0.0))), vec3(0.2, 0.9, 0.9), puddleEdge),
+				vec3(0.05, 0.2, 1.0), puddle);
+		else if (u_WetnessParams2.z == 1.0)
 			debugColor = vec3(rainExposure) * shade;
 		else if (u_WetnessParams2.z == 2.0)
 			debugColor = u_WetnessParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) * shade :

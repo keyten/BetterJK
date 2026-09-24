@@ -2365,6 +2365,7 @@ image_t *R_CreateImage( const char *name, byte *pic, int width, int height, imgT
 	image->width = width;
 	image->height = height;
 	VectorSet4(image->emissiveColor, 0.5f, 0.5f, 0.5f, 1.0f);
+	image->heightRange[0] = image->heightRange[1] = 0.0f;
 	if (flags & IMGFLAG_CLAMPTOEDGE)
 		glWrapClampMode = GL_CLAMP_TO_EDGE;
 	else
@@ -3308,12 +3309,33 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, int flags )
 	}
 
 	// flip height info, so we don't need to do this in the shader later
+	float heightRange[2] = { 0.0f, 0.0f };
 	if (type == IMGTYPE_NORMALHEIGHT)
 	{
+		int histogram[256] = {};
 		for (int i = 0; i < width*height; i++)
 		{
 			pic[4 * i + 3] = 255 - pic[4 * i + 3];
+			histogram[pic[4 * i + 3]]++;
 		}
+
+		// the relief actually used: most height maps span a small part of
+		// 0..1, the height aware puddles put their water level inside it
+		const int total = width * height;
+		int sum = 0, lo = -1, hi = 255;
+		for (int v = 0; v < 256; v++)
+		{
+			sum += histogram[v];
+			if (lo < 0 && sum * 50 >= total)
+				lo = v;
+			if (sum * 50 >= total * 49)
+			{
+				hi = v;
+				break;
+			}
+		}
+		heightRange[0] = MAX(lo, 0) / 255.0f;
+		heightRange[1] = hi / 255.0f;
 	}
 
 	// before the upload, which may modify the picture
@@ -3323,7 +3345,11 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, int flags )
 
 	image = R_CreateImage( name, pic, width, height, type, loadFlags, internalFormat);
 	if ( image )
+	{
 		VectorCopy4( emissiveColor, image->emissiveColor );
+		image->heightRange[0] = heightRange[0];
+		image->heightRange[1] = heightRange[1];
+	}
 	Z_Free( pic );
 
 	return image;

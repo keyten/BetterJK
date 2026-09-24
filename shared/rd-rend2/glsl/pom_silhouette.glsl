@@ -121,7 +121,8 @@ void PomGradients(in bool wall, in vec2 uvDx, in vec2 uvDy, in float pixelFootpr
 
 float PomSampleDepth(in sampler2D heightMap, in vec2 uv, in vec2 gradX, in vec2 gradY)
 {
-	// height is flipped before uploaded to the gpu
+	// height is flipped before uploaded to the gpu (same reading as
+	// lightall SampleMaterialDepth: 0 = top, 1 = deepest)
 	return textureGrad(heightMap, uv, gradX, gradY).r;
 }
 

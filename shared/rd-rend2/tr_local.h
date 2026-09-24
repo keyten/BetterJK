@@ -267,6 +267,9 @@ extern cvar_t  *r_puddleCoverage;
 extern cvar_t  *r_puddleRoughness;
 extern cvar_t  *r_puddleSlope;
 extern cvar_t  *r_puddleScale;
+extern cvar_t  *r_puddleHeight;
+extern cvar_t  *r_puddleHeightSoftness;
+extern cvar_t  *r_puddleHeightFill;
 extern cvar_t  *r_ssrQuality;
 extern cvar_t  *r_ssrSteps;
 extern cvar_t  *r_ssrRefineSteps;
@@ -612,6 +615,11 @@ typedef struct image_s {
 	// color of the bright part of the picture (luminance weighted average,
 	// linear when sampled as sRGB), for SSR emitter reflections (tr_ssr.cpp)
 	vec4_t		emissiveColor;
+
+	// normalHeightMap: 2nd / 98th percentile of the flipped height (depth,
+	// 0 = top), the relief the height aware puddles use (tr_weather.cpp);
+	// 0 0 for every other image
+	float		heightRange[2];
 } image_t;
 
 typedef struct cubemap_s {
@@ -2071,6 +2079,7 @@ typedef enum
 	UNIFORM_WETNESSPARAMS2,		// depth bias, normal offset, debug mode, split x
 	UNIFORM_PUDDLEPARAMS,		// coverage (<= 0 off, < 0 ineligible), roughness, slope min, slope max
 	UNIFORM_PUDDLEPARAMS2,		// 1 / scale
+	UNIFORM_PUDDLEHEIGHT,		// relief depth low, 1 / (high - low) (0: no height), softness, fill bias
 
 	UNIFORM_COUNT
 } uniform_t;

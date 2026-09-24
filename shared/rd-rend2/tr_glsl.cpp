@@ -232,6 +232,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_WetnessParams2",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams2",		GLSL_VEC4, 1 },
+	{ "u_PuddleHeight",		GLSL_VEC4, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
