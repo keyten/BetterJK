@@ -93,6 +93,8 @@ cvar_t	*r_showcluster;
 cvar_t	*r_nocurves;
 
 cvar_t	*r_volumetricFog;
+cvar_t *r_entityLightGrid;
+cvar_t *r_entityLightGridDebug;
 cvar_t	*r_volumetricFogDefaultScale;
 cvar_t	*r_volumetricFogSamples;
 cvar_t	*r_volumetricFogScale;
@@ -1884,6 +1886,10 @@ void R_Register( void )
 	r_sunlightMode = ri.Cvar_Get( "r_sunlightMode", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );
 
 	r_volumetricFog = ri.Cvar_Get("r_volumetricFog", "0", CVAR_ARCHIVE | CVAR_LATCH, "Volumetric fog: 0 = off, 1 = light grid ray march (legacy), 2 = froxel volume with sun, dynamic lights, shadows and temporal reprojection");
+	r_entityLightGrid = ri.Cvar_Get("r_entityLightGrid", "0", CVAR_ARCHIVE | CVAR_LATCH, "Entity BSP light grid: 0 = legacy, 1 = three CPU samples, 2 = per-fragment GPU samples");
+	ri.Cvar_CheckRange(r_entityLightGrid, 0, 2, qtrue);
+	r_entityLightGridDebug = ri.Cvar_Get("r_entityLightGridDebug", "0", CVAR_CHEAT | CVAR_LATCH, "Entity grid debug: 1 ambient, 2 direct, 3 direction, 4 validity, 5 cell, 6 legacy, 7 multi-point, 8 GPU, 9 difference");
+	ri.Cvar_CheckRange(r_entityLightGridDebug, 0, 9, qtrue);
 	ri.Cvar_CheckRange(r_volumetricFog, 0, 2, qtrue);
 	r_volumetricFogDefaultScale = ri.Cvar_Get("r_volumetricFogDefaultScale", "1.0", CVAR_ARCHIVE | CVAR_LATCH, "Scales volumetric fog density unless scale has been explicitly defined");
 	r_volumetricFogSamples = ri.Cvar_Get("r_volumetricFogSamples", "48", CVAR_ARCHIVE | CVAR_LATCH, "How many ray samples to take");

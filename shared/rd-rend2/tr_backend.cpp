@@ -2582,6 +2582,98 @@ static void RB_UpdateEntityLightConstants(
 
 	VectorCopy(lightDir, entityBlock.modelLightDir);
 	entityBlock.lightOrigin[3] = lightRadius;
+	if (r_entityLightGrid->integer == 0 && r_entityLightGridDebug->integer == 0)
+		return;
+
+	int gridMode = r_entityLightGrid->integer;
+	if (refEntity == &tr.worldEntity || refEntity->e.reType != RT_MODEL ||
+		!tr.world || !tr.world->lightGridData ||
+		(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) ||
+		r_fullbright->integer || backEnd.refdef.doLAGoggles)
+		gridMode = 0;
+	if (gridMode == 2 && (!tr.world->entityGridAmbient ||
+		!tr.world->entityGridDirected || !tr.world->entityGridDirection))
+		gridMode = 0;
+
+	entityBlock.gridParams[2] = (float)gridMode;
+	entityBlock.gridParams[3] = tr.forcedLinearLight ? 1.0f : 0.0f;
+	entityBlock.gridScale[0] = r_ambientScale->value;
+	entityBlock.gridScale[1] = r_directedScale->value;
+	entityBlock.gridScale[2] = tr.world && tr.world->hdrLightGrid ? 1.0f : 0.0f;
+	entityBlock.gridScale[3] = (float)((refEntity != &tr.worldEntity &&
+		refEntity->e.reType == RT_MODEL && tr.world && tr.world->entityGridAmbient) ?
+		r_entityLightGridDebug->integer : 0);
+	entityBlock.gridMinimum[3] = tr.hdrLighting ? 65504.0f : tr.identityLightByte * normalizeFactor;
+	if (!tr.hdrLighting)
+	{
+		vec3_t minimum;
+		if (refEntity->e.renderfx & RF_MINLIGHT)
+		{
+			if (refEntity->e.shaderRGBA[0] == 255 && refEntity->e.shaderRGBA[1] == 255 && refEntity->e.shaderRGBA[2] == 0)
+				VectorSet(minimum, 255, 255, 0);
+			else
+				VectorSet(minimum, 16, 96, 150);
+		}
+		else if (refEntity->e.renderfx & RF_MORELIGHT)
+			VectorSet(minimum, 96, 96, 96);
+		else
+			VectorSet(minimum, 32, 32, 32);
+		for (int c = 0; c < 3; c++)
+			entityBlock.gridMinimum[c] = minimum[c] * tr.identityLight * normalizeFactor;
+	}
+
+	if (gridMode != 1 && entityBlock.gridScale[3] == 0.0f)
+		return;
+
+	// The current model bounds are not exposed for Ghoul2. Use its renderer
+	// radius as a conservative height until posed bounds become available.
+	vec3_t mins, maxs;
+	R_ModelBounds(refEntity->e.hModel, mins, maxs);
+	float lower = 1e30f, upper = -1e30f;
+	if (VectorCompare(mins, maxs))
+	{
+		float scale = MAX(fabsf(refEntity->e.modelScale[0]),
+			MAX(fabsf(refEntity->e.modelScale[1]), fabsf(refEntity->e.modelScale[2])));
+		if (scale == 0.0f)
+			scale = 1.0f;
+		const float radius = MAX(1.0f, refEntity->e.radius * scale);
+		lower = refEntity->e.origin[2] - radius;
+		upper = refEntity->e.origin[2] + radius;
+	}
+	else
+	{
+		for (int corner = 0; corner < 8; corner++)
+		{
+			float z = refEntity->e.origin[2];
+			for (int axis = 0; axis < 3; axis++)
+				z += (corner & (1 << axis) ? maxs[axis] : mins[axis]) * refEntity->e.axis[axis][2];
+			lower = MIN(lower, z);
+			upper = MAX(upper, z);
+		}
+	}
+	entityBlock.gridParams[0] = lower;
+	entityBlock.gridParams[1] = 1.0f / MAX(upper - lower, 1.0f);
+	const float heights[3] = { 0.12f, 0.5f, 0.88f };
+	for (int sample = 0; sample < 3; sample++)
+	{
+		vec3_t point;
+		VectorCopy(refEntity->e.origin, point);
+		point[2] = lower + (upper - lower) * heights[sample];
+		if (refEntity->e.renderfx & RF_LIGHTING_ORIGIN)
+		{
+			for (int c = 0; c < 3; c++)
+				point[c] += refEntity->e.lightingOrigin[c] - refEntity->e.origin[c];
+		}
+		vec3_t ambient, directed, direction;
+		if (!R_LightForPoint(point, ambient, directed, direction))
+			continue;
+		for (int c = 0; c < 3; c++)
+		{
+			entityBlock.gridAmbient[sample][c] = ambient[c] * normalizeFactor;
+			entityBlock.gridDirected[sample][c] = directed[c] * normalizeFactor;
+			entityBlock.gridDirection[sample][c] = direction[c];
+		}
+	}
 }
 
 static void RB_UpdateEntityMatrixConstants(
@@ -2756,6 +2848,7 @@ void RB_AddShaderToShaderInstanceUBO(shader_t *shader)
 static void RB_UpdateEntityConstants(
 	gpuFrame_t *frame, const trRefdef_t *refdef)
 {
+	R_UpdateEntityLightGridTextures(tr.world);
 	memset(tr.entityUboOffsets, 0, sizeof(tr.entityUboOffsets));
 	memset(tr.previousEntityUboOffsets, 0, sizeof(tr.previousEntityUboOffsets));
 

@@ -55,6 +55,12 @@ layout(std140) uniform Entity
 	float u_FXVolumetricBase;
 	vec3 u_ModelLightDir;
 	float u_VertexLerp;
+	vec4 u_GridAmbient[3];
+	vec4 u_GridDirected[3];
+	vec4 u_GridDirection[3];
+	vec4 u_GridParams;
+	vec4 u_GridMinimum;
+	vec4 u_GridScale;
 };
 
 #if defined(USE_SKELETAL_ANIMATION)
@@ -415,6 +421,12 @@ layout(std140) uniform Entity
 	float u_FXVolumetricBase;
 	vec3 u_ModelLightDir;
 	float u_VertexLerp;
+	vec4 u_GridAmbient[3];
+	vec4 u_GridDirected[3];
+	vec4 u_GridDirection[3];
+	vec4 u_GridParams;
+	vec4 u_GridMinimum;
+	vec4 u_GridScale;
 };
 
 struct Light
@@ -446,6 +458,126 @@ uniform samplerBuffer  u_FPlusLights;
 uniform usamplerBuffer u_FPlusGridMap;
 uniform usamplerBuffer u_FPlusIndexMap;
 uniform sampler2D u_DiffuseMap;
+
+#if defined(USE_ENTITY_GRID) && defined(PER_PIXEL_LIGHTING)
+#if defined(USE_ENTITY_GPU_GRID)
+uniform sampler3D u_EntityGridAmbient;
+uniform sampler3D u_EntityGridDirected;
+uniform sampler3D u_EntityGridDirection;
+uniform vec3 u_LightGridOrigin;
+uniform vec3 u_LightGridCellInverseSize;
+#endif
+
+struct EntityGridSample
+{
+	vec3 ambient;
+	vec3 directed;
+	vec3 direction;
+	float validity;
+	vec3 cell;
+};
+
+#if defined(USE_ENTITY_GPU_GRID)
+EntityGridSample SampleEntityGrid(vec3 position)
+{
+	EntityGridSample result;
+	result.ambient = vec3(0.0);
+	result.directed = vec3(0.0);
+	result.direction = vec3(0.0);
+	result.validity = 0.0;
+	result.cell = (position - u_LightGridOrigin) * u_LightGridCellInverseSize;
+	ivec3 bounds = textureSize(u_EntityGridAmbient, 0);
+	ivec3 base = clamp(ivec3(floor(result.cell)), ivec3(0), bounds - ivec3(1));
+	vec3 fraction = fract(result.cell);
+	float weightSum = 0.0;
+	for (int corner = 0; corner < 8; corner++)
+	{
+		ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+		// Match the CPU's linear BSP-array bounds check, including its edge
+		// behavior when a corner crosses an X or Y row boundary.
+		int linear = base.x + bounds.x * (base.y + bounds.y * base.z) +
+			offset.x + bounds.x * (offset.y + bounds.y * offset.z);
+		if (linear >= bounds.x * bounds.y * bounds.z)
+			continue;
+		ivec3 address = ivec3(linear % bounds.x,
+			(linear / bounds.x) % bounds.y, linear / (bounds.x * bounds.y));
+		vec3 weightAxis = vec3(offset.x != 0 ? fraction.x : 1.0 - fraction.x,
+			offset.y != 0 ? fraction.y : 1.0 - fraction.y,
+			offset.z != 0 ? fraction.z : 1.0 - fraction.z);
+		float weight = weightAxis.x * weightAxis.y * weightAxis.z;
+		vec4 encodedDirection = texelFetch(u_EntityGridDirection, address, 0);
+		if (encodedDirection.a < 0.5)
+			continue;
+		result.ambient += weight * texelFetch(u_EntityGridAmbient, address, 0).rgb;
+		result.directed += weight * texelFetch(u_EntityGridDirected, address, 0).rgb;
+		result.direction += weight * (encodedDirection.rgb * 2.0 - 1.0);
+		weightSum += weight;
+	}
+	if (weightSum > 0.0)
+	{
+		if (weightSum < 0.99)
+		{
+			result.ambient /= weightSum;
+			result.directed /= weightSum;
+		}
+		result.validity = weightSum;
+		float directionLength = length(result.direction);
+		if (directionLength > 1e-5)
+			result.direction /= directionLength;
+	}
+	if (u_GridScale.z < 0.5)
+	{
+		result.ambient *= ENTITY_GRID_LDR_RANGE;
+		result.directed *= ENTITY_GRID_LDR_RANGE;
+	}
+	result.ambient *= u_GridScale.x;
+	result.directed *= u_GridScale.y;
+	return result;
+}
+#endif
+
+EntityGridSample SampleEntityMultiPoint(float worldZ)
+{
+	EntityGridSample result;
+	float height = clamp((worldZ - u_GridParams.x) * u_GridParams.y, 0.0, 1.0);
+	float t = height < 0.5 ? clamp((height - 0.12) / 0.38, 0.0, 1.0) :
+		1.0 + clamp((height - 0.5) / 0.38, 0.0, 1.0);
+	int lo = t < 1.0 ? 0 : 1;
+	int hi = lo + 1;
+	float blend = fract(min(t, 1.99999));
+	result.ambient = mix(u_GridAmbient[lo].rgb, u_GridAmbient[hi].rgb, blend);
+	result.directed = mix(u_GridDirected[lo].rgb, u_GridDirected[hi].rgb, blend);
+	vec3 direction = mix(u_GridDirection[lo].rgb, u_GridDirection[hi].rgb, blend);
+	float directionLength = length(direction);
+	result.direction = directionLength > 1e-5 ? direction / directionLength : vec3(0.0);
+	result.validity = 1.0;
+	result.cell = vec3(0.0);
+	return result;
+}
+
+vec3 EntityGridSRGBDecode(vec3 color)
+{
+	color = max(color, vec3(0.0));
+	vec3 lo = color * (1.0 / 12.92);
+	vec3 hi = pow((color + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
+}
+
+vec3 EntityGridAmbientCompatibility(vec3 ambient)
+{
+	ambient = min(ambient + u_GridMinimum.rgb, vec3(u_GridMinimum.w));
+	if (u_GridParams.w > 0.5)
+		ambient = EntityGridSRGBDecode(ambient);
+	return ambient;
+}
+
+vec3 EntityGridDirectedCompatibility(vec3 directed)
+{
+	if (u_GridParams.w > 0.5)
+		directed = EntityGridSRGBDecode(directed);
+	return directed;
+}
+#endif
 
 #if defined(USE_LIGHTMAP)
 uniform sampler2D u_LightMap;
@@ -1855,7 +1987,6 @@ void main()
   #if defined(USE_DELUXEMAP)
 	L += (texture(u_DeluxeMap, lmCoords).xyz - vec3(0.5)) * u_EnableTextures.y;
   #endif
-	float sqrLightDist = dot(L, L);
 #endif
 
 #if defined(USE_LIGHTMAP)
@@ -1878,6 +2009,31 @@ void main()
 	ambientColor = vec3 (0.0);
 	attenuation = 1.0;
   #endif
+
+  #if defined(USE_ENTITY_GRID)
+	#if defined(USE_ENTITY_GPU_GRID)
+	EntityGridSample gridGpu;
+	#endif
+	EntityGridSample gridMulti;
+	#if defined(USE_ENTITY_GPU_GRID)
+	if (u_GridParams.z > 1.5 || u_GridScale.w > 0.5)
+		gridGpu = SampleEntityGrid(u_ViewOrigin - viewDir);
+	#endif
+	if ((u_GridParams.z > 0.5 && u_GridParams.z < 1.5) || u_GridScale.w > 0.5)
+		gridMulti = SampleEntityMultiPoint((u_ViewOrigin - viewDir).z);
+	if (u_GridParams.z > 0.5)
+	{
+		#if defined(USE_ENTITY_GPU_GRID)
+		EntityGridSample selected = u_GridParams.z > 1.5 ? gridGpu : gridMulti;
+		#else
+		EntityGridSample selected = gridMulti;
+		#endif
+		L = selected.direction;
+		lightColor = EntityGridDirectedCompatibility(selected.directed) * var_Color.rgb;
+		ambientColor = EntityGridAmbientCompatibility(selected.ambient) * var_Color.rgb;
+	}
+  #endif
+	float sqrLightDist = max(dot(L, L), 1e-12);
 
 	vec3 vertexNormal = mix(var_Normal.xyz, -var_Normal.xyz, float(gl_FrontFacing)) * u_NormalScale.z;
 	N = CalcNormal(vertexNormal, var_Tangent, texCoords);
@@ -2148,6 +2304,34 @@ void main()
     #endif
 		return;
 	}
+
+  #if defined(USE_ENTITY_GPU_GRID)
+	if (u_GridScale.w > 0.5)
+	{
+		vec3 legacy = u_AmbientLight + u_DirectedLight * max(dot(N, normalize(var_LightDir.xyz)), 0.0);
+		vec3 multi = EntityGridAmbientCompatibility(gridMulti.ambient) +
+			EntityGridDirectedCompatibility(gridMulti.directed) * max(dot(N, gridMulti.direction), 0.0);
+		vec3 gpu = EntityGridAmbientCompatibility(gridGpu.ambient) +
+			EntityGridDirectedCompatibility(gridGpu.directed) * max(dot(N, gridGpu.direction), 0.0);
+		vec3 debugColor = vec3(0.0);
+		if (u_GridScale.w == 1.0) debugColor = gridGpu.ambient;
+		else if (u_GridScale.w == 2.0) debugColor = gridGpu.directed;
+		else if (u_GridScale.w == 3.0) debugColor = gridGpu.direction * 0.5 + 0.5;
+		else if (u_GridScale.w == 4.0) debugColor = vec3(gridGpu.validity);
+		else if (u_GridScale.w == 5.0) debugColor = fract(gridGpu.cell * 0.125);
+		else if (u_GridScale.w == 6.0) debugColor = legacy;
+		else if (u_GridScale.w == 7.0) debugColor = multi;
+		else if (u_GridScale.w == 8.0) debugColor = gpu;
+		else if (u_GridScale.w == 9.0) debugColor = min(abs(gpu - legacy) * 4.0, vec3(1.0));
+		out_Color = vec4(debugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+  #endif
 
 	// r_autoPBRDebug 1-2, flat color with a little view facing shading so the
 	// shape stays readable; written unlit (tone mapping is bypassed)

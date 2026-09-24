@@ -80,6 +80,9 @@ static uniformInfo_t uniformsInfo[] =
 
 	{ "u_LightGridOrigin", GLSL_VEC3, 1 },
 	{ "u_LightGridCellInverseSize", GLSL_VEC3, 1 },
+	{ "u_EntityGridAmbient", GLSL_INT, 1 },
+	{ "u_EntityGridDirected", GLSL_INT, 1 },
+	{ "u_EntityGridDirection", GLSL_INT, 1 },
 
 	{ "u_ShadowMap",  GLSL_INT, 1 },
 	{ "u_ShadowMap2", GLSL_INT, 1 },
@@ -2021,11 +2024,17 @@ static int GLSL_LoadGPUProgramLightAll(
 	char name[64];
 	size_t nameLen = strlen("lightall\0");
 
-	char extradefines[1200];
+	char extradefines[1600];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("lightall", allocator, fallback_lightallProgram);
 	const bool useFastLight =
 		(!r_normalMapping->integer && !r_specularMapping->integer);
+	GLint maxFragmentSamplers = 0;
+	qglGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxFragmentSamplers);
+	const bool useEntityGpuGrid =
+		(r_entityLightGrid->integer == 2 || r_entityLightGridDebug->integer != 0) &&
+		maxFragmentSamplers > TB_ENTITYGRID_DIRECTION;
+	const bool useEntityGrid = r_entityLightGrid->integer == 1 || useEntityGpuGrid;
 	for ( int i = 0; i < LIGHTDEF_COUNT; i++ )
 	{
 		int lightType = i & LIGHTDEF_LIGHTTYPE_MASK;
@@ -2050,7 +2059,7 @@ static int GLSL_LoadGPUProgramLightAll(
 		{
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_LIGHT\n");
 
-			if (useFastLight)
+			if (useFastLight && !(lightType == LIGHTDEF_USE_LIGHT_VECTOR && useEntityGrid))
 			{
 				Q_strcat(name, sizeof(name), "_FAST");
 				Q_strcat(extradefines, sizeof(extradefines), "#define USE_FAST_LIGHT\n");
@@ -2076,6 +2085,11 @@ static int GLSL_LoadGPUProgramLightAll(
 				{
 					Q_strcat(name, sizeof(name), "_GRID");
 					Q_strcat(extradefines, sizeof(extradefines), "#define USE_LIGHT_VECTOR\n");
+					Q_strcat(extradefines, sizeof(extradefines), va("#define ENTITY_GRID_LDR_RANGE %d.0\n", MAXLIGHTMAPS));
+					if (useEntityGrid)
+						Q_strcat(extradefines, sizeof(extradefines), "#define USE_ENTITY_GRID\n");
+					if (useEntityGpuGrid)
+						Q_strcat(extradefines, sizeof(extradefines), "#define USE_ENTITY_GPU_GRID\n");
 					break;
 				}
 
@@ -2213,6 +2227,9 @@ static int GLSL_LoadGPUProgramLightAll(
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SSAOMAP,     TB_SSAOMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDAMBIENT, TB_ENTITYGRID_AMBIENT);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDDIRECTED, TB_ENTITYGRID_DIRECTED);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDDIRECTION, TB_ENTITYGRID_DIRECTION);
 		// always set: an unset buffer sampler would alias unit 0 (u_DiffuseMap)
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSLIGHTS,  TB_FPLUS_LIGHTS);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);

@@ -4302,8 +4302,143 @@ static void R_GenerateSurfaceSprites( const world_t *world, int worldIndex )
 	}
 }
 
+// Both fog and entity lighting use the same dense BSP light-grid coordinates.
+// Entity values deliberately keep the two kinds of light separate; unlike the
+// fog texture, they include every currently active LDR light style.
+static const mgrid_t *R_DenseLightGridCell(const world_t *world, int denseIndex)
+{
+	return world->lightGridData + world->lightGridArray[denseIndex];
+}
+
+static void R_PackEntityLightGrid(world_t *world, uint16_t *ambient,
+	uint16_t *directed, byte *direction)
+{
+	const bool hdr = world->hdrLightGrid != NULL;
+	for (int i = 0; i < world->numGridArrayElements; i++)
+	{
+		const mgrid_t *cell = R_DenseLightGridCell(world, i);
+		const bool valid = cell->styles[0] != LS_LSNONE;
+		float a[3] = {}, d[3] = {};
+		if (valid && hdr)
+		{
+			const float *source = world->hdrLightGrid + i * 6;
+			for (int c = 0; c < 3; c++)
+			{
+				a[c] = source[c];
+				d[c] = source[c + 3];
+			}
+		}
+		else if (valid)
+		{
+			for (int styleSlot = 0; styleSlot < MAXLIGHTMAPS; styleSlot++)
+			{
+				const byte style = cell->styles[styleSlot];
+				if (style == LS_LSNONE)
+					break;
+				for (int c = 0; c < 3; c++)
+				{
+					const float styleFactor = styleColors[style][c] * (1.0f / (255.0f * 255.0f));
+					a[c] += cell->ambientLight[styleSlot][c] * styleFactor;
+					d[c] += cell->directLight[styleSlot][c] * styleFactor;
+				}
+			}
+		}
+		const int stride = hdr ? 4 : 3;
+		for (int c = 0; c < 3; c++)
+		{
+			ambient[i * stride + c] = hdr ? FloatToHalf(a[c]) :
+				(uint16_t)(Com_Clamp(0.0f, 1.0f, a[c] / MAXLIGHTMAPS) * 65535.0f + 0.5f);
+			directed[i * stride + c] = hdr ? FloatToHalf(d[c]) :
+				(uint16_t)(Com_Clamp(0.0f, 1.0f, d[c] / MAXLIGHTMAPS) * 65535.0f + 0.5f);
+		}
+		if (hdr)
+		{
+			ambient[i * 4 + 3] = FloatToHalf(1.0f);
+			directed[i * 4 + 3] = FloatToHalf(1.0f);
+		}
+
+		if (direction)
+		{
+			const int lat = cell->latLong[1] * (FUNCTABLE_SIZE / 256);
+			const int lng = cell->latLong[0] * (FUNCTABLE_SIZE / 256);
+			const float normal[3] = {
+				tr.sinTable[(lat + FUNCTABLE_SIZE / 4) & FUNCTABLE_MASK] * tr.sinTable[lng],
+				tr.sinTable[lat] * tr.sinTable[lng],
+				tr.sinTable[(lng + FUNCTABLE_SIZE / 4) & FUNCTABLE_MASK]
+			};
+			for (int c = 0; c < 3; c++)
+				direction[i * 4 + c] = (byte)(Com_Clamp(0.0f, 1.0f, normal[c] * 0.5f + 0.5f) * 255.0f + 0.5f);
+			direction[i * 4 + 3] = valid ? 255 : 0;
+		}
+	}
+}
+
+static void R_BuildEntityLightGridTextures(world_t *world, qboolean update)
+{
+	if (!world->lightGridData || !world->lightGridArray || world->numGridArrayElements <= 0)
+		return;
+	if (!update)
+	{
+		GLint maxUnits = 0, max3DSize = 0;
+		qglGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxUnits);
+		qglGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max3DSize);
+		if (maxUnits <= TB_ENTITYGRID_DIRECTION ||
+			world->lightGridBounds[0] > max3DSize ||
+			world->lightGridBounds[1] > max3DSize ||
+			world->lightGridBounds[2] > max3DSize)
+		{
+			ri.Printf(PRINT_WARNING, "Entity light grid exceeds GPU texture limits; using legacy entity light\n");
+			return;
+		}
+	}
+	const bool hdr = world->hdrLightGrid != NULL;
+	const int cells = world->numGridArrayElements;
+	const int stride = hdr ? 4 : 3;
+	uint16_t *ambient = (uint16_t *)Z_Malloc(cells * stride * sizeof(uint16_t), TAG_TEMP_WORKSPACE, qfalse);
+	uint16_t *directed = (uint16_t *)Z_Malloc(cells * stride * sizeof(uint16_t), TAG_TEMP_WORKSPACE, qfalse);
+	byte *direction = update ? NULL : (byte *)Z_Malloc(cells * 4, TAG_TEMP_WORKSPACE, qfalse);
+	// Direction and validity are static BSP data. A style change only
+	// requires the two color volumes to be uploaded again.
+	R_PackEntityLightGrid(world, ambient, directed, direction);
+
+	const int width = world->lightGridBounds[0], height = world->lightGridBounds[1], depth = world->lightGridBounds[2];
+	const int format = hdr ? GL_RGB16F : GL_RGB16;
+	if (!update)
+	{
+		const int flags = IMGFLAG_CLAMPTOEDGE | IMGFLAG_NEAREST_3D;
+		world->entityGridAmbient = R_CreateImage3D("*entityGridAmbient", (byte *)ambient, width, height, depth, format, flags);
+		world->entityGridDirected = R_CreateImage3D("*entityGridDirected", (byte *)directed, width, height, depth, format, flags);
+		world->entityGridDirection = R_CreateImage3D("*entityGridDirection", direction, width, height, depth, GL_RGBA8, flags);
+	}
+	else
+	{
+		const int externalFormat = hdr ? GL_RGBA : GL_RGB;
+		const int externalType = hdr ? GL_HALF_FLOAT : GL_UNSIGNED_SHORT;
+		qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		GL_Bind(world->entityGridAmbient);
+		qglTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, width, height, depth, externalFormat, externalType, ambient);
+		GL_Bind(world->entityGridDirected);
+		qglTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, width, height, depth, externalFormat, externalType, directed);
+		qglPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+	}
+	Com_Memcpy(world->entityGridStyleColors, styleColors, sizeof(world->entityGridStyleColors));
+	Z_Free(ambient);
+	Z_Free(directed);
+	if (direction)
+		Z_Free(direction);
+}
+
+void R_UpdateEntityLightGridTextures(world_t *world)
+{
+	if (world && world->entityGridAmbient && !world->hdrLightGrid &&
+		memcmp(world->entityGridStyleColors, styleColors, sizeof(world->entityGridStyleColors)) != 0)
+		R_BuildEntityLightGridTextures(world, qtrue);
+}
+
 static void R_BuildLightGridTexture(world_t *world)
 {
+	if (r_entityLightGrid->integer > 1 || r_entityLightGridDebug->integer)
+		R_BuildEntityLightGridTextures(world, qfalse);
 	if (!r_volumetricFog->integer)
 	{
 		return;
@@ -4352,7 +4487,7 @@ static void R_BuildLightGridTexture(world_t *world)
 			}
 			else
 			{
-				mgrid_t *data = world->lightGridData + world->lightGridArray[i];
+				const mgrid_t *data = R_DenseLightGridCell(world, i);
 
 				light[0] = MAX(data->ambientLight[0][0], data->directLight[0][0]);
 				light[1] = MAX(data->ambientLight[0][1], data->directLight[0][1]);

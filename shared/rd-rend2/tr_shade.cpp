@@ -2078,6 +2078,15 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		}
 		else if ( pStage->glslShaderGroup == tr.lightallShader )
 		{
+			if (tr.world && tr.world->entityGridAmbient &&
+				(r_entityLightGrid->integer == 2 || r_entityLightGridDebug->integer))
+			{
+				uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDORIGIN, tr.world->lightGridOrigin);
+				uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDCELLINVERSESIZE, tr.world->lightGridInverseSize);
+				samplerBindingsWriter.AddStaticImage(tr.world->entityGridAmbient, TB_ENTITYGRID_AMBIENT);
+				samplerBindingsWriter.AddStaticImage(tr.world->entityGridDirected, TB_ENTITYGRID_DIRECTED);
+				samplerBindingsWriter.AddStaticImage(tr.world->entityGridDirection, TB_ENTITYGRID_DIRECTION);
+			}
 			int i;
 			vec4_t enableTextures = {};
 			enableTextures[0] = (float)pStage->glow;

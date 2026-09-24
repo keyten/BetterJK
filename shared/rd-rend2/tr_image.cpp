@@ -2601,6 +2601,11 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 		dataFormat = GL_RGBA;
 		dataType = GL_HALF_FLOAT;
 	}
+	else if (internalFormat == GL_RGB16)
+	{
+		dataFormat = GL_RGB;
+		dataType = GL_UNSIGNED_SHORT;
+	}
 	else if (internalFormat == GL_RGBA16)
 	{
 		dataFormat = GL_RGBA;
@@ -2618,7 +2623,7 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 	}
 
 	image->type = IMGTYPE_COLORALPHA;
-	image->flags = IMGFLAG_3D | (flags & (IMGFLAG_MIPMAP | IMGFLAG_CLAMPTOEDGE));
+	image->flags = IMGFLAG_3D | (flags & (IMGFLAG_MIPMAP | IMGFLAG_CLAMPTOEDGE | IMGFLAG_NEAREST_3D));
 
 	Q_strncpyz(image->imgName, name, sizeof(image->imgName));
 
@@ -2627,6 +2632,8 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 	image->layers = depth;
 
 	GL_Bind(image);
+	if (internalFormat == GL_RGB16)
+		qglPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	if (ShouldUseImmutableTextures(image->flags, internalFormat))
 	{
 		qglTexStorage3D(GL_TEXTURE_3D, levels, internalFormat, width, height, depth);
@@ -2637,6 +2644,8 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 	{
 		qglTexImage3D(GL_TEXTURE_3D, 0, internalFormat, width, height, depth, 0, dataFormat, dataType, data);
 	}
+	if (internalFormat == GL_RGB16)
+		qglPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
 	if (mipmap)
 	{
@@ -2646,8 +2655,8 @@ image_t *R_CreateImage3D(const char *name, byte *data, int width, int height, in
 	}
 
 	const GLint wrap = (flags & IMGFLAG_CLAMPTOEDGE) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, mipmap ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR);
-	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, (flags & IMGFLAG_NEAREST_3D) ? GL_NEAREST : (mipmap ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR));
+	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, (flags & IMGFLAG_NEAREST_3D) ? GL_NEAREST : GL_LINEAR);
 	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, wrap);
 	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, wrap);
 	qglTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, wrap);

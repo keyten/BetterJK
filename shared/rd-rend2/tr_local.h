@@ -144,6 +144,8 @@ extern cvar_t	*r_showcluster;
 extern cvar_t	*r_nocurves;
 
 extern cvar_t	*r_volumetricFog;
+extern cvar_t *r_entityLightGrid;
+extern cvar_t *r_entityLightGridDebug;
 extern cvar_t	*r_volumetricFogDefaultScale;
 extern cvar_t	*r_volumetricFogSamples;
 extern cvar_t	*r_volumetricFogScale;
@@ -498,6 +500,7 @@ typedef enum
 	IMGFLAG_3D             = 0x1000,
 	IMGLFAG_SHADOWCOMP     = 0x2000,
 	IMGFLAG_TEXBUFFER      = 0x4000,	// buffer texture (GL_TEXTURE_BUFFER), tr_forwardplus.cpp
+	IMGFLAG_NEAREST_3D     = 0x8000,	// manual light-grid interpolation
 } imgFlags_t;
 
 typedef enum
@@ -974,6 +977,14 @@ struct EntityBlock
 	float fxVolumetricBase;
 	vec3_t modelLightDir;
 	float vertexLerp;
+	// Multi-point entity lighting. Kept at the end so older shader blocks retain
+	// their existing std140 offsets.
+	vec4_t gridAmbient[3];
+	vec4_t gridDirected[3];
+	vec4_t gridDirection[3];
+	vec4_t gridParams;       // lower Z, inverse height, mode, forced linear
+	vec4_t gridMinimum;      // additive RGB, LDR ambient clamp
+	vec4_t gridScale;        // ambient scale, directed scale, HDR grid, debug
 	bool operator == (const EntityBlock &other) const
 	{
 		return (
@@ -984,7 +995,13 @@ struct EntityBlock
 			VectorCompare(this->directedLight, other.directedLight) == qtrue &&
 			this->fxVolumetricBase == other.fxVolumetricBase &&
 			VectorCompare(this->modelLightDir, other.modelLightDir) == qtrue &&
-			this->vertexLerp == other.vertexLerp
+			this->vertexLerp == other.vertexLerp &&
+			memcmp(this->gridAmbient, other.gridAmbient, sizeof(gridAmbient)) == 0 &&
+			memcmp(this->gridDirected, other.gridDirected, sizeof(gridDirected)) == 0 &&
+			memcmp(this->gridDirection, other.gridDirection, sizeof(gridDirection)) == 0 &&
+			VectorCompare4(this->gridParams, other.gridParams) == qtrue &&
+			VectorCompare4(this->gridMinimum, other.gridMinimum) == qtrue &&
+			VectorCompare4(this->gridScale, other.gridScale) == qtrue
 			);
 	}
 };
@@ -1123,6 +1140,9 @@ enum
 	TB_FPLUS_INDICES = 13,
 	TB_DIFFUSEIRRADIANCEMAP = 14,
 	TB_PROBEAVERAGEMAP = 15,
+	TB_ENTITYGRID_AMBIENT = 16,
+	TB_ENTITYGRID_DIRECTED = 17,
+	TB_ENTITYGRID_DIRECTION = 18,
 
 	// screen-space GI inputs of the ssgi_*.glsl programs (tr_ssgi.cpp)
 	TB_SSGI_ALBEDO   = 14,
@@ -1775,6 +1795,9 @@ typedef enum
 
 	UNIFORM_LIGHTGRIDORIGIN,
 	UNIFORM_LIGHTGRIDCELLINVERSESIZE,
+	UNIFORM_ENTITYGRIDAMBIENT,
+	UNIFORM_ENTITYGRIDDIRECTED,
+	UNIFORM_ENTITYGRIDDIRECTION,
 
 	UNIFORM_SHADOWMAP,
 	UNIFORM_SHADOWMAP2,
@@ -2512,6 +2535,10 @@ typedef struct {
 	int			numGridArrayElements;
 
 	image_t		*volumetricLightMaps[MAXLIGHTMAPS];
+	image_t		*entityGridAmbient;
+	image_t		*entityGridDirected;
+	image_t		*entityGridDirection;
+	color4ub_t	entityGridStyleColors[MAX_LIGHT_STYLES];
 	// froxel volumetric fog (r_volumetricFog 2): light grid split by the sun
 	// direction, see R_BuildVolumetricLightGrid (tr_volumetric.cpp)
 	image_t		*volumetricStaticGrid;	// baked light without the sun (rgb), sun fraction (a)
@@ -3797,6 +3824,7 @@ LIGHTS
 
 void R_DlightBmodel( bmodel_t *bmodel, trRefEntity_t *ent );
 void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent );
+void R_UpdateEntityLightGridTextures(world_t *world);
 void R_TransformDlights( int count, dlight_t *dl, orientationr_t *ori );
 int R_LightForPoint( vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir );
 int R_LightDirForPoint( vec3_t point, vec3_t lightDir, vec3_t normal, world_t *world );
