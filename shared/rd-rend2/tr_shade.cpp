@@ -146,6 +146,7 @@ void RB_BeginSurface( shader_t *shader, int fogNum, int cubemapIndex )
 	tess.numVertexes = 0;
 	tess.multiDrawPrimitives = 0;
 	tess.shader = shader;
+	tess.foliageDebugClass = 0;
 	tess.fogNum = fogNum;
 	tess.cubemapIndex = cubemapIndex;
 	tess.dlightBits = 0;		// will be OR'd in by surface functions
@@ -2163,7 +2164,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		// r_autoPBRDebug: lightall stages show their material, lit stages still
 		// on the vertex lit generic path show up red (generic.glsl)
 		vec4_t materialDebug = {};
-		R_AutoPBRDebugColor(pStage, materialDebug);
+		if (r_autoFoliageDebug->integer && r_autoFoliage->integer)
+			R_FoliageDebugColor(tess.foliageDebugClass, materialDebug);
+		else
+			R_AutoPBRDebugColor(pStage, materialDebug);
 		uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
 		if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
 			pStage->pbrDrawn = qtrue;

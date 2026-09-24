@@ -1834,7 +1834,8 @@ void R_AddDrawSurf(
 	int fogIndex,
 	int dlightMap,
 	int postRender,
-	int cubemap)
+	int cubemap,
+	foliageResult_t foliage)
 {
 	int index;
 	drawSurf_t *surf;
@@ -1870,6 +1871,7 @@ void R_AddDrawSurf(
 	index = tr.refdef.numDrawSurfs & DRAWSURF_MASK;
 	surf = tr.refdef.drawSurfs + index;
 	surf->surface = surface;
+	surf->foliage = foliage;
 
 	if (tr.viewParms.flags & VPF_DEPTHSHADOW &&
 		drawShader->depthPrepass == DEPTHPREPASS_SIMPLE)

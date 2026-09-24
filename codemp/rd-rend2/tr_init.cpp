@@ -259,6 +259,8 @@ cvar_t  *r_ssgiFreezeHistory;
 
 cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
+cvar_t  *r_autoFoliage;
+cvar_t  *r_autoFoliageDebug;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 cvar_t  *r_diffuseIBL;
@@ -1583,6 +1585,7 @@ static consoleCommand_t	commands[] = {
 	{ "imagelist",			R_ImageList_f },
 	{ "shaderlist",			R_ShaderList_f },
 	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
+	{ "r_printAutoFoliage", R_PrintAutoFoliage_f },
 	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
 	{ "r_pomSilhouetteInfo",	R_PomSilhouetteInfo_f },
 	{ "r_autoPomSilhouette",	R_AutoPomSilhouette_f },
@@ -1865,6 +1868,12 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
 	r_autoPBRDebug = ri.Cvar_Get( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );
 	ri.Cvar_CheckRange( r_autoPBRDebug, 0, 2, qtrue );
+	r_autoFoliage = ri.Cvar_Get( "r_autoFoliage", "0", CVAR_ARCHIVE,
+		"MD3 foliage semantics: 0 = off, 1 = conservative stock-safe, 2 = broader experimental" );
+	ri.Cvar_CheckRange( r_autoFoliage, 0, 2, qtrue );
+	r_autoFoliageDebug = ri.Cvar_Get( "r_autoFoliageDebug", "0", CVAR_CHEAT,
+		"Auto foliage colors: 1 = classified surfaces, 2 = also uncertain candidates" );
+	ri.Cvar_CheckRange( r_autoFoliageDebug, 0, 2, qtrue );
 	r_autoPBRConvert = ri.Cvar_Get( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri.Cvar_Get( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );

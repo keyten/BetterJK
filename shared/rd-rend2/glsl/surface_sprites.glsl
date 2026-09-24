@@ -254,6 +254,7 @@ uniform vec3 u_LightGridCellInverseSize;
 #if defined(USE_ALPHA_TEST)
 uniform int u_AlphaTestType;
 #endif
+uniform vec4 u_FoliageDebug;
 
 out vec4 out_Color;
 #if !defined(VELOCITY_PASS)
@@ -387,6 +388,11 @@ void main()
 		if (out_Color.a < 1.00)
 			discard;
 	}
+#endif
+
+#if !defined(VELOCITY_PASS)
+	if (u_FoliageDebug.a > 0.0)
+		out_Color.rgb = u_FoliageDebug.rgb;
 #endif
 
 #if defined(USE_FOG)

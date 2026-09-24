@@ -4601,6 +4601,7 @@ static shader_t *FinishShader( void ) {
 	//
 	// look for multitexture potential
 	//
+	R_ClassifyFoliageShader(&shader, stages);
 	stage = CollapseStagesToGLSL();
 
 	if ( shader.lightmapIndex[0] >= 0 && !hasLightmapStage ) {

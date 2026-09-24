@@ -129,6 +129,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_NormalScale",   GLSL_VEC4, 1 },
 	{ "u_SpecularScale", GLSL_VEC4, 1 },
 	{ "u_MaterialDebug",  GLSL_VEC4, 1 },
+	{ "u_FoliageDebug",   GLSL_VEC4, 1 },
 	{ "u_DiffuseBRDF",    GLSL_INT,  1 },
 	{ "u_ParallaxBias",  GLSL_FLOAT, 1 },
 

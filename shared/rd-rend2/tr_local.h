@@ -301,6 +301,8 @@ extern cvar_t  *r_ssgiFreezeHistory;
 
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
+extern cvar_t  *r_autoFoliage;
+extern cvar_t  *r_autoFoliageDebug;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 extern cvar_t  *r_diffuseIBL;
@@ -1091,6 +1093,7 @@ struct VolumetricFogBlock
 struct surfaceSprite_t
 {
 	surfaceSpriteType_t type;
+	uint8_t foliageClass; // explicit vegetation sprite stage
 
 	float width;
 	float height;
@@ -1349,6 +1352,36 @@ typedef enum {
 	DEPTHPREPASS_SKIP
 } depthPrepass_t;
 
+typedef enum {
+	FOLIAGE_NONE,
+	FOLIAGE_LEAF,
+	FOLIAGE_PLANT,
+	FOLIAGE_GRASS
+} foliageClass_t;
+
+typedef struct {
+	uint16_t reasons;
+	int8_t score;
+	uint8_t cls;
+} foliageResult_t;
+
+enum {
+	FOLIAGE_NAME_LEAF      = 1 << 0,
+	FOLIAGE_NAME_PLANT     = 1 << 1,
+	FOLIAGE_NAME_GRASS     = 1 << 2,
+	FOLIAGE_NAME_VINE      = 1 << 3,
+	FOLIAGE_ALPHA_TEST     = 1 << 4,
+	FOLIAGE_TWO_SIDED      = 1 << 5,
+	FOLIAGE_ALPHA_SHADOW   = 1 << 6,
+	FOLIAGE_YAVIN          = 1 << 7,
+	FOLIAGE_TREE_MATERIAL  = 1 << 8,
+	FOLIAGE_CARD_GEOMETRY  = 1 << 9,
+	FOLIAGE_NEGATIVE       = 1 << 10,
+	FOLIAGE_ALPHA_BLEND    = 1 << 11,
+	FOLIAGE_MODEL_TREE     = 1 << 12,
+	FOLIAGE_MODEL_OBJECT   = 1 << 13
+};
+
 typedef struct shader_s {
 	char		name[MAX_QPATH];		// game path, including extension
 	int			lightmapIndex[MAXLIGHTMAPS];	// for a shader to match, both name and all lightmapIndex must match
@@ -1367,6 +1400,8 @@ typedef struct shader_s {
 
 	qboolean	explicitlyDefined;		// found in a .shader file
 	qboolean	alphaShadow;			// q3map_alphashadow: use the base alpha as a sun-shadow cutout
+	uint16_t foliageSignals;       // registration-time material evidence
+	uint8_t  foliageHint;          // foliageClass_t, before model/surface vetoes
 	qboolean	silhouettePOM;			// silhouettePOM: displaced silhouette shell (tr_pom_silhouette.cpp)
 	float		silhouetteDistance;		// silhouetteDistance: shell range limit, 0 = r_pomSilhouetteDistance
 	int			silhouetteSteps;		// silhouetteSteps: max linear ray steps, 0 = r_pomSilhouetteMaxSteps
@@ -1899,6 +1934,7 @@ typedef enum
 	UNIFORM_NORMALSCALE,
 	UNIFORM_SPECULARSCALE,
 	UNIFORM_MATERIALDEBUG,	// r_autoPBRDebug: rgb = color, a = 1 when on (tr_autopbr.cpp)
+	UNIFORM_FOLIAGEDEBUG,
 	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
@@ -2226,6 +2262,7 @@ typedef struct drawSurf_s {
 	uint32_t dlightBits;
 	surfaceType_t *surface; // any of surface*_t
 	int fogIndex;
+	foliageResult_t foliage;
 } drawSurf_t;
 
 #define	MAX_FACE_POINTS		64
@@ -2711,12 +2748,20 @@ typedef struct mdvSurface_s
 
 	int             numIndexes;
 	glIndex_t      *indexes;
+	uint16_t        foliageSignals; // cached name vetoes and card hint
+	vec3_t          foliageMins;
+	vec3_t          foliageMaxs;
+	vec3_t          foliageRoot;    // candidate base in local MD3 coordinates
+	float           foliageXYRadius;
 
 	struct mdvModel_s *model;
 } mdvSurface_t;
 
 typedef struct mdvModel_s
 {
+	uint16_t        foliageSignals; // cached model path evidence
+	vec3_t          foliageMins;    // union of frame bounds
+	vec3_t          foliageMaxs;
 	int             numFrames;
 	mdvFrame_t     *frames;
 
@@ -3650,7 +3695,8 @@ void R_AddPolygonSurfaces( const trRefdef_t *refdef );
 void R_DecomposeSort( uint32_t sort, int *entityNum, shader_t **shader, int *cubemap, int *postRender );
 uint32_t R_CreateSortKey(int entityNum, int sortedShaderIndex, int cubemapIndex, int postRender);
 void R_AddDrawSurf( surfaceType_t *surface, int entityNum, shader_t *shader,
-				   int fogIndex, int dlightMap, int postRender, int cubemap );
+				   int fogIndex, int dlightMap, int postRender, int cubemap,
+				   foliageResult_t foliage = {} );
 bool R_IsPostRenderEntity ( const trRefEntity_t *refEntity );
 
 void R_CalcMikkTSpaceBSPSurface(int numSurfaces, packedVertex_t *vertices, glIndex_t *indices);
@@ -3837,6 +3883,7 @@ struct shaderCommands_s
 	//color4ub_t	constantColor255[SHADER_MAX_VERTEXES] QALIGN(16);
 
 	shader_t	*shader;
+	uint8_t foliageDebugClass; // color only when r_autoFoliageDebug is enabled
 	float		shaderTime;
 	int			fogNum;
 	int         cubemapIndex;
@@ -4660,6 +4707,14 @@ const char *R_MaterialClassName(materialClass_t cls);
 qboolean R_IsAutoPBRSource(pbrSource_t source);
 qboolean R_IsGouraudStage(const shaderStage_t *stage);
 void R_PBRDumpMaterials_f(void);
+void R_ClassifyFoliageShader(shader_t *shader, shaderStage_t *stages);
+void R_InitFoliageModel(mdvModel_t *model, const char *path);
+void R_InitFoliageSurface(mdvSurface_t *surface, int numFrames);
+foliageResult_t R_ResolveAutoFoliage(const mdvModel_t *model,
+	const mdvSurface_t *surface, const shader_t *shader, int mode);
+const char *R_FoliageClassName(int cls);
+void R_FoliageDebugColor(int cls, vec4_t out);
+void R_PrintAutoFoliage_f(void);
 void RB_AODebugOverlay(void);
 
 qboolean R_MotionBlurEnabled(void);

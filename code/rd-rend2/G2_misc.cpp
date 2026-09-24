@@ -194,11 +194,7 @@ public:
 	const int			entNum;
 	const int			modelIndex;
 	const skin_t*		skin;
-#ifdef _WIN32
-	const struct shader_t*	cust_shader;
-#else
-    const shader_t*			cust_shader;
-#endif
+	const shader_t*			cust_shader;
 	intptr_t*			TransformedVertsArray;
 	const EG2_Collision	eG2TraceType;
 	bool				hitOne;

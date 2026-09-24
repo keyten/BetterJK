@@ -1368,6 +1368,7 @@ static void RB_SubmitDrawSurfs(
 	int oldDlighted = 0;
 	int oldPostRender = 0;
 	int oldCubemapIndex = -1;
+	int oldFoliageDebugClass = -1;
 	CBoneCache *oldBoneCache = nullptr;
 
 	drawSurf_t *drawSurf = drawSurfs;
@@ -1384,6 +1385,14 @@ static void RB_SubmitDrawSurfs(
 		assert(shader != nullptr);
 		fogNum = drawSurf->fogIndex;
 		dlighted = drawSurf->dlightBits;
+		int foliageDebugClass = 0;
+		if (r_autoFoliageDebug->integer && r_autoFoliage->integer)
+		{
+			foliageDebugClass = drawSurf->foliage.cls;
+			if (!foliageDebugClass && r_autoFoliageDebug->integer >= 2 &&
+				drawSurf->foliage.score >= 6 && (drawSurf->foliage.reasons & FOLIAGE_ALPHA_TEST))
+				foliageDebugClass = 4;
+		}
 
 		if (*drawSurf->surface == SF_MDX)
 		{
@@ -1404,6 +1413,7 @@ static void RB_SubmitDrawSurfs(
 				cubemapIndex == oldCubemapIndex &&
 				entityNum == oldEntityNum &&
 				dlighted == oldDlighted &&
+				foliageDebugClass == oldFoliageDebugClass &&
 				backEnd.refractionFill == shader->useDistortion )
 		{
 			// fast path, same as previous sort
@@ -1420,6 +1430,7 @@ static void RB_SubmitDrawSurfs(
 				dlighted != oldDlighted ||
 				postRender != oldPostRender ||
 				cubemapIndex != oldCubemapIndex ||
+				foliageDebugClass != oldFoliageDebugClass ||
 				(entityNum != oldEntityNum && !tess.entityMergable)) )
 		{
 			if ( oldShader != nullptr )
@@ -1434,6 +1445,8 @@ static void RB_SubmitDrawSurfs(
 			oldDlighted = dlighted;
 			oldPostRender = postRender;
 			oldCubemapIndex = cubemapIndex;
+			oldFoliageDebugClass = foliageDebugClass;
+			tess.foliageDebugClass = foliageDebugClass;
 			tess.dlightBits = dlighted;
 		}
 

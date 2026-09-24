@@ -445,8 +445,11 @@ void R_AddMD3Surfaces( trRefEntity_t *ent, int entityNum ) {
 		if(!personalModel)
 		{
 			srfVBOMDVMesh_t *vboSurface = &model->vboSurfaces[i];
-
-			R_AddDrawSurf((surfaceType_t *)vboSurface, entityNum, shader, fogNum, dlightBits, R_IsPostRenderEntity(ent), cubemapIndex );
+			const shader_t *resolvedShader = shader->remappedShader ? shader->remappedShader : shader;
+			const foliageResult_t foliage = R_ResolveAutoFoliage(model, surface, resolvedShader,
+				r_autoFoliage->integer);
+			R_AddDrawSurf((surfaceType_t *)vboSurface, entityNum, shader, fogNum, dlightBits,
+				R_IsPostRenderEntity(ent), cubemapIndex, foliage);
 			//R_AddDrawSurf((surfaceType_t *)vboSurface, entityNum, shader, fogNum, qfalse, R_IsPostRenderEntity(ent), cubemapIndex );
 		}
 

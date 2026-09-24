@@ -935,6 +935,8 @@ static qboolean R_LoadMD3(model_t * mod, int lod, void *buffer, const char *modN
 		}
 	}
 
+	R_InitFoliageModel(mdvModel, modName);
+
 	// swap all the tags
 	mdvModel->numTags = md3Model->numTags;
 	mdvModel->tags = tag = (mdvTag_t *)Hunk_Alloc(sizeof(*tag) * (md3Model->numTags * md3Model->numFrames), h_low);
@@ -1085,6 +1087,8 @@ static qboolean R_LoadMD3(model_t * mod, int lod, void *buffer, const char *modN
 			st->st[0] = LittleFloat(md3st->st[0]);
 			st->st[1] = LittleFloat(md3st->st[1]);
 		}
+
+		R_InitFoliageSurface(surf, md3Surf->numFrames);
 
 		// find the next surface
 		md3Surf = (md3Surface_t *) ((byte *) md3Surf + md3Surf->ofsEnd);

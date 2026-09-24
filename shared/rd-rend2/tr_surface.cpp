@@ -53,6 +53,7 @@ void RB_CheckOverflow( int verts, int indexes ) {
 		return;
 	}
 
+	const uint8_t foliageDebugClass = tess.foliageDebugClass;
 	RB_EndSurface();
 
 	if ( verts >= SHADER_MAX_VERTEXES ) {
@@ -63,18 +64,21 @@ void RB_CheckOverflow( int verts, int indexes ) {
 	}
 
 	RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
+	tess.foliageDebugClass = foliageDebugClass;
 }
 
 void RB_CheckVBOandIBO(VBO_t *vbo, IBO_t *ibo)
 {
 	if (vbo != glState.currentVBO ||
-			ibo != glState.currentIBO ||
-			tess.multiDrawPrimitives >= MAX_MULTIDRAW_PRIMITIVES)
+		ibo != glState.currentIBO ||
+		tess.multiDrawPrimitives >= MAX_MULTIDRAW_PRIMITIVES)
 	{
-		RB_EndSurface();
 		int dlightBits = tess.dlightBits;
+		const uint8_t foliageDebugClass = tess.foliageDebugClass;
+		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 		tess.dlightBits = dlightBits;
+		tess.foliageDebugClass = foliageDebugClass;
 		R_BindVBO(vbo);
 		R_BindIBO(ibo);
 	}
@@ -625,9 +629,11 @@ void RB_SetPomMode( int mode )
 	if ( tess.numIndexes )
 	{
 		const int dlightBits = tess.dlightBits;
+		const uint8_t foliageDebugClass = tess.foliageDebugClass;
 		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex);
 		tess.dlightBits = dlightBits;
+		tess.foliageDebugClass = foliageDebugClass;
 	}
 	tess.pomMode = mode;
 }
@@ -1956,8 +1962,10 @@ static void RB_SurfaceBSPGrid( srfBspSurface_t *srf ) {
 
 			// if we don't have enough space for at least one strip, flush the buffer
 			if ( vrows < 2 || irows < 1 ) {
+				const uint8_t foliageDebugClass = tess.foliageDebugClass;
 				RB_EndSurface();
 				RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
+				tess.foliageDebugClass = foliageDebugClass;
 			} else {
 				break;
 			}
@@ -2720,6 +2728,11 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 
 	uniformDataWriter.SetUniformInt(
 		UNIFORM_ALPHA_TEST_TYPE, surf->alphaTestType);
+	vec4_t foliageDebug = {};
+	if (r_autoFoliage->integer && r_autoFoliageDebug->integer &&
+		!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
+		R_FoliageDebugColor(ss->foliageClass, foliageDebug);
+	uniformDataWriter.SetUniformVec4(UNIFORM_FOLIAGEDEBUG, foliageDebug);
 
 	if (surf->fogIndex != -1)
 	{
