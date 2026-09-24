@@ -595,6 +595,7 @@ RB_SurfaceBSPTriangles
 =============
 */
 static void RB_SurfaceBSPTriangles( srfBspSurface_t *srf ) {
+	RB_SetPomMode(POM_MODE_NONE);
 	if( RB_SurfaceVbo (srf->vbo, srf->ibo, srf->numVerts, srf->numIndexes,
 				srf->firstIndex, srf->minIndex, srf->maxIndex, srf->dlightBits, srf->pshadowBits, qtrue ) )
 	{
@@ -606,6 +607,63 @@ static void RB_SurfaceBSPTriangles( srfBspSurface_t *srf ) {
 }
 
 
+
+/*
+=============
+Silhouette POM (tr_pom_silhouette.cpp)
+
+A batch only holds one kind of surface (tess.pomMode): shells, the base
+surfaces of shells inside the crossfade band, or ordinary surfaces. The
+shader program and render state of the whole batch depend on it.
+=============
+*/
+void RB_SetPomMode( int mode )
+{
+	if ( tess.pomMode == mode )
+		return;
+
+	if ( tess.numIndexes )
+	{
+		const int dlightBits = tess.dlightBits;
+		RB_EndSurface();
+		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex);
+		tess.dlightBits = dlightBits;
+	}
+	tess.pomMode = mode;
+}
+
+void RB_SurfacePomShell( srfPomShell_t *shell )
+{
+	RB_SetPomMode(POM_MODE_SHELL);
+	// pshadows are drawn with an EQUAL depth test on the batch geometry: not
+	// on shells
+	if ( !RB_SurfaceVbo(shell->vbo, shell->ibo, shell->numVerts, shell->numIndexes,
+			shell->firstIndex, shell->minIndex, shell->maxIndex, shell->base->dlightBits, 0, qtrue) )
+		return;
+
+	// RB_SurfaceVbo may have started a new batch
+	tess.pomMode = POM_MODE_SHELL;
+	tess.pomGroupsImage = shell->groupsImage;
+	backEnd.pc.c_pomShellSurfaces++;
+	backEnd.pc.c_pomShellTriangles += shell->numIndexes / 3;
+	if ( r_pomSilhouetteDebug->integer == 3 && !backEnd.depthFill )
+		RB_PomSilhouetteNoteDebugBase(shell->base);
+}
+
+void RB_SurfacePomFadeBase( surfaceType_t *fadeBaseType )
+{
+	srfPomShell_t *shell = (srfPomShell_t *)((byte *)fadeBaseType - offsetof(srfPomShell_t, fadeBaseType));
+	srfBspSurface_t *srf = shell->base;
+
+	RB_SetPomMode(POM_MODE_FADEBASE);
+	if ( !RB_SurfaceVbo(srf->vbo, srf->ibo, srf->numVerts, srf->numIndexes,
+			srf->firstIndex, srf->minIndex, srf->maxIndex, srf->dlightBits, 0, qtrue) )
+		return;
+
+	tess.pomMode = POM_MODE_FADEBASE;
+	tess.pomGroupsImage = shell->groupsImage;
+	backEnd.pc.c_pomFadeSurfaces++;
+}
 
 /*
 ==============
@@ -1775,6 +1833,7 @@ RB_SurfaceFace
 ==============
 */
 static void RB_SurfaceBSPFace( srfBspSurface_t *srf ) {
+	RB_SetPomMode(POM_MODE_NONE);
 	if( RB_SurfaceVbo(srf->vbo, srf->ibo, srf->numVerts, srf->numIndexes,
 				srf->firstIndex, srf->minIndex, srf->maxIndex, srf->dlightBits, srf->pshadowBits, qtrue ) )
 	{
@@ -1824,6 +1883,8 @@ Just copy the grid of points and triangulate
 =============
 */
 static void RB_SurfaceBSPGrid( srfBspSurface_t *srf ) {
+	RB_SetPomMode(POM_MODE_NONE);
+
 	int		i, j;
 	float	*xyz;
 	float	*texCoords, *lightCoords[MAXLIGHTMAPS];
@@ -2457,6 +2518,7 @@ static void RB_SurfaceFlare(srfFlare_t *surf)
 
 static void RB_SurfaceVBOMesh(srfBspSurface_t * srf)
 {
+	RB_SetPomMode(POM_MODE_NONE);
 	RB_SurfaceVbo (srf->vbo, srf->ibo, srf->numVerts, srf->numIndexes, srf->firstIndex,
 			srf->minIndex, srf->maxIndex, srf->dlightBits, srf->pshadowBits, qfalse );
 }
@@ -2789,4 +2851,6 @@ void (*rb_surfaceTable[SF_NUM_SURFACE_TYPES])( void *) = {
 	(void(*)(void*))RB_SurfaceVBOMDVMesh,   // SF_VBO_MDVMESH
 	(void(*)(void*))RB_SurfaceSprites,      // SF_SPRITES
 	(void(*)(void*))RB_SurfaceWeather,      // SF_WEATHER
+	(void(*)(void*))RB_SurfacePomShell,     // SF_POM_SHELL
+	(void(*)(void*))RB_SurfacePomFadeBase,  // SF_POM_FADEBASE
 };

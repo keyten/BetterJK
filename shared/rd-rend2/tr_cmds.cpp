@@ -79,6 +79,12 @@ void R_PerformanceCounters( void ) {
 			backEnd.pc.c_multidraws, backEnd.pc.c_multidrawsMerged );
 		ri.Printf( PRINT_ALL, "GLSL binds: %i  draws: gen %i light %i fog %i dlight %i\n",
 			backEnd.pc.c_glslShaderBinds, backEnd.pc.c_genericDraws, backEnd.pc.c_lightallDraws, backEnd.pc.c_fogDraws, backEnd.pc.c_dlightDraws);
+		if ( r_pomSilhouette->integer )
+		{
+			// all passes: prepass, colour, fog, sun cascades
+			ri.Printf( PRINT_ALL, "Silhouette POM: shells %i (%i tris)  crossfade bases %i\n",
+				backEnd.pc.c_pomShellSurfaces, backEnd.pc.c_pomShellTriangles, backEnd.pc.c_pomFadeSurfaces );
+		}
 	}
 	else if (r_speeds->integer == 8)
 	{
@@ -541,6 +547,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	thisFrame->hasMainView = qfalse; // set by the first world scene, tr_motionblur.cpp
 	// latches r_forwardPlus for the whole frame (no switch between scenes)
 	R_ForwardPlusBeginFrame();
+	R_PomSilhouetteBeginFrame();
 	// SSGI dependency notes, printed once (tr_ssgi.cpp)
 	R_SSGICheckDependencies();
 	if ( thisFrame->sync )

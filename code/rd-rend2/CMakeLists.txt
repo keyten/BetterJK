@@ -32,6 +32,7 @@ set(SPRend2Files
 	"${SharedDir}/rd-rend2/tr_forwardplus.cpp"
 	"${SharedDir}/rd-rend2/tr_screenspace.cpp"
 	"${SharedDir}/rd-rend2/tr_ssgi.cpp"
+	"${SharedDir}/rd-rend2/tr_pom_silhouette.cpp"
 	"${SharedDir}/rd-rend2/tr_ssr.cpp"
 	"${SharedDir}/rd-rend2/tr_volumetric.cpp"
 	"${SharedDir}/rd-rend2/tr_backend.cpp"

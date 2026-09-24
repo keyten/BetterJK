@@ -124,6 +124,20 @@ int main( int argc, char *argv[] )
 
 	cppStream << "// This file is auto-generated. DO NOT EDIT BY HAND\n";
 	cppStream << "#include \"tr_local.h\"\n\n";
+	// joins the chunks of a long shader (see below), kept for the lifetime of
+	// the module like the literals
+	cppStream <<
+		"static const char *JoinGLSLChunks( const char *const *chunks )\n"
+		"{\n"
+		"\tsize_t size = 1;\n"
+		"\tfor ( const char *const *c = chunks; *c; ++c )\n"
+		"\t\tsize += strlen(*c);\n"
+		"\tchar *source = (char *)malloc(size);\n"
+		"\tsource[0] = '\\0';\n"
+		"\tfor ( const char *const *c = chunks; *c; ++c )\n"
+		"\t\tstrcat(source, *c);\n"
+		"\treturn source;\n"
+		"}\n\n";
 	for ( StringList::const_iterator it = glslFiles.begin();
 			it != glslFiles.end(); ++it )
 	{
@@ -163,22 +177,45 @@ int main( int argc, char *argv[] )
 			GPUShaderDesc& shaderDesc = programDesc.shaders[i];
 			const char *suffix = GetShaderSuffix(shaderDesc.type);
 
-			cppStream << "const char *fallback_" + shaderName + suffix + " = \"";
+			// MSVC limits a string literal to 64 KB (C1091): long shaders are
+			// written as an array of chunks, joined once at start up
+			const std::string variable = "fallback_" + shaderName + suffix;
+			const bool chunked = strlen(shaderDesc.source) > 16000;
+			size_t chunkSize = 0;
+			if ( chunked )
+				cppStream << "static const char *const " << variable << "_chunks[] = {\n\"";
+			else
+				cppStream << "const char *" << variable << " = \"";
 
 			const char *lineStart = shaderDesc.source;
 			const char *lineEnd = strchr(lineStart, '\n');
 			while ( lineEnd )
 			{
 				line.assign(lineStart, lineEnd - lineStart);
+				chunkSize += line.length() + 1;
 				cppStream << Escape(line);
 				cppStream << "\\n\"\n\"";
 
 				lineStart = lineEnd + 1;
 				lineEnd = strchr(lineStart, '\n');
+				if ( chunked && chunkSize > 15000 && lineEnd )
+				{
+					// a new array element, not a continued literal
+					cppStream << "\",\n\"";
+					chunkSize = 0;
+				}
 			}
 
 			line.assign(lineStart);
-			cppStream << Escape(line) << "\";\n";
+			if ( chunked )
+			{
+				cppStream << Escape(line) << "\",\n  nullptr\n};\n";
+				cppStream << "const char *" << variable << " = JoinGLSLChunks(" << variable << "_chunks);\n";
+			}
+			else
+			{
+				cppStream << Escape(line) << "\";\n";
+			}
 		}
 
 		cppStream << "GPUShaderDesc fallback_" << shaderName << "Shaders[] = {\n";

@@ -272,6 +272,15 @@ cvar_t  *r_specularMapping;
 cvar_t  *r_deluxeMapping;
 cvar_t  *r_deluxeSpecular;
 cvar_t  *r_parallaxMapping;
+cvar_t  *r_pomSilhouette;
+cvar_t  *r_pomSilhouetteDistance;
+cvar_t  *r_pomSilhouetteFade;
+cvar_t  *r_pomSilhouetteSteps;
+cvar_t  *r_pomSilhouetteMaxSteps;
+cvar_t  *r_pomSilhouetteBinarySteps;
+cvar_t  *r_pomSilhouetteViewDependence;
+cvar_t  *r_pomSilhouetteShadows;
+cvar_t  *r_pomSilhouetteDebug;
 cvar_t	*r_forceParallaxBias;
 cvar_t  *r_cubeMapping;
 cvar_t	*r_cubeMappingBounces;
@@ -1565,6 +1574,7 @@ static consoleCommand_t	commands[] = {
 	{ "shaderlist",			R_ShaderList_f },
 	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
 	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
+	{ "r_pomSilhouetteInfo",	R_PomSilhouetteInfo_f },
 	{ "r_spawnTestLights",	R_SpawnTestLights_f },
 	{ "r_forwardPlusBenchmark",	R_ForwardPlusBenchmark_f },
 	{ "skinlist",			R_SkinList_f },
@@ -2013,6 +2023,24 @@ void R_Register( void )
 	r_facePlaneCull = ri.Cvar_Get ("r_facePlaneCull", "1", CVAR_ARCHIVE, "" );
 
 	r_parallaxMapping = ri.Cvar_Get("r_parallaxMapping", "0", CVAR_ARCHIVE, "Disable/enable parallax mapping");
+	r_pomSilhouette = ri.Cvar_Get( "r_pomSilhouette", "0", CVAR_ARCHIVE | CVAR_LATCH, "Silhouette parallax occlusion mapping for materials with the silhouettePOM keyword (needs r_parallaxMapping 1)" );
+	ri.Cvar_CheckRange( r_pomSilhouette, 0, 1, qtrue );
+	r_pomSilhouetteDistance = ri.Cvar_Get( "r_pomSilhouetteDistance", "512", CVAR_ARCHIVE, "Silhouette POM: view distance where the shell ends and ordinary POM takes over (0 = ordinary POM everywhere)" );
+	ri.Cvar_CheckRange( r_pomSilhouetteDistance, 0.0f, 8192.0f, qfalse );
+	r_pomSilhouetteFade = ri.Cvar_Get( "r_pomSilhouetteFade", "96", CVAR_ARCHIVE, "Silhouette POM: width of the dithered crossfade band to ordinary POM, world units (0 = hard switch)" );
+	ri.Cvar_CheckRange( r_pomSilhouetteFade, 0.0f, 1024.0f, qfalse );
+	r_pomSilhouetteSteps = ri.Cvar_Get( "r_pomSilhouetteSteps", "12", CVAR_ARCHIVE, "Silhouette POM: linear ray steps when looking along the surface normal" );
+	ri.Cvar_CheckRange( r_pomSilhouetteSteps, 4, 64, qtrue );
+	r_pomSilhouetteMaxSteps = ri.Cvar_Get( "r_pomSilhouetteMaxSteps", "48", CVAR_ARCHIVE, "Silhouette POM: linear ray steps at grazing angles" );
+	ri.Cvar_CheckRange( r_pomSilhouetteMaxSteps, 4, 128, qtrue );
+	r_pomSilhouetteBinarySteps = ri.Cvar_Get( "r_pomSilhouetteBinarySteps", "6", CVAR_ARCHIVE, "Silhouette POM: binary refinement steps after the linear search" );
+	ri.Cvar_CheckRange( r_pomSilhouetteBinarySteps, 0, 16, qtrue );
+	r_pomSilhouetteViewDependence = ri.Cvar_Get( "r_pomSilhouetteViewDependence", "1", CVAR_ARCHIVE, "Silhouette POM: how fast the step count grows towards grazing angles (0 = always r_pomSilhouetteSteps)" );
+	ri.Cvar_CheckRange( r_pomSilhouetteViewDependence, 0.0f, 4.0f, qfalse );
+	r_pomSilhouetteShadows = ri.Cvar_Get( "r_pomSilhouetteShadows", "1", CVAR_ARCHIVE, "Silhouette POM: shells cast the displaced surface into the sun shadow cascades" );
+	ri.Cvar_CheckRange( r_pomSilhouetteShadows, 0, 1, qtrue );
+	r_pomSilhouetteDebug = ri.Cvar_Get( "r_pomSilhouetteDebug", "0", CVAR_CHEAT, "Silhouette POM debug view: 1 translucent shell, 2 shell wireframe, 3 original mesh wireframe, 4 top cap / walls, 5 boundary walls, 6 discarded shell pixels, 7 virtual hit depth, 8 ray steps, 9 split ordinary POM | silhouette POM, 10 linear depth, 11 material normal" );
+	ri.Cvar_CheckRange( r_pomSilhouetteDebug, 0, 11, qtrue );
 
 	r_ambientScale = ri.Cvar_Get( "r_ambientScale", "0.6", CVAR_CHEAT, "" );
 	r_directedScale = ri.Cvar_Get( "r_directedScale", "1", CVAR_CHEAT, "" );
@@ -2593,6 +2621,7 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		R_DeleteTextures();
 		R_DestroyGPUBuffers();
 		R_ShutdownForwardPlus();
+		R_ShutdownPomSilhouette();
 
 		if (!destroyWindow && !restarting)
 		{

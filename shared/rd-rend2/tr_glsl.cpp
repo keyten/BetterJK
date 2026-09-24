@@ -211,6 +211,11 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_FPlusLights",			GLSL_INT, 1 },
 	{ "u_FPlusGridMap",			GLSL_INT, 1 },
 	{ "u_FPlusIndexMap",		GLSL_INT, 1 },
+
+	{ "u_PomGroups",			GLSL_INT, 1 },
+	{ "u_PomParams",			GLSL_VEC4, 1 },
+	{ "u_PomParams2",			GLSL_VEC4, 1 },
+	{ "u_PomFade",				GLSL_VEC4, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -2014,6 +2019,96 @@ static int GLSL_LoadGPUProgramRefraction(
 	return numPrograms;
 }
 
+// Silhouette POM (tr_pom_silhouette.cpp, r_pomSilhouette 1 at load): the
+// fragment functions of glsl/pom_silhouette.glsl
+static const GPUShaderDesc *LoadPomSilhouetteLibrary( Allocator& allocator )
+{
+	const GPUProgramDesc *programDesc =
+		LoadProgramSource("pom_silhouette", allocator, fallback_pom_silhouetteProgram);
+	for ( size_t i = 0; i < programDesc->numShaders; ++i )
+	{
+		if ( programDesc->shaders[i].type == GPUSHADER_FRAGMENT )
+		{
+			return &programDesc->shaders[i];
+		}
+	}
+
+	ri.Error(ERR_FATAL, "Could not load pom_silhouette shader library!");
+	return nullptr;
+}
+
+// Two fragment libraries in one (a program takes one): b follows a with its
+// own line numbers, errors in b are reported as source string 2
+static const GPUShaderDesc *GLSL_CombineLibraries(
+	Allocator& allocator, const GPUShaderDesc *a, const GPUShaderDesc *b )
+{
+	if ( !a )
+		return b;
+	if ( !b )
+		return a;
+
+	const char *lineDirective = va("\n#line %d 2\n", b->firstLineNumber - 1);
+	const size_t size = strlen(a->source) + strlen(lineDirective) + strlen(b->source) + 1;
+	char *source = ojkAllocArray<char>(allocator, size);
+	Q_strncpyz(source, a->source, size);
+	Q_strcat(source, size, lineDirective);
+	Q_strcat(source, size, b->source);
+
+	GPUShaderDesc *combined = ojkAlloc<GPUShaderDesc>(allocator);
+	combined->type = GPUSHADER_FRAGMENT;
+	combined->source = source;
+	combined->firstLineNumber = a->firstLineNumber;
+	return combined;
+}
+
+static bool GLSL_PomSilhouetteEnabled( void )
+{
+	if ( !r_pomSilhouette->integer || !r_normalMapping->integer )
+		return false;
+
+	GLint maxFragmentSamplers = 0;
+	qglGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxFragmentSamplers);
+	if ( maxFragmentSamplers <= TB_POM_GROUPS )
+	{
+		static bool warned = false;
+		if ( !warned )
+			ri.Printf(PRINT_WARNING, "r_pomSilhouette: %d fragment texture units, %d needed, disabled\n",
+				maxFragmentSamplers, TB_POM_GROUPS + 1);
+		warned = true;
+		return false;
+	}
+	return true;
+}
+
+// POMSDEF_* index of the silhouette variant of lightall permutation i, -1 if
+// the permutation has none (world surfaces only, see R_PomSilhouetteShaderReason)
+static int GLSL_PomSilhouetteLightallIndex( int i )
+{
+	const int lightType = i & LIGHTDEF_LIGHTTYPE_MASK;
+	if ( !(i & LIGHTDEF_USE_PARALLAXMAP) ||
+		(lightType != LIGHTDEF_USE_LIGHTMAP && lightType != LIGHTDEF_USE_LIGHT_VERTEX) ||
+		(i & (LIGHTDEF_USE_TCGEN_AND_TCMOD | LIGHTDEF_USE_SKELETAL_ANIMATION)) )
+		return -1;
+#ifdef REND2_SP_MD3
+	if ( i & LIGHTDEF_USE_VERTEX_ANIMATION )
+		return -1;
+#endif
+	int index = 0;
+	if ( lightType == LIGHTDEF_USE_LIGHT_VERTEX )
+		index |= POMSDEF_LIGHT_VERTEX;
+	if ( i & LIGHTDEF_USE_SPEC_GLOSS )
+		index |= POMSDEF_SPEC_GLOSS;
+	if ( i & LIGHTDEF_USE_CLOTH_BRDF )
+		index |= POMSDEF_CLOTH_BRDF;
+	return index;
+}
+
+static void GLSL_SetPomSilhouetteUnits( shaderProgram_t *program )
+{
+	GLSL_SetUniformInt(program, UNIFORM_NORMALMAP, TB_NORMALMAP);
+	GLSL_SetUniformInt(program, UNIFORM_POMGROUPS, TB_POM_GROUPS);
+}
+
 static int GLSL_LoadGPUProgramLightAll(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
@@ -2027,6 +2122,7 @@ static int GLSL_LoadGPUProgramLightAll(
 	char extradefines[1600];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("lightall", allocator, fallback_lightallProgram);
+	const GPUShaderDesc *pomLibrary = nullptr;
 	const bool useFastLight =
 		(!r_normalMapping->integer && !r_specularMapping->integer);
 	GLint maxFragmentSamplers = 0;
@@ -2211,33 +2307,138 @@ static int GLSL_LoadGPUProgramLightAll(
 			ri.Error(ERR_FATAL, "Could not load lightall shader!");
 		}
 
-		GLSL_InitUniforms(&tr.lightallShader[i]);
+		shaderProgram_t *program = &tr.lightallShader[i];
+		for ( int variant = 0; variant < 2; variant++ )
+		{
+			if ( variant == 1 )
+			{
+				// silhouette POM set (tr_pom_silhouette.cpp): the same permutation
+				// with the shell trace, world lightall stages only
+				const int pomIndex = GLSL_PomSilhouetteLightallIndex(i);
+				if ( pomIndex < 0 || !GLSL_PomSilhouetteEnabled() )
+					break;
+				if ( !pomLibrary )
+					pomLibrary = LoadPomSilhouetteLibrary(allocator);
+				program = &tr.lightallSilhouetteShader[pomIndex];
+				Q_strcat(name, sizeof(name), "_SPOM");
+				Q_strcat(extradefines, sizeof(extradefines), "#define USE_SILHOUETTE_POM\n");
+				if (!GLSL_LoadGPUShader(builder, program, name, attribs | ATTR_POSITION2 | ATTR_TANGENT,
+						NO_XFB_VARS, extradefines, *programDesc, pomLibrary))
+				{
+					ri.Error(ERR_FATAL, "Could not load lightall silhouette POM shader!");
+				}
+			}
 
-		qglUseProgram(tr.lightallShader[i].program);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_DIFFUSEMAP,  TB_DIFFUSEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_LIGHTMAP,    TB_LIGHTMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_NORMALMAP,   TB_NORMALMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_DELUXEMAP,   TB_DELUXEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SPECULARMAP, TB_SPECULARMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP,   TB_SHADOWMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_CUBEMAP,     TB_CUBEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENVBRDFMAP,  TB_ENVBRDFMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_DIFFUSEIRRADIANCEMAP, TB_DIFFUSEIRRADIANCEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_PROBEAVERAGEMAP, TB_PROBEAVERAGEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SSAOMAP,     TB_SSAOMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDAMBIENT, TB_ENTITYGRID_AMBIENT);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDDIRECTED, TB_ENTITYGRID_DIRECTED);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENTITYGRIDDIRECTION, TB_ENTITYGRID_DIRECTION);
-		// always set: an unset buffer sampler would alias unit 0 (u_DiffuseMap)
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSLIGHTS,  TB_FPLUS_LIGHTS);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);
-		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_FPLUSINDICES, TB_FPLUS_INDICES);
+			GLSL_InitUniforms(program);
+
+			qglUseProgram(program->program);
+			GLSL_SetUniformInt(program, UNIFORM_DIFFUSEMAP,  TB_DIFFUSEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_LIGHTMAP,    TB_LIGHTMAP);
+			GLSL_SetUniformInt(program, UNIFORM_NORMALMAP,   TB_NORMALMAP);
+			GLSL_SetUniformInt(program, UNIFORM_DELUXEMAP,   TB_DELUXEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_SPECULARMAP, TB_SPECULARMAP);
+			GLSL_SetUniformInt(program, UNIFORM_SHADOWMAP,   TB_SHADOWMAP);
+			GLSL_SetUniformInt(program, UNIFORM_CUBEMAP,     TB_CUBEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_ENVBRDFMAP,  TB_ENVBRDFMAP);
+			GLSL_SetUniformInt(program, UNIFORM_DIFFUSEIRRADIANCEMAP, TB_DIFFUSEIRRADIANCEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_PROBEAVERAGEMAP, TB_PROBEAVERAGEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
+			GLSL_SetUniformInt(program, UNIFORM_SSAOMAP,     TB_SSAOMAP);
+			GLSL_SetUniformInt(program, UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
+			GLSL_SetUniformInt(program, UNIFORM_ENTITYGRIDAMBIENT, TB_ENTITYGRID_AMBIENT);
+			GLSL_SetUniformInt(program, UNIFORM_ENTITYGRIDDIRECTED, TB_ENTITYGRID_DIRECTED);
+			GLSL_SetUniformInt(program, UNIFORM_ENTITYGRIDDIRECTION, TB_ENTITYGRID_DIRECTION);
+			// always set: an unset buffer sampler would alias unit 0 (u_DiffuseMap)
+			GLSL_SetUniformInt(program, UNIFORM_FPLUSLIGHTS,  TB_FPLUS_LIGHTS);
+			GLSL_SetUniformInt(program, UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);
+			GLSL_SetUniformInt(program, UNIFORM_FPLUSINDICES, TB_FPLUS_INDICES);
+			if ( variant == 1 )
+				GLSL_SetPomSilhouetteUnits(program);
+			qglUseProgram(0);
+
+			GLSL_FinishGPUShader(program);
+		}
+
+		++numPrograms;
+	}
+
+	return numPrograms;
+}
+
+// depth prepass / sun cascade and fog pass programs of silhouette POM shells
+static int GLSL_LoadGPUProgramPomSilhouette(
+	ShaderProgramBuilder& builder,
+	Allocator& scratchAlloc )
+{
+	if ( !GLSL_PomSilhouetteEnabled() )
+		return 0;
+
+	int numPrograms = 0;
+	Allocator allocator(scratchAlloc.Base(), scratchAlloc.GetSize());
+	const GPUShaderDesc *pomLibrary = LoadPomSilhouetteLibrary(allocator);
+
+	const GPUProgramDesc *depthDesc =
+		LoadProgramSource("pom_silhouette_depth", allocator, fallback_pom_silhouette_depthProgram);
+	for ( int i = 0; i < POMSDEF_DEPTH_COUNT; i++ )
+	{
+		const uint32_t attribs =
+			ATTR_POSITION | ATTR_NORMAL | ATTR_TANGENT | ATTR_TEXCOORD0 | ATTR_POSITION2;
+		const char *name = (i == POMSDEF_DEPTH_VELOCITY) ? "pom_silhouette_velocity" : "pom_silhouette_depth";
+		const char *defines = (i == POMSDEF_DEPTH_VELOCITY) ?
+			"#define USE_SILHOUETTE_POM\n#define USE_VELOCITY\n" : "#define USE_SILHOUETTE_POM\n";
+
+		if (!GLSL_LoadGPUShader(builder, &tr.pomSilhouetteDepthShader[i], name, attribs, NO_XFB_VARS,
+				defines, *depthDesc, pomLibrary))
+		{
+			ri.Error(ERR_FATAL, "Could not load pom_silhouette_depth shader!");
+		}
+
+		GLSL_InitUniforms(&tr.pomSilhouetteDepthShader[i]);
+		qglUseProgram(tr.pomSilhouetteDepthShader[i].program);
+		GLSL_SetPomSilhouetteUnits(&tr.pomSilhouetteDepthShader[i]);
 		qglUseProgram(0);
+		GLSL_FinishGPUShader(&tr.pomSilhouetteDepthShader[i]);
+		++numPrograms;
+	}
 
-		GLSL_FinishGPUShader(&tr.lightallShader[i]);
+	// fog pass of shells: FOGDEF permutation 0 / FOGDEF_USE_FALLBACK_GLOBAL_FOG
+	const GPUProgramDesc *fogDesc =
+		LoadProgramSource("fogpass", allocator, fallback_fogpassProgram);
+	const GPUShaderDesc *fogLibrary =
+		GLSL_CombineLibraries(allocator, LoadVolumetricLibrary(allocator), pomLibrary);
+	for ( int i = 0; i < 2; i++ )
+	{
+		char name[64];
+		char extradefines[512];
+		const uint32_t attribs =
+			ATTR_POSITION | ATTR_NORMAL | ATTR_TANGENT | ATTR_TEXCOORD0 | ATTR_POSITION2;
+		Q_strncpyz(name, "fogpass_SPOM", sizeof(name));
+		Q_strncpyz(extradefines, "#define USE_SILHOUETTE_POM\n", sizeof(extradefines));
+		if (i)
+		{
+			Q_strcat(name, sizeof(name), "_FALLBACK");
+			Q_strcat(extradefines, sizeof(extradefines), "#define USE_FALLBACK_GLOBAL_FOG\n");
+		}
+		if (r_volumetricFog->integer)
+		{
+			Q_strcat(name, sizeof(name), "_VOLUMETRIC");
+			Q_strcat(extradefines, sizeof(extradefines), "#define USE_VOLUMETRIC_FOG\n");
+		}
 
+		if (!GLSL_LoadGPUShader(builder, &tr.fogSilhouetteShader[i], name, attribs, NO_XFB_VARS,
+				extradefines, *fogDesc, fogLibrary))
+		{
+			ri.Error(ERR_FATAL, "Could not load fogpass silhouette POM shader!");
+		}
+
+		GLSL_InitUniforms(&tr.fogSilhouetteShader[i]);
+		qglUseProgram(tr.fogSilhouetteShader[i].program);
+		GLSL_SetUniformInt(&tr.fogSilhouetteShader[i], UNIFORM_DIFFUSEMAP, 0);
+		GLSL_SetUniformInt(&tr.fogSilhouetteShader[i], UNIFORM_VOLUMETRICLIGHTMAP, 2);
+		GLSL_SetFroxelLookupUnits(&tr.fogSilhouetteShader[i]);
+		GLSL_SetPomSilhouetteUnits(&tr.fogSilhouetteShader[i]);
+		qglUseProgram(0);
+		GLSL_FinishGPUShader(&tr.fogSilhouetteShader[i]);
 		++numPrograms;
 	}
 
@@ -3329,6 +3530,7 @@ void GLSL_LoadGPUShaders()
 	numLightShaders += GLSL_LoadGPUProgramLightAll(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramFogPass(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramVelocityPass(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramPomSilhouette(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramRefraction(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramTextureColor(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramPShadow(builder, allocator);
@@ -3392,6 +3594,14 @@ void GLSL_ShutdownGPUShaders(void)
 
 	for ( i = 0; i < LIGHTDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.lightallShader[i]);
+
+	// silhouette POM, only loaded with r_pomSilhouette
+	for ( i = 0; i < POMSDEF_LIGHTALL_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.lightallSilhouetteShader[i]);
+	for ( i = 0; i < POMSDEF_DEPTH_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.pomSilhouetteDepthShader[i]);
+	for ( i = 0; i < 2; i++)
+		GLSL_DeleteGPUShader(&tr.fogSilhouetteShader[i]);
 
 	GLSL_DeleteGPUShader(&tr.pshadowShader);
 	GLSL_DeleteGPUShader(&tr.volumeShadowShader);
@@ -3559,8 +3769,9 @@ void GL_VertexArraysToAttribs(
 		{ 4, GL_FALSE, GL_UNSIGNED_INT_2_10_10_10_REV, GL_TRUE }, // light direction
 		{ 4, GL_TRUE,  GL_UNSIGNED_BYTE, GL_FALSE }, // bone indices
 		{ 4, GL_FALSE, GL_UNSIGNED_BYTE, GL_TRUE }, // bone weights
-#ifdef REND2_SP_MD3
+		// pos2 exists in both games (silhouette POM shell data in MP / world)
 		{ 3, GL_FALSE, GL_FLOAT, GL_FALSE }, // pos2
+#ifdef REND2_SP_MD3
 		{ 4, GL_FALSE, GL_UNSIGNED_INT_2_10_10_10_REV, GL_TRUE }, // tangent2
 		{ 4, GL_FALSE, GL_UNSIGNED_INT_2_10_10_10_REV, GL_TRUE }, // normal2
 #endif // REND2_SP

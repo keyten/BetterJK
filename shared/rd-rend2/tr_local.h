@@ -314,6 +314,15 @@ extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
 extern cvar_t  *r_deluxeSpecular;
 extern cvar_t  *r_parallaxMapping;
+extern cvar_t  *r_pomSilhouette;
+extern cvar_t  *r_pomSilhouetteDistance;
+extern cvar_t  *r_pomSilhouetteFade;
+extern cvar_t  *r_pomSilhouetteSteps;
+extern cvar_t  *r_pomSilhouetteMaxSteps;
+extern cvar_t  *r_pomSilhouetteBinarySteps;
+extern cvar_t  *r_pomSilhouetteViewDependence;
+extern cvar_t  *r_pomSilhouetteShadows;
+extern cvar_t  *r_pomSilhouetteDebug;
 extern cvar_t  *r_normalAmbient;
 extern cvar_t  *r_dlightMode;
 extern cvar_t  *r_pshadowDist;
@@ -1148,6 +1157,12 @@ enum
 	TB_SSGI_ALBEDO   = 14,
 	TB_SSGI_RADIANCE = 15,
 	TB_SSGI_SOURCE   = 16,
+
+	// silhouette POM group footprints of lightall / fogpass / pom_silhouette_depth
+	// (tr_pom_silhouette.cpp). The silhouette lightall set is lightmap / vertex
+	// lit only, the entity grid units (LIGHT_VECTOR) are free there. Needs
+	// GL_MAX_TEXTURE_IMAGE_UNITS > 16, else r_pomSilhouette stays off.
+	TB_POM_GROUPS    = 16,
 	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
@@ -1340,6 +1355,9 @@ typedef struct shader_s {
 
 	qboolean	explicitlyDefined;		// found in a .shader file
 	qboolean	alphaShadow;			// q3map_alphashadow: use the base alpha as a sun-shadow cutout
+	qboolean	silhouettePOM;			// silhouettePOM: displaced silhouette shell (tr_pom_silhouette.cpp)
+	float		silhouetteDistance;		// silhouetteDistance: shell range limit, 0 = r_pomSilhouetteDistance
+	int			silhouetteSteps;		// silhouetteSteps: max linear ray steps, 0 = r_pomSilhouetteMaxSteps
 
 	int			surfaceFlags;			// if explicitlyDefined, this will have SURF_* flags
 	int			contentFlags;
@@ -1676,6 +1694,28 @@ enum
 	LIGHTDEF_COUNT               		= LIGHTDEF_ALL + 1
 };
 
+// silhouette POM programs (tr_pom_silhouette.cpp). The lightall set only
+// covers world surfaces: light type (lightmap / vertex) x spec gloss x cloth.
+enum
+{
+	POMSDEF_LIGHT_VERTEX			= 0x0001,	// else lightmap
+	POMSDEF_SPEC_GLOSS			= 0x0002,
+	POMSDEF_CLOTH_BRDF			= 0x0004,
+	POMSDEF_LIGHTALL_COUNT		= 0x0008,
+
+	POMSDEF_DEPTH_VELOCITY		= 0,		// depth prepass into depthVelocityFbo
+	POMSDEF_DEPTH_ONLY			= 1,		// depth prepass without velocity, sun cascades
+	POMSDEF_DEPTH_COUNT			= 2,
+};
+
+// tess.pomMode: what the batched surfaces are, see RB_SetPomMode
+enum
+{
+	POM_MODE_NONE		= 0,
+	POM_MODE_SHELL		= 1,	// silhouette shells, SF_POM_SHELL
+	POM_MODE_FADEBASE	= 2,	// base surfaces inside the crossfade band, SF_POM_FADEBASE
+};
+
 enum
 {
 	SSDEF_FACE_CAMERA					= 0x01,
@@ -1928,6 +1968,11 @@ typedef enum
 	UNIFORM_FPLUSGRID,		// Forward+ cluster offset / count (buffer texture)
 	UNIFORM_FPLUSINDICES,	// Forward+ cluster light indexes (buffer texture)
 
+	UNIFORM_POMGROUPS,		// silhouette POM group footprints (buffer texture)
+	UNIFORM_POMPARAMS,		// silhouette POM: min / max linear steps, binary steps, view dependence
+	UNIFORM_POMPARAMS2,		// silhouette POM: draw mode, depth mode, ortho pixel footprint, debug view
+	UNIFORM_POMFADE,		// silhouette POM: crossfade start, 1 / width, debug split x, unused
+
 	UNIFORM_COUNT
 } uniform_t;
 
@@ -2125,6 +2170,8 @@ typedef enum surfaceType_e
 	SF_VBO_MDVMESH,
 	SF_SPRITES,
 	SF_WEATHER,
+	SF_POM_SHELL,			// silhouette POM shell of a world surface (srfPomShell_t)
+	SF_POM_FADEBASE,		// base surface of a shell in the crossfade band (srfPomShell_t::fadeBaseType)
 
 	SF_NUM_SURFACE_TYPES,
 	SF_MAX = 0x7fffffff			// ensures that sizeof( surfaceType_t ) == sizeof( int )
@@ -2308,6 +2355,34 @@ typedef struct srfBspSurface_s
 	float			*heightLodError;
 } srfBspSurface_t;
 
+// Silhouette POM shell of one world surface (tr_pom_silhouette.cpp): a top
+// cap and side walls around the displaced height field volume, only a
+// conservative raster volume. Shading coordinates come from the ray / height
+// field intersection with the base surface parameterisation.
+typedef struct srfPomShell_s
+{
+	surfaceType_t   surfaceType;		// SF_POM_SHELL
+	surfaceType_t   fadeBaseType;		// SF_POM_FADEBASE, drawSurf of the base in the crossfade band
+
+	srfBspSurface_t *base;
+	struct msurface_s *surf;
+
+	int             numVerts;
+	int             numIndexes;
+	int             firstIndex;
+	glIndex_t       minIndex;
+	glIndex_t       maxIndex;
+	VBO_t          *vbo;
+	IBO_t          *ibo;
+	image_t        *groupsImage;		// group footprint buffer texture of the world
+
+	vec3_t          bounds[2];			// shell bounds (model space)
+	float           above;				// shell extent above the base plane, world units
+	float           below;				// and below it
+	int             numGroups;
+	int             numWalls;			// boundary edges with a side wall
+} srfPomShell_t;
+
 // inter-quake-model
 typedef struct {
 	int		num_vertexes;
@@ -2440,6 +2515,7 @@ typedef struct msurface_s {
 	srfSprites_t		*surfaceSprites;
 
 	surfaceType_t		*data;			// any of srf*_t
+	struct srfPomShell_s *pomShell;	// silhouette POM shell, r_pomSilhouette 1 only
 } msurface_t;
 
 
@@ -2555,6 +2631,12 @@ typedef struct {
 	char		*entityString;
 	char		*entityParsePoint;
 
+	// silhouette POM (tr_pom_silhouette.cpp), r_pomSilhouette 1 only
+	int			numPomShells;
+	srfPomShell_t	*pomShells;
+	image_t		*pomGroupsImage;		// RGBA32F buffer texture: group headers + boundary edges
+	GLuint		pomGroupsBuffer;
+	int			pomGroupsTexels;
 } world_t;
 
 
@@ -2891,6 +2973,9 @@ typedef struct {
 	int     c_glslShaderBinds;
 	int     c_genericDraws;
 	int     c_lightallDraws;
+	int     c_pomShellSurfaces;	// silhouette POM shells drawn (all passes)
+	int     c_pomShellTriangles;
+	int     c_pomFadeSurfaces;	// base surfaces drawn in the crossfade band
 	int     c_fogDraws;
 	int     c_dlightDraws;
 
@@ -3128,6 +3213,10 @@ typedef struct trGlobals_s {
 	shaderProgram_t fogShader[FOGDEF_COUNT];
 	shaderProgram_t velocityShader[VELOCITYDEF_COUNT];
 	shaderProgram_t lightallShader[LIGHTDEF_COUNT];
+	// silhouette POM (r_pomSilhouette 1 at load only), tr_pom_silhouette.cpp
+	shaderProgram_t lightallSilhouetteShader[POMSDEF_LIGHTALL_COUNT];
+	shaderProgram_t pomSilhouetteDepthShader[POMSDEF_DEPTH_COUNT];
+	shaderProgram_t fogSilhouetteShader[2];	// without, with FOGDEF_USE_FALLBACK_GLOBAL_FOG
 	shaderProgram_t pshadowShader;
 	shaderProgram_t volumeShadowShader;
 	shaderProgram_t down4xShader;
@@ -3739,6 +3828,8 @@ struct shaderCommands_s
 	int			firstIndex;
 	int			numIndexes;
 	int			numVertexes;
+	int			pomMode;		// POM_MODE_*: silhouette POM shells / crossfade base
+	image_t		*pomGroupsImage;	// silhouette POM group footprints of the batch
 	glIndex_t   minIndex;
 	glIndex_t   maxIndex;
 
@@ -4583,6 +4674,46 @@ void RB_VolumetricBuild(void);
 qboolean RB_VolumetricCompositeActive(void);
 void RB_VolumetricComposite(void);
 void RB_VolumetricDebugOverlay(void);
+
+/*
+============================================================
+
+SILHOUETTE PARALLAX OCCLUSION MAPPING, tr_pom_silhouette.cpp
+
+============================================================
+*/
+
+struct packedVertex_t;
+void R_PomSilhouetteBeginWorld(world_t *world);
+// R_PomSilhouetteSurfaceMode: what R_AddWorldSurface adds for a surface
+enum
+{
+	POM_SURF_ORDINARY	= 1,	// the surface itself (legacy path, R_CullSurface)
+	POM_SURF_SHELL		= 2,	// its silhouette POM shell
+	POM_SURF_FADEBASE	= 4,	// the surface as the far side of the crossfade band
+};
+
+// batchVerts / batchIndexes: world VBO data of R_CreateWorldVBOs, with tangents
+void R_PomSilhouetteCollect(world_t *world, msurface_t *surf, const packedVertex_t *batchVerts, const glIndex_t *batchIndexes);
+void R_PomSilhouetteFinishWorld(world_t *world);
+qboolean R_PomSilhouetteActive(void);
+void R_PomSilhouetteBeginFrame(void);
+int R_PomSilhouetteSurfaceMode(msurface_t *surf);
+void R_PomSilhouetteAddDrawSurfs(msurface_t *surf, int mode, int entityNum, int fogIndex, int dlightBits, bool isPostRenderEntity, int cubemapIndex);
+void RB_SetPomMode(int mode);
+void RB_SurfacePomShell(srfPomShell_t *shell);
+void RB_SurfacePomFadeBase(surfaceType_t *fadeBaseType);
+shaderProgram_t *RB_PomSilhouetteLightallProgram(const shaderStage_t *stage);
+shaderProgram_t *RB_PomSilhouetteDepthProgram(void);
+shaderProgram_t *RB_PomSilhouetteFogProgram(int fogBits);
+uint32_t RB_PomSilhouetteStateBits(uint32_t stateBits, qboolean fogPass);
+void RB_PomSilhouetteSetupDraw(const shaderStage_t *stage, UniformDataWriter& uniforms, SamplerBindingsWriter& samplers, qboolean fogPass);
+void RB_PomSilhouetteNoteDebugBase(const srfBspSurface_t *base);
+int RB_PomSilhouetteDebugBases(const srfBspSurface_t * const **bases);
+void RB_PomSilhouetteClearDebugBases(void);
+qboolean RB_PomSilhouetteDebugBypassesToneMap(void);
+void R_PomSilhouetteInfo_f(void);
+void R_ShutdownPomSilhouette(void);
 
 /*
 ============================================================

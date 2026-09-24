@@ -2841,6 +2841,35 @@ static qboolean ParseShader( const char **text )
 			SkipRestOfLine( text );
 			continue;
 		}
+		// silhouettePOM: explicit opt-in to the displaced silhouette shell
+		// (r_pomSilhouette, tr_pom_silhouette.cpp). The displacement itself
+		// stays parallaxDepth / parallaxBias of the normalHeightMap stage.
+		else if ( !Q_stricmp( token, "silhouettePOM" ) ) {
+			shader.silhouettePOM = qtrue;
+			continue;
+		}
+		// silhouetteDistance <units>: shell range limit, below r_pomSilhouetteDistance
+		else if ( !Q_stricmp( token, "silhouetteDistance" ) ) {
+			token = COM_ParseExt( text, qfalse );
+			if ( !token[0] )
+			{
+				ri.Printf( PRINT_WARNING, "WARNING: missing parameter for silhouetteDistance in shader '%s'\n", shader.name );
+				continue;
+			}
+			shader.silhouetteDistance = Q_max( 0.0f, (float)atof( token ) );
+			continue;
+		}
+		// silhouetteSteps <n>: max linear ray steps, replaces r_pomSilhouetteMaxSteps
+		else if ( !Q_stricmp( token, "silhouetteSteps" ) ) {
+			token = COM_ParseExt( text, qfalse );
+			if ( !token[0] )
+			{
+				ri.Printf( PRINT_WARNING, "WARNING: missing parameter for silhouetteSteps in shader '%s'\n", shader.name );
+				continue;
+			}
+			shader.silhouetteSteps = Com_Clampi( 4, 128, atoi( token ) );
+			continue;
+		}
 		// skip stuff that only the q3map needs
 		else if ( !Q_stricmpn( token, "q3map", 5 ) ) {
 			SkipRestOfLine( text );

@@ -12,6 +12,12 @@ in uvec4 attr_BoneIndexes;
 in vec4 attr_BoneWeights;
 #endif
 
+#if defined(USE_SILHOUETTE_POM)
+// silhouette POM shell (tr_pom_silhouette.cpp, pom_silhouette.glsl)
+in vec4 attr_Tangent;
+in vec3 attr_Position2;
+#endif
+
 layout(std140) uniform Scene
 {
 	vec4 u_PrimaryLightOrigin;
@@ -65,6 +71,13 @@ layout(std140) uniform Bones
 out vec3 var_WSPosition;
 #if defined(USE_ALPHA_TEST)
 out vec2 var_TexCoords;
+#endif
+#if defined(USE_SILHOUETTE_POM)
+out vec2 var_PomTexCoords;
+out vec3 var_PomNormal;
+out vec4 var_PomTangent;
+out vec2 var_PomShell;
+flat out float var_PomHeader;
 #endif
 
 #if defined(USE_DEFORM_VERTEXES)
@@ -252,6 +265,14 @@ void main()
 #if defined(USE_ALPHA_TEST)
 	var_TexCoords = attr_TexCoord0;
 #endif
+#if defined(USE_SILHOUETTE_POM)
+	var_PomTexCoords = attr_TexCoord0;
+	var_PomNormal = normalize(mat3(u_ModelMatrix) * (attr_Normal * 2.0 - vec3(1.0)));
+	var_PomTangent = vec4(normalize(mat3(u_ModelMatrix) * (attr_Tangent.xyz * 2.0 - vec3(1.0))),
+		attr_Tangent.w * 2.0 - 1.0);
+	var_PomShell = attr_Position2.xy;
+	var_PomHeader = attr_Position2.z;
+#endif
 }
 
 /*[Fragment]*/
@@ -319,6 +340,16 @@ uniform int u_FogIndex;
 in vec3 var_WSPosition;
 #if defined(USE_ALPHA_TEST)
 in vec2 var_TexCoords;
+#endif
+#if defined(USE_SILHOUETTE_POM)
+uniform sampler2D u_NormalMap;
+uniform vec4 u_NormalScale;
+
+in vec2 var_PomTexCoords;
+in vec3 var_PomNormal;
+in vec4 var_PomTangent;
+in vec2 var_PomShell;
+flat in float var_PomHeader;
 #endif
 
 out vec4 out_Color;
@@ -427,8 +458,50 @@ vec4 CalcFog(in vec3 viewOrigin, in vec3 position, in Fog fog)
 #endif
 }
 
+#if defined(USE_SILHOUETTE_POM)
+// The fog of a silhouette POM shell is the fog of its virtual surface point:
+// the same trace as the depth and colour passes (pom_silhouette.glsl), the
+// depth test is LEQUAL against the prepass depth instead of EQUAL.
+vec3 PomFogPosition()
+{
+	vec3 position = var_WSPosition;
+	float viewDistance = distance(position, u_ViewOrigin);
+	vec2 uvDx = dFdx(var_PomTexCoords);
+	vec2 uvDy = dFdy(var_PomTexCoords);
+	bool shell = PomIsShellDraw();
+	if (!PomFadeKeep(position, u_ViewOrigin, gl_FragCoord.xy, shell))
+		discard;
+	if (!shell)
+	{
+		gl_FragDepth = gl_FragCoord.z;
+		return position;
+	}
+
+	vec3 N = normalize(var_PomNormal);
+	vec3 T = normalize(var_PomTangent.xyz - N * dot(N, var_PomTangent.xyz));
+	vec3 B = cross(N, T) * var_PomTangent.w;
+	vec3 rayDir = (position - u_ViewOrigin) / viewDistance;
+	float parallaxDepth = u_NormalScale.a;
+	vec2 aspect = PomAspect(vec2(textureSize(u_NormalMap, 0)));
+	float pixelFootprint = viewDistance * 2.0 * length(u_ViewUp) / (u_ViewInfo.y * r_FBufScale.y);
+	vec2 gradX, gradY;
+	PomGradients(PomIsWall(var_PomHeader), uvDx, uvDy, pixelFootprint, var_PomShell.y,
+		parallaxDepth, aspect, gradX, gradY);
+	PomHit hit = PomSilhouetteTrace(u_NormalMap, aspect, parallaxDepth, position, rayDir,
+		var_PomTexCoords, var_PomShell.x, var_PomShell.y, PomHeaderTexel(var_PomHeader),
+		T, B, N, gradX, gradY);
+	if (!hit.hit)
+		discard;
+	gl_FragDepth = PomShellDepth(u_viewProjectionMatrix, hit.position, rayDir, viewDistance + hit.t);
+	return hit.position;
+}
+#endif
+
 void main()
 {
+#if defined(USE_SILHOUETTE_POM)
+	vec3 fogPosition = PomFogPosition();
+#endif
 #if defined(USE_ALPHA_TEST)
 	float alpha = texture(u_DiffuseMap, var_TexCoords).a;
 	if (u_AlphaTestType == ALPHA_TEST_GT0)
@@ -462,13 +535,21 @@ void main()
 	// transmittance up to this fragment, all fog volumes along the ray
 	if (u_FroxelFogMode == 1)
 	{
+#if defined(USE_SILHOUETTE_POM)
+		vec4 froxelFog = FroxelFog(fogPosition);
+#else
 		vec4 froxelFog = FroxelFog(var_WSPosition);
+#endif
 		out_Color = vec4(froxelFog.rgb, 1.0 - froxelFog.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, out_Color.a);
 		return;
 	}
 #endif
 	Fog fog = u_Fogs[u_FogIndex];
+#if defined(USE_SILHOUETTE_POM)
+	out_Color = CalcFog(u_ViewOrigin, fogPosition, fog);
+#else
 	out_Color = CalcFog(u_ViewOrigin, var_WSPosition, fog);
+#endif
 	out_Glow = vec4(0.0, 0.0, 0.0, out_Color.a);
 }

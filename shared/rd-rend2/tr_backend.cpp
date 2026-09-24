@@ -1278,7 +1278,10 @@ static void RB_SubmitDrawSurfsForDepthFill(
 			continue;
 		}
 
-		if (shader->depthPrepass == DEPTHPREPASS_SIMPLE && !alphaShadowDepth)
+		// silhouette POM shells / crossfade base surfaces keep their shader:
+		// their depth is traced (tr_pom_silhouette.cpp)
+		if (shader->depthPrepass == DEPTHPREPASS_SIMPLE && !alphaShadowDepth &&
+			*drawSurf->surface != SF_POM_SHELL && *drawSurf->surface != SF_POM_FADEBASE)
 			shader = tr.defaultShader;
 
 		if (*drawSurf->surface == SF_MDX)

@@ -155,6 +155,8 @@ void RB_BeginSurface( shader_t *shader, int fogNum, int cubemapIndex )
 	tess.currentStageIteratorFunc = shader->optimalStageIteratorFunc;
 	tess.externalIBO = nullptr;
 	tess.useInternalVBO = qtrue;
+	tess.pomMode = POM_MODE_NONE;
+	tess.pomGroupsImage = nullptr;
 
 	tess.shaderTime = backEnd.refdef.floatTime - tess.shader->timeOffset;
 	tess.entityMergable = (bool)shader->entityMergable;
@@ -1061,6 +1063,120 @@ static void DrawTris(shaderCommands_t *input, const VertexArraysProperties *vert
 
 /*
 ================
+DrawPomSilhouetteDebug
+
+r_pomSilhouetteDebug 1-3: translucent shells, shell wireframe, wireframe of
+the original surfaces of the shells (world only)
+================
+*/
+static void DrawPomSilhouetteDebug( shaderCommands_t *input, const VertexArraysProperties *vertexArrays )
+{
+	const int view = r_pomSilhouetteDebug->integer;
+	if ( view < 1 || view > 3 || (backEnd.viewParms.flags & VPF_DEPTHSHADOW) ||
+		backEnd.currentEntity != &tr.worldEntity )
+	{
+		RB_PomSilhouetteClearDebugBases();
+		return;
+	}
+
+	Allocator& frameAllocator = *backEndData->perFrameMemory;
+	shaderProgram_t *sp = &tr.genericShader[0];
+
+	const UniformBlockBinding uniformBlockBindings[] = {
+		GetCameraBlockUniformBinding(backEnd.currentEntity),
+		GetSceneBlockUniformBinding(),
+		GetEntityBlockUniformBinding(backEnd.currentEntity),
+		GetShaderInstanceBlockUniformBinding(
+			backEnd.currentEntity, input->shader),
+		GetBonesBlockUniformBinding()
+	};
+
+	auto addItem = [&]( const vec4_t color, uint32_t stateBits, cullType_t cullType,
+		const vertexAttribute_t *itemAttribs, int numAttribs, IBO_t *ibo, const DrawCommand *drawCmd )
+	{
+		UniformDataWriter uniformDataWriter;
+		SamplerBindingsWriter samplerBindingsWriter;
+		uniformDataWriter.Start(sp);
+		samplerBindingsWriter.AddStaticImage(tr.whiteImage, TB_DIFFUSEMAP);
+		const vec4_t vertColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+		uniformDataWriter.SetUniformVec4(UNIFORM_BASECOLOR, color);
+		uniformDataWriter.SetUniformVec4(UNIFORM_VERTCOLOR, vertColor);
+
+		DrawItem item = {};
+		item.renderState.stateBits = stateBits;
+		item.renderState.cullType = cullType;
+		item.renderState.depthRange = RB_GetDepthRange(backEnd.currentEntity, input->shader);
+		item.program = sp;
+		item.ibo = ibo;
+		item.uniformData = uniformDataWriter.Finish(frameAllocator);
+		item.samplerBindings = samplerBindingsWriter.Finish(
+			frameAllocator, &item.numSamplerBindings);
+		DrawItemSetVertexAttributes(item, itemAttribs, numAttribs, frameAllocator);
+		DrawItemSetUniformBlockBindings(item, uniformBlockBindings, frameAllocator);
+		if ( drawCmd )
+			item.draw = *drawCmd;
+		else
+			RB_FillDrawCommand(item.draw, GL_TRIANGLES, 1, input);
+		RB_AddDrawItem(backEndData->currentPass, RB_CreateSortKey(item, 15, 15), item);
+	};
+
+	if ( view == 1 || view == 2 )
+	{
+		vertexAttribute_t attribs[ATTR_INDEX_MAX] = {};
+		GL_VertexArraysToAttribs(attribs, ARRAY_LEN(attribs), vertexArrays);
+		IBO_t *ibo = input->externalIBO ? input->externalIBO : backEndData->currentFrame->dynamicIbo;
+		if ( view == 1 )
+		{
+			// the shell over the scene: the displaced surface behind it shows
+			// where the ray hit, the background where it missed
+			const vec4_t color = { 1.0f, 0.45f, 0.1f, 0.3f };
+			addItem(color, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA,
+				RB_GetCullType(&backEnd.viewParms, backEnd.currentEntity, input->shader->cullType),
+				attribs, vertexArrays->numVertexArrays, ibo, nullptr);
+		}
+		else
+		{
+			const vec4_t color = { 1.0f, 0.6f, 0.1f, 1.0f };
+			addItem(color, GLS_POLYMODE_LINE | GLS_DEPTHTEST_DISABLE, CT_TWO_SIDED,
+				attribs, vertexArrays->numVertexArrays, ibo, nullptr);
+		}
+		return;
+	}
+
+	// view 3: the original triangles, position only
+	const srfBspSurface_t * const *bases;
+	const int numBases = RB_PomSilhouetteDebugBases(&bases);
+	const vec4_t color = { 0.2f, 0.8f, 1.0f, 1.0f };
+	for ( int i = 0; i < numBases; i++ )
+	{
+		const srfBspSurface_t *base = bases[i];
+		vertexAttribute_t position = {};
+		position.vbo = base->vbo;
+		position.index = ATTR_INDEX_POSITION;
+		position.numComponents = 3;
+		position.integerAttribute = GL_FALSE;
+		position.type = GL_FLOAT;
+		position.normalize = GL_FALSE;
+		position.stride = base->vbo->strides[ATTR_INDEX_POSITION];
+		position.offset = base->vbo->offsets[ATTR_INDEX_POSITION];
+		position.stepRate = 0;
+
+		DrawCommand drawCmd = {};
+		drawCmd.type = DRAW_COMMAND_INDEXED;
+		drawCmd.primitiveType = GL_TRIANGLES;
+		drawCmd.numInstances = 1;
+		drawCmd.params.indexed.indexType = GL_INDEX_TYPE;
+		drawCmd.params.indexed.firstIndex = (glIndex_t)(base->firstIndex * sizeof(glIndex_t));
+		drawCmd.params.indexed.numIndices = base->numIndexes;
+		drawCmd.params.indexed.baseVertex = 0;
+		addItem(color, GLS_POLYMODE_LINE | GLS_DEPTHTEST_DISABLE, CT_TWO_SIDED,
+			&position, 1, base->ibo, &drawCmd);
+	}
+	RB_PomSilhouetteClearDebugBases();
+}
+
+/*
+================
 DrawNormals
 
 Draws vertex normals for debugging
@@ -1201,6 +1317,10 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 			shaderBits |= FOGDEF_USE_ALPHA_TEST;*/
 
 	shaderProgram_t *sp = tr.fogShader + shaderBits;
+	// silhouette POM: the fog of the virtual surface point
+	const bool pomFog = input->pomMode != POM_MODE_NONE && input->numPasses > 0;
+	if (pomFog)
+		sp = RB_PomSilhouetteFogProgram(shaderBits);
 
 	backEnd.pc.c_fogDraws++;
 
@@ -1240,6 +1360,9 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 	if (input->shader->polygonOffset == qtrue)
 		stateBits |= GLS_POLYGON_OFFSET_FILL;
 
+	if (pomFog)
+		stateBits = RB_PomSilhouetteStateBits(stateBits, qtrue);
+
 	if (input->numPasses > 0 && input->xstages[0]->stateBits & GLS_DEPTH_CLAMP)
 		stateBits |= GLS_DEPTH_CLAMP;
 
@@ -1256,6 +1379,8 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 
 	SamplerBindingsWriter samplerBindingsWriter;
 	RB_VolumetricSetupFogDraw(froxelFogMode, uniformDataWriter, samplerBindingsWriter);
+	if (pomFog)
+		RB_PomSilhouetteSetupDraw(input->xstages[0], uniformDataWriter, samplerBindingsWriter, qtrue);
 	if (input->numPasses > 0)
 	{
 		if (input->xstages[0]->alphaTestType != ALPHA_TEST_NONE && tess.shader->fogPass != FP_EQUAL)
@@ -1377,6 +1502,13 @@ static unsigned int RB_CalcShaderVertexAttribs( const shader_t *shader )
 		vertexAttribs |= ATTR_BONE_INDEXES;
 	}
 
+	// silhouette POM: base frame, foot point coordinates and shell data
+	// (attr_Position2) for the depth / fog programs too
+	if (tess.pomMode == POM_MODE_SHELL)
+		vertexAttribs |= ATTR_NORMAL | ATTR_TANGENT | ATTR_TEXCOORD0 | ATTR_POSITION2;
+	else if (tess.pomMode == POM_MODE_FADEBASE)
+		vertexAttribs |= ATTR_NORMAL | ATTR_TANGENT | ATTR_TEXCOORD0;
+
 	return vertexAttribs;
 }
 
@@ -1384,6 +1516,16 @@ static shaderProgram_t *SelectShaderProgram( int stageIndex, shaderStage_t *stag
 {
 	uint32_t index;
 	shaderProgram_t *result = nullptr;
+
+	// silhouette POM shells and their crossfade base surfaces (world
+	// lightall stages only, see R_PomSilhouetteShaderReason)
+	if (tess.pomMode != POM_MODE_NONE && glslShaderGroup == tr.lightallShader)
+	{
+		if (backEnd.depthFill)
+			return RB_PomSilhouetteDepthProgram();
+		backEnd.pc.c_lightallDraws++;
+		return RB_PomSilhouetteLightallProgram(stage);
+	}
 
 	if (forceRefraction)
 	{
@@ -1700,6 +1842,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 {
 	Allocator& frameAllocator = *backEndData->perFrameMemory;
 	cullType_t cullType = RB_GetCullType(&backEnd.viewParms, backEnd.currentEntity, input->shader->cullType);
+	if (input->pomMode == POM_MODE_SHELL && (backEnd.viewParms.flags & VPF_DEPTHSHADOW) && cullType != CT_TWO_SIDED)
+	{
+		// silhouette POM shells cast the displaced sun facing side: no
+		// flipped culling (the base surface stays the back face caster)
+		cullType = (cullType == CT_FRONT_SIDED) ? CT_BACK_SIDED : CT_FRONT_SIDED;
+	}
 
 	vertexAttribute_t attribs[ATTR_INDEX_MAX] = {};
 	GL_VertexArraysToAttribs(attribs, ARRAY_LEN(attribs), vertexArrays);
@@ -1832,6 +1980,8 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 
 		sp = SelectShaderProgram(stage, pStage, pStage->glslShaderGroup, useAlphaTestGE192, forceRefraction);
 		assert(sp);
+		if (input->pomMode != POM_MODE_NONE)
+			stateBits = RB_PomSilhouetteStateBits(stateBits, qfalse);
 
 		uniformDataWriter.Start(sp);
 
@@ -2281,6 +2431,9 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			uniformDataWriter.SetUniformVec4(UNIFORM_ENABLETEXTURES, enableTextures);
 		}
 
+		if (input->pomMode != POM_MODE_NONE && pStage->glslShaderGroup == tr.lightallShader)
+			RB_PomSilhouetteSetupDraw(pStage, uniformDataWriter, samplerBindingsWriter, qfalse);
+
 		CaptureDrawData(input, pStage, index, stage);
 
 		const UniformBlockBinding uniformBlockBindings[] = {
@@ -2436,6 +2589,9 @@ void RB_StageIteratorGeneric( void )
 		//
 		if ( r_showtris->integer ) {
 			DrawTris( input, &vertexArrays );
+		}
+		if ( input->pomMode == POM_MODE_SHELL ) {
+			DrawPomSilhouetteDebug( input, &vertexArrays );
 		}
 		if ( r_shownormals->integer ) {
 			DrawNormals( input );

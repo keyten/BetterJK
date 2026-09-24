@@ -30,6 +30,10 @@ in vec4 attr_BoneWeights;
 in vec3 attr_LightDirection;
 #endif
 
+#if defined(USE_SILHOUETTE_POM)
+in vec3 attr_Position2;	// silhouette POM shell data, see pom_silhouette.glsl
+#endif
+
 layout(std140) uniform Camera
 {
 	mat4 u_viewProjectionMatrix;
@@ -106,6 +110,11 @@ out vec4 var_LightDir;
 #else
 out vec3 var_Position;
 out vec3 var_Normal;
+#endif
+
+#if defined(USE_SILHOUETTE_POM)
+out vec2 var_PomShell;
+flat out float var_PomHeader;
 #endif
 
 vec4 CalcColor(vec3 position)
@@ -365,6 +374,11 @@ void main()
 #else
 	var_Normal = normal;
 	var_Position = position;
+#endif
+
+#if defined(USE_SILHOUETTE_POM)
+	var_PomShell = attr_Position2.xy;
+	var_PomHeader = attr_Position2.z;
 #endif
 }
 
@@ -660,6 +674,15 @@ in vec4 var_LightDir;
 #else
 in vec3 var_Position;
 in vec3 var_Normal;
+#endif
+
+#if defined(USE_SILHOUETTE_POM)
+in vec2 var_PomShell;
+flat in float var_PomHeader;
+// texture gradients of the material maps: the foot point derivatives of the
+// shell fragment (the hit coordinate jumps at the displaced silhouette)
+vec2 g_pomGradX;
+vec2 g_pomGradY;
 #endif
 
 out vec4 out_Color;
@@ -1919,7 +1942,11 @@ vec3 CalcNormal( in vec3 vertexNormal, in vec4 vertexTangent, in vec2 texCoords 
 {
 #if defined(USE_NORMALMAP)
 	vec3 biTangent = vertexTangent.w * cross(vertexNormal, vertexTangent.xyz);
+#if defined(USE_SILHOUETTE_POM)
+	vec3 N = textureGrad(u_NormalMap, texCoords, g_pomGradX, g_pomGradY).agb - vec3(0.5);
+#else
 	vec3 N = texture(u_NormalMap, texCoords).agb - vec3(0.5);
+#endif
 	N.xy *= u_NormalScale.xy;
 	N.z = sqrt(clamp((0.25 - N.x * N.x) - N.y * N.y, 0.0, 1.0));
 	N = N.x * vertexTangent.xyz + N.y * biTangent + N.z * vertexNormal;
@@ -1929,6 +1956,73 @@ vec3 CalcNormal( in vec3 vertexNormal, in vec4 vertexTangent, in vec2 texCoords 
 #endif
 }
 
+#if defined(USE_SILHOUETTE_POM)
+// Silhouette POM (pom_silhouette.glsl): crossfade, ordinary POM for base
+// surfaces inside the crossfade band, ray / height field intersection for
+// shells. Returns the texture and lightmap coordinates and the view vector
+// (camera - surface point) of the virtual surface, writes gl_FragDepth.
+void PomSilhouetteFragment(inout vec2 texCoords, inout vec2 lmCoords, out vec3 viewDir,
+	out PomHit hit, out bool shell)
+{
+	vec3 position = u_ViewOrigin - var_ViewDir.xyz;
+	float viewDistance = length(var_ViewDir.xyz);
+	vec2 uvDx = dFdx(texCoords);
+	vec2 uvDy = dFdy(texCoords);
+	shell = PomIsShellDraw();
+	viewDir = var_ViewDir.xyz;
+	hit.hit = false;
+	hit.entryInside = false;
+	hit.uv = texCoords;
+	hit.lmUV = lmCoords;
+	hit.position = position;
+	hit.t = 0.0;
+	hit.samples = 0.0;
+
+	bool keep = PomFadeKeep(position, u_ViewOrigin, gl_FragCoord.xy, shell);
+	if (!shell)
+	{
+		vec3 tangentViewDir = vec3(var_LightDir.w, var_Normal.w, var_ViewDir.w);
+		texCoords += GetParallaxOffset(texCoords, tangentViewDir);
+		g_pomGradX = dFdx(texCoords);
+		g_pomGradY = dFdy(texCoords);
+		if (!keep)
+			discard;
+		gl_FragDepth = gl_FragCoord.z;
+		return;
+	}
+	if (!keep)
+		discard;
+
+	vec3 N = normalize(var_Normal.xyz);
+	vec3 T = normalize(var_Tangent.xyz - N * dot(N, var_Tangent.xyz));
+	vec3 B = cross(N, T) * var_Tangent.w;
+	vec3 rayDir = -var_ViewDir.xyz / viewDistance;
+	float parallaxDepth = u_NormalScale.a;
+	vec2 aspect = PomAspect(vec2(textureSize(u_NormalMap, 0)));
+	float pixelFootprint = viewDistance * 2.0 * length(u_ViewUp) / (u_ViewInfo.y * r_FBufScale.y);
+	PomGradients(PomIsWall(var_PomHeader), uvDx, uvDy, pixelFootprint, var_PomShell.y,
+		parallaxDepth, aspect, g_pomGradX, g_pomGradY);
+
+	hit = PomSilhouetteTrace(u_NormalMap, aspect, parallaxDepth, position, rayDir, texCoords,
+		var_PomShell.x, var_PomShell.y, PomHeaderTexel(var_PomHeader), T, B, N, g_pomGradX, g_pomGradY);
+	if (!hit.hit)
+	{
+		// r_pomSilhouetteDebug 6 keeps the pixels the ray missed
+		if (int(u_PomParams2.w) != 6)
+			discard;
+		gl_FragDepth = gl_FragCoord.z;
+		return;
+	}
+
+	texCoords = hit.uv;
+  #if defined(USE_LIGHTMAP)
+	lmCoords = hit.lmUV;
+  #endif
+	viewDir = u_ViewOrigin - hit.position;
+	gl_FragDepth = PomShellDepth(u_viewProjectionMatrix, hit.position, rayDir, viewDistance + hit.t);
+}
+#endif
+
 void main()
 {
 	vec3 viewDir, lightColor, ambientColor;
@@ -1936,21 +2030,33 @@ void main()
 
 	vec2 texCoords = var_TexCoords.xy;
 	vec2 lmCoords = var_TexCoords.zw;
+#if defined(USE_SILHOUETTE_POM)
+	vec3 pomViewDir;
+	PomHit pomHit;
+	bool pomShell;
+	PomSilhouetteFragment(texCoords, lmCoords, pomViewDir, pomHit, pomShell);
+#endif
 #if defined(USE_SSR) || defined(USE_SSGI)
-  #if defined(PER_PIXEL_LIGHTING)
+  #if defined(USE_SILHOUETTE_POM)
+	SSRWriteNone(u_ViewOrigin - pomViewDir);
+  #elif defined(PER_PIXEL_LIGHTING)
 	SSRWriteNone(u_ViewOrigin - var_ViewDir.xyz);
   #else
 	SSRWriteNone(var_Position);
   #endif
 #endif
-#if defined(PER_PIXEL_LIGHTING)
+#if defined(PER_PIXEL_LIGHTING) && !defined(USE_SILHOUETTE_POM)
 	// Unpack tangent view direction
 	vec3 tangentViewDir = vec3(var_LightDir.w, var_Normal.w, var_ViewDir.w);
 	vec2 tex_offset = GetParallaxOffset(texCoords, tangentViewDir);
 	texCoords += tex_offset;
 #endif
 
+#if defined(USE_SILHOUETTE_POM)
+	vec4 diffuse = textureGrad(u_DiffuseMap, texCoords, g_pomGradX, g_pomGradY);
+#else
 	vec4 diffuse = texture(u_DiffuseMap, texCoords);
+#endif
 	diffuse.a *= var_Color.a;
 #if defined(USE_ALPHA_TEST)
 	if (u_AlphaTestType == ALPHA_TEST_GT0)
@@ -1981,7 +2087,11 @@ void main()
 #endif
 
 #if defined(PER_PIXEL_LIGHTING)
+  #if defined(USE_SILHOUETTE_POM)
+	viewDir = pomViewDir;
+  #else
 	viewDir = var_ViewDir.xyz;
+  #endif
 	E = normalize(viewDir);
 	L = var_LightDir.xyz;
   #if defined(USE_DELUXEMAP)
@@ -2035,7 +2145,12 @@ void main()
   #endif
 	float sqrLightDist = max(dot(L, L), 1e-12);
 
+  #if defined(USE_SILHOUETTE_POM)
+	// the base surface normal: shell walls face other directions
+	vec3 vertexNormal = var_Normal.xyz * u_NormalScale.z;
+  #else
 	vec3 vertexNormal = mix(var_Normal.xyz, -var_Normal.xyz, float(gl_FrontFacing)) * u_NormalScale.z;
+  #endif
 	N = CalcNormal(vertexNormal, var_Tangent, texCoords);
 	L /= sqrt(sqrLightDist);
 
@@ -2100,7 +2215,11 @@ void main()
 	float roughness = 0.99;
   #if defined(USE_SPECULARMAP)
   #if !defined(USE_SPECGLOSS)
+    #if defined(USE_SILHOUETTE_POM)
+	vec4 ORMS = textureGrad(u_SpecularMap, texCoords, g_pomGradX, g_pomGradY);
+    #else
 	vec4 ORMS = texture(u_SpecularMap, texCoords);
+    #endif
 	ORMS.xyzw *= u_SpecularScale.zwxy;
 
 	specular.rgb = mix(vec3(0.08) * ORMS.w, diffuse.rgb, ORMS.z);
@@ -2109,7 +2228,11 @@ void main()
 	roughness = mix(0.01, 1.0, ORMS.y);
 	AO = min(ORMS.x, AO);
   #else
+    #if defined(USE_SILHOUETTE_POM)
+	specular = textureGrad(u_SpecularMap, texCoords, g_pomGradX, g_pomGradY);
+    #else
 	specular = texture(u_SpecularMap, texCoords);
+    #endif
 	specular.rgb *= u_SpecularScale.xyz;
 	roughness = mix(1.0, 0.01, specular.a * (1.0 - u_SpecularScale.w));
   #endif
@@ -2346,6 +2469,39 @@ void main()
 		return;
 	}
 
+  #if defined(USE_SILHOUETTE_POM)
+	// r_pomSilhouetteDebug 4-8, 10, 11 (1-3 are overlays, 9 is the crossfade
+	// split), written unlit (tone mapping is bypassed)
+	int pomDebug = int(u_PomParams2.w);
+	if (pomDebug >= 4 && pomDebug != 9)
+	{
+		float shade = 0.35 + 0.65 * NE;
+		bool pomWall = pomShell && PomIsWall(var_PomHeader);
+		vec3 debugColor;
+		if (pomDebug == 4)	// top cap green, walls orange, base surfaces in the crossfade band blue
+			debugColor = (pomShell ? (pomWall ? vec3(1.0, 0.55, 0.1) : vec3(0.2, 0.9, 0.3)) : vec3(0.3, 0.4, 1.0)) * shade;
+		else if (pomDebug == 5)	// pixels drawn through a boundary wall
+			debugColor = pomWall ? vec3(1.0, 0.15, 0.1) : vec3(0.3) * shade;
+		else if (pomDebug == 6)	// shell pixels the ray missed (discarded otherwise)
+			debugColor = (pomShell && !pomHit.hit) ? vec3(1.0, 0.0, 1.0) : vec3(0.3) * shade;
+		else if (pomDebug == 7)	// virtual hit distance, 32 unit bands
+			debugColor = PomHeatColor(fract(length(viewDir) / 32.0)) * shade;
+		else if (pomDebug == 8)	// height samples of the ray
+			debugColor = pomShell ? PomHeatColor(pomHit.samples / (u_PomParams.y + u_PomParams.z + 1.0)) : vec3(0.3) * shade;
+		else if (pomDebug == 10)	// linear view depth, 2048 units
+			debugColor = vec3(clamp(dot(-viewDir, normalize(u_ViewForward)) / 2048.0, 0.0, 1.0));
+		else	// material normal
+			debugColor = N * 0.5 + 0.5;
+		out_Color = vec4(debugColor, 1.0);
+		out_Glow = vec4(0.0, 0.0, 0.0, 1.0);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+  #endif
+
   #if defined(USE_SSAO)
 	// r_debugAO 7-9, written unlit (tone mapping is bypassed for these)
 	if (u_AOParams2.x >= 7.0)
@@ -2386,7 +2542,11 @@ void main()
 	vec3 emissive = vec3(0.0);
 	if (abs(u_EmissiveParams.w) == 1.0)
 	{
+#if defined(USE_SILHOUETTE_POM)
+		vec3 emissiveLinear = textureGrad(u_EmissiveMap, texCoords, g_pomGradX, g_pomGradY).rgb * u_EmissiveParams.rgb;
+#else
 		vec3 emissiveLinear = texture(u_EmissiveMap, texCoords).rgb * u_EmissiveParams.rgb;
+#endif
 #if defined(USE_SSGI)
 		ssgiEmissive = emissiveLinear;
 #endif

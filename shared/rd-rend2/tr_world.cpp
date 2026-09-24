@@ -341,8 +341,15 @@ static void R_AddWorldSurface(
 {
 	// FIXME: bmodel fog?
 
+	// silhouette POM (tr_pom_silhouette.cpp): the shell and / or the surface,
+	// POM_SURF_ORDINARY only for every other surface
+	int pomMode = R_PomSilhouetteSurfaceMode( surf );
+
 	// try to cull before dlighting or adding
-	if ( R_CullSurface( surf, entityNum ) ) {
+	if ( (pomMode & POM_SURF_ORDINARY) && R_CullSurface( surf, entityNum ) ) {
+		pomMode &= ~POM_SURF_ORDINARY;
+	}
+	if ( !pomMode ) {
 		return;
 	}
 
@@ -375,8 +382,14 @@ static void R_AddWorldSurface(
 		isPostRenderEntity = R_IsPostRenderEntity(entity);
 	}
 
-	R_AddDrawSurf( surf->data, entityNum, surf->shader, surf->fogIndex,
-			dlightBits, isPostRenderEntity, surf->cubemapIndex );
+	if ( pomMode & POM_SURF_ORDINARY ) {
+		R_AddDrawSurf( surf->data, entityNum, surf->shader, surf->fogIndex,
+				dlightBits, isPostRenderEntity, surf->cubemapIndex );
+	}
+	if ( pomMode & (POM_SURF_SHELL | POM_SURF_FADEBASE) ) {
+		R_PomSilhouetteAddDrawSurfs( surf, pomMode, entityNum, surf->fogIndex,
+				dlightBits, isPostRenderEntity, surf->cubemapIndex );
+	}
 
 	for ( int i = 0, numSprites = surf->numSurfaceSprites;
 			i < numSprites; ++i )

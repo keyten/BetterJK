@@ -2128,6 +2128,9 @@ static void R_CreateWorldVBOs( world_t *worldData )
 
 	startTime = ri.Milliseconds();
 
+	// silhouette POM shells are built from the packed vertices below
+	R_PomSilhouetteBeginWorld(worldData);
+
 	// count surfaces
 	numSortedSurfaces = 0;
 	for(surface = &worldData->surfaces[0]; surface < &worldData->surfaces[worldData->numsurfaces]; surface++)
@@ -2286,6 +2289,9 @@ static void R_CreateWorldVBOs( world_t *worldData )
 
 		R_CalcMikkTSpaceBSPSurface(numIndexes/3, verts, indexes);
 
+		for (currSurf = firstSurf; currSurf < lastSurf; currSurf++)
+			R_PomSilhouetteCollect(worldData, *currSurf, verts, indexes);
+
 		vbo = R_CreateVBO((byte *)verts, sizeof (packedVertex_t) * numVerts, VBO_USAGE_STATIC, va("%s_%i", worldData->baseName, k));
 		ibo = R_CreateIBO((byte *)indexes, numIndexes * sizeof (glIndex_t), VBO_USAGE_STATIC, va("%s_%i", worldData->baseName, k));
 
@@ -2340,6 +2346,8 @@ static void R_CreateWorldVBOs( world_t *worldData )
 	}
 
 	Z_Free(surfacesSorted);
+
+	R_PomSilhouetteFinishWorld(worldData);
 
 	endTime = ri.Milliseconds();
 	ri.Printf(PRINT_ALL, "world VBOs calculation time = %5.2f seconds\n", (endTime - startTime) / 1000.0);
@@ -3544,6 +3552,10 @@ static void R_MergeLeafSurfaces(world_t *worldData)
 			if(shader1->isSky)
 				continue;
 
+			// silhouette POM: drawn one by one (shell or base)
+			if(surf1->pomShell)
+				continue;
+
 			if(shader1->isPortal)
 				continue;
 
@@ -3578,6 +3590,9 @@ static void R_MergeLeafSurfaces(world_t *worldData)
 				shader2 = surf2->shader;
 
 				if (shader1 != shader2)
+					continue;
+
+				if (surf2->pomShell)
 					continue;
 
 				fogIndex2 = surf2->fogIndex;

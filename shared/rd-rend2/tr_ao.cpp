@@ -591,7 +591,8 @@ qboolean RB_AODebugBypassesToneMap( void )
 		(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9) ||
 		(r_autoPBRDebug->integer >= 1 && r_autoPBRDebug->integer <= 2) ||
 		(r_diffuseIBL->integer && r_diffuseIBLDebug->integer >= 1 && r_diffuseIBLDebug->integer <= 5) ||
-		RB_ForwardPlusDebugBypassesToneMap());
+		RB_ForwardPlusDebugBypassesToneMap() ||
+		RB_PomSilhouetteDebugBypassesToneMap());
 }
 
 // Full screen r_debugAO views of the AO buffers, drawn at the end of the post
