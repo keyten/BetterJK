@@ -433,6 +433,8 @@ cvar_t	*r_bloomSceneIntensity;
 
 cvar_t *r_debugContext;
 cvar_t *r_debugWeather;
+cvar_t *r_weatherCull;
+cvar_t *r_weatherDebugChunks;
 
 cvar_t	*r_aspectCorrectFonts;
 
@@ -1652,6 +1654,10 @@ void R_Register( void )
 
 	r_debugContext						= ri.Cvar_Get( "r_debugContext",			"0",		CVAR_LATCH, "" );
 	r_debugWeather						= ri.Cvar_Get( "r_debugWeather",			"0",		CVAR_ARCHIVE, "" );
+	r_weatherCull = ri.Cvar_Get("r_weatherCull", "1", CVAR_ARCHIVE,
+		"Cull weather chunks outside the camera frustum (0 draws all nine)");
+	r_weatherDebugChunks = ri.Cvar_Get("r_weatherDebugChunks", "0", 0,
+		"Draw weather chunk bounds and print mapping, visibility and particle counts (2 prints AABBs)");
 
 	r_picmip = ri.Cvar_Get ("r_picmip", "0", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	ri.Cvar_CheckRange( r_picmip, 0, 16, qtrue );

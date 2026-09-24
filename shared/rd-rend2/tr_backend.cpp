@@ -1123,9 +1123,26 @@ static void RB_DrawItems(
 	const DrawItem *drawItems,
 	uint32_t *drawOrder)
 {
+	// Weather update and render items are sorted into separate runs. Time the
+	// actual GPU submissions here, rather than their construction in
+	// RB_SurfaceWeather.
+	int weatherTimer = -1;
+	shaderProgram_t *timedWeatherProgram = nullptr;
 	for ( int i = 0; i < numDrawItems; ++i )
 	{
 		const DrawItem& drawItem = drawItems[drawOrder[i]];
+		shaderProgram_t *weatherProgram =
+			(drawItem.program == &tr.weatherUpdateShader ||
+			 drawItem.program == &tr.weatherShader) ? drawItem.program : nullptr;
+		if (weatherProgram != timedWeatherProgram)
+		{
+			RB_ScreenEndTimer(weatherTimer);
+			weatherTimer = weatherProgram == &tr.weatherUpdateShader ?
+				RB_ScreenBeginTimer("Weather simulation") :
+				weatherProgram == &tr.weatherShader ?
+				RB_ScreenBeginTimer("Weather draw") : -1;
+			timedWeatherProgram = weatherProgram;
+		}
 
 		if (drawItem.ibo != nullptr)
 			R_BindIBO(drawItem.ibo);
@@ -1188,6 +1205,7 @@ static void RB_DrawItems(
 			qglDisable(GL_RASTERIZER_DISCARD);
 		}
 	}
+	RB_ScreenEndTimer(weatherTimer);
 
 	GL_SetScreenAuxWrite(false);
 }
@@ -1557,8 +1575,15 @@ static void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs )
 	// Prepare memory for the current render pass
 	void *allocMark = backEndData->perFrameMemory->Mark();
 	assert(backEndData->currentPass == nullptr);
+	// A single SF_WEATHER surface can submit one simulation and nine draws per
+	// active type, plus nine bounds draws per type in the debug view.
+	const int weatherItemReserve =
+		backEndData->currentFrame->currentScene == 0 &&
+		backEnd.viewParms.viewParmType > VPT_POINT_SHADOWS ?
+			(r_weatherDebugChunks->integer ? 95 : 50) : 0;
 	backEndData->currentPass = RB_CreatePass(
-		*backEndData->perFrameMemory, numDrawSurfs * estimatedNumShaderStages);
+		*backEndData->perFrameMemory,
+		numDrawSurfs * estimatedNumShaderStages + weatherItemReserve);
 
 	// save original time for entity shader offsets
 	float originalTime = backEnd.refdef.floatTime;

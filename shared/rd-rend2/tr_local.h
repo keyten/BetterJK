@@ -3586,6 +3586,8 @@ extern cvar_t	*r_bloomSceneIntensity;
 
 extern cvar_t	*r_debugContext;
 extern cvar_t	*r_debugWeather;
+extern cvar_t	*r_weatherCull;
+extern cvar_t	*r_weatherDebugChunks;
 
 //====================================================================
 
@@ -3646,6 +3648,7 @@ qboolean R_CalcTangentVectors(srfVert_t * dv[3]);
 void R_LocalNormalToWorld (const vec3_t local, vec3_t world);
 void R_LocalPointToWorld (const vec3_t local, vec3_t world);
 int R_CullBox (vec3_t bounds[2]);
+int R_CullBoxView(vec3_t bounds[2], viewParms_t *viewParms);
 int R_CullLocalBox (vec3_t bounds[2]);
 int R_CullPointAndRadiusEx( const vec3_t origin, float radius, const cplane_t* frustum, int numPlanes );
 int R_CullPointAndRadius( const vec3_t origin, float radius );

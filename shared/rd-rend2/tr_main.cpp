@@ -495,19 +495,19 @@ R_CullBox
 Returns CULL_IN, CULL_CLIP, or CULL_OUT
 =================
 */
-int R_CullBox(vec3_t worldBounds[2]) {
+static int R_CullBoxForView(vec3_t worldBounds[2], viewParms_t *viewParms) {
 	int             i;
 	cplane_t       *frust;
 	qboolean        anyClip;
 	int             r, numPlanes;
 
-	numPlanes = (tr.viewParms.flags & VPF_FARPLANEFRUSTUM) ? 5 : 4;
+	numPlanes = (viewParms->flags & VPF_FARPLANEFRUSTUM) ? 5 : 4;
 
 	// check against frustum planes
 	anyClip = qfalse;
 	for(i = 0; i < numPlanes; i++)
 	{
-		frust = &tr.viewParms.frustum[i];
+		frust = &viewParms->frustum[i];
 
 		r = BoxOnPlaneSide(worldBounds[0], worldBounds[1], frust);
 
@@ -530,6 +530,16 @@ int R_CullBox(vec3_t worldBounds[2]) {
 
 	// partially clipped
 	return CULL_CLIP;
+}
+
+int R_CullBox(vec3_t worldBounds[2]) {
+	return R_CullBoxForView(worldBounds, &tr.viewParms);
+}
+
+int R_CullBoxView(vec3_t worldBounds[2], viewParms_t *viewParms) {
+	if (r_nocull->integer)
+		return CULL_CLIP;
+	return R_CullBoxForView(worldBounds, viewParms);
 }
 
 /*

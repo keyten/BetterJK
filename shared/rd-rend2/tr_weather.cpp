@@ -22,6 +22,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <utility>
 #include <vector>
 #include <cmath>
+#include <chrono>
+#include <algorithm>
 
 // Cached to save test tume
 int CurrentWeatherBrushIndex;
@@ -95,6 +97,10 @@ namespace
 			sizeof(rainVertex_t) * rainVertices.size(),
 			VBO_USAGE_XFB, "Weather_pong");
 		ws.vboLastUpdateFrame = 0;
+		VectorSet2(ws.maxHorizontalVelocity, 0.0f, 0.0f);
+		ws.minDownwardVelocity = 0.0f;
+		ws.maxVerticalVelocity = 0.0f;
+		ws.velocityBoundsReliable = true;
 
 		ws.attribsTemplate[0].index = ATTR_INDEX_POSITION;
 		ws.attribsTemplate[0].numComponents = 3;
@@ -409,7 +415,7 @@ namespace
 		R_NewFrameSync();
 	}
 
-	void RB_SimulateWeather(weatherObject_t *ws, vec2_t *zoneOffsets, int zoneIndex)
+	void RB_SimulateWeather(weatherObject_t *ws)
 	{
 		if (ws->vboLastUpdateFrame == backEndData->realFrameNumber ||
 			tr.weatherSystem->frozen)
@@ -454,6 +460,31 @@ namespace
 			tr.weatherSystem->windDirection[1] * frictionInverse,
 			-ws->gravity * frictionInverse
 		};
+		// Mirror the update shader's velocity mix, including the XY reset on
+		// respawn. These are bounds, not copies of per-particle state.
+		const float deltaTime = backEnd.refdef.frameTime;
+		const float mixFactor = deltaTime * 0.002f;
+		if (!std::isfinite(mixFactor) || mixFactor < 0.0f || mixFactor > 1.0f ||
+			!std::isfinite(envForce[0]) || !std::isfinite(envForce[1]) ||
+			!std::isfinite(envForce[2]) || envForce[2] > 0.0f)
+		{
+			ws->velocityBoundsReliable = false;
+		}
+		else if (ws->velocityBoundsReliable)
+		{
+			for (int axis = 0; axis < 2; ++axis)
+			{
+				const float force = std::fabs(envForce[axis]);
+				ws->maxHorizontalVelocity[axis] = std::max(force,
+					(1.0f - mixFactor) * ws->maxHorizontalVelocity[axis] +
+					mixFactor * force);
+			}
+			ws->minDownwardVelocity =
+				(1.0f - mixFactor) * ws->minDownwardVelocity +
+				mixFactor * std::fabs(envForce[2]);
+			ws->maxVerticalVelocity = std::max(ws->maxVerticalVelocity,
+				std::fabs(envForce[2]));
+		}
 		vec4_t randomOffset = {
 			Q_flrand(-4.0f, 4.0f),
 			Q_flrand(-4.0f, 4.0f),
@@ -463,8 +494,6 @@ namespace
 		uniformDataWriter.SetUniformVec2(UNIFORM_MAPZEXTENTS, mapZExtents);
 		uniformDataWriter.SetUniformVec3(UNIFORM_ENVFORCE, envForce);
 		uniformDataWriter.SetUniformVec4(UNIFORM_RANDOMOFFSET, randomOffset);
-		uniformDataWriter.SetUniformVec2(UNIFORM_ZONEOFFSET, (float*)zoneOffsets, 9);
-		uniformDataWriter.SetUniformInt(UNIFORM_CHUNK_PARTICLES, ws->particleCount);
 
 		item.uniformData = uniformDataWriter.Finish(*backEndData->perFrameMemory);
 
@@ -489,6 +518,81 @@ namespace
 		ws->vboLastUpdateFrame = backEndData->realFrameNumber;
 		std::swap(ws->lastVBO, ws->vbo);
 	}
+
+	struct weatherDebugVertex_t
+	{
+		vec3_t position;
+		vec4_t texcoord;
+	};
+
+	VBO_t *CreateWeatherBoundsVBO()
+	{
+		const int edges[12][2] = {
+			{0, 1}, {2, 3}, {4, 5}, {6, 7},
+			{0, 2}, {1, 3}, {4, 6}, {5, 7},
+			{0, 4}, {1, 5}, {2, 6}, {3, 7}
+		};
+		weatherDebugVertex_t vertices[24] = {};
+		for (int edge = 0; edge < 12; ++edge)
+		{
+			for (int end = 0; end < 2; ++end)
+			{
+				weatherDebugVertex_t& vertex = vertices[edge * 2 + end];
+				const int corner = edges[edge][end];
+				for (int axis = 0; axis < 3; ++axis)
+					vertex.position[axis] = (corner & (1 << axis)) ? 1.0f : -1.0f;
+			}
+		}
+		return R_CreateVBO((byte *)vertices,
+			sizeof(vertices), VBO_USAGE_STATIC, "Weather_chunk_bounds");
+	}
+
+	void RB_AddWeatherBounds(const vec3_t bounds[2], const vec4_t color)
+	{
+		VBO_t *boundsVBO = tr.weatherSystem->debugBoundsVBO;
+
+		matrix_t boxModel, viewProjection, mvp;
+		Matrix16Identity(boxModel);
+		for (int axis = 0; axis < 3; ++axis)
+		{
+			boxModel[axis * 5] = (bounds[1][axis] - bounds[0][axis]) * 0.5f;
+			boxModel[12 + axis] = (bounds[0][axis] + bounds[1][axis]) * 0.5f;
+		}
+		Matrix16Multiply(backEnd.viewParms.projectionMatrix,
+			backEnd.viewParms.world.modelViewMatrix, viewProjection);
+		Matrix16Multiply(viewProjection, boxModel, mvp);
+
+		Allocator& frameAllocator = *backEndData->perFrameMemory;
+		DrawItem item = {};
+		item.program = &tr.textureColorShader[TEXCOLORDEF_USE_VERTICES];
+		item.renderState.stateBits = GLS_DEPTHTEST_DISABLE |
+			GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
+		item.renderState.cullType = CT_TWO_SIDED;
+		item.renderState.depthRange = { 0.0f, 1.0f };
+		const vertexAttribute_t attributes[] = {
+			{ boundsVBO, ATTR_INDEX_POSITION, 3, GL_FALSE, GL_FLOAT,
+				GL_FALSE, sizeof(weatherDebugVertex_t), offsetof(weatherDebugVertex_t, position), 0 },
+			{ boundsVBO, ATTR_INDEX_TEXCOORD0, 4, GL_FALSE, GL_FLOAT,
+				GL_FALSE, sizeof(weatherDebugVertex_t), offsetof(weatherDebugVertex_t, texcoord), 0 }
+		};
+		DrawItemSetVertexAttributes(item, attributes, ARRAY_LEN(attributes), frameAllocator);
+
+		UniformDataWriter uniforms;
+		uniforms.Start(item.program);
+		uniforms.SetUniformMatrix4x4(UNIFORM_MODELVIEWPROJECTIONMATRIX, mvp);
+		uniforms.SetUniformVec4(UNIFORM_COLOR, color);
+		item.uniformData = uniforms.Finish(frameAllocator);
+		SamplerBindingsWriter samplers;
+		samplers.AddStaticImage(tr.whiteImage, TB_DIFFUSEMAP);
+		item.samplerBindings = samplers.Finish(frameAllocator, &item.numSamplerBindings);
+
+		item.draw.type = DRAW_COMMAND_ARRAYS;
+		item.draw.numInstances = 1;
+		item.draw.primitiveType = GL_LINES;
+		item.draw.params.arrays.numVertices = 24;
+		RB_AddDrawItem(backEndData->currentPass,
+			RB_CreateSortKey(item, 15, SS_SEE_THROUGH), item);
+	}
 }
 
 void R_InitWeatherForMap()
@@ -504,6 +608,7 @@ void R_InitWeatherSystem()
 	Com_Printf("Initializing weather system\n");
 	tr.weatherSystem =
 		(weatherSystem_t *)R_Malloc(sizeof(*tr.weatherSystem), TAG_R_TERRAIN, qtrue);
+	tr.weatherSystem->debugBoundsVBO = CreateWeatherBoundsVBO();
 	tr.weatherSystem->weatherSurface.surfaceType = SF_WEATHER;
 	tr.weatherSystem->frozen = false;
 	tr.weatherSystem->shaking = false;
@@ -1150,6 +1255,14 @@ void R_AddWeatherSurfaces()
 
 void RB_SurfaceWeather( srfWeather_t *surf )
 {
+	const bool measureWeather = r_speeds->integer == 100;
+	const auto cpuStart = measureWeather ? std::chrono::steady_clock::now() :
+		std::chrono::steady_clock::time_point{};
+	int simulationVertices = 0;
+	int renderedVertices = 0;
+	int weatherDrawCalls = 0;
+	int culledChunks = 0;
+
 	assert(tr.weatherSystem);
 
 	weatherSystem_t& ws = *tr.weatherSystem;
@@ -1166,9 +1279,7 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 	float centerZoneOffsetY =
 		std::floor((viewOrigin[1] / CHUNK_EXTENDS) + 0.5f);
 
-	vec2_t zoneOffsets[9];
 	GLint  zoneMapping[9];
-	int		centerZoneIndex;
 	{
 		int chunkIndex = 0;
 		int currentIndex = 0;
@@ -1178,13 +1289,7 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 			{
 				chunkIndex  = ((int(centerZoneOffsetX + numMinZonesX) + x + 1) % 3 + 3) % 3;
 				chunkIndex += (((int(centerZoneOffsetY + numMinZonesY) + y + 1) % 3 + 3) % 3) * 3;
-				VectorSet2(
-					zoneOffsets[chunkIndex],
-					x,
-					y);
 				zoneMapping[currentIndex] = chunkIndex;
-				if (x == 0 && y == 0)
-					centerZoneIndex = currentIndex;
 			}
 		}
 	}
@@ -1212,7 +1317,10 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 				tr.weatherSystem->weatherSlots[weatherType],
 				maxWeatherTypeParticles[weatherType]);
 
-		RB_SimulateWeather(weatherObject, &zoneOffsets[0], centerZoneIndex);
+		if (weatherObject->vboLastUpdateFrame != backEndData->realFrameNumber &&
+			!tr.weatherSystem->frozen)
+			simulationVertices += weatherObject->particleCount * CHUNK_COUNT;
+		RB_SimulateWeather(weatherObject);
 
 		vec4_t viewInfo = {
 			weatherObject->size[0],
@@ -1248,47 +1356,124 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		item.draw.primitiveType = GL_POINTS;
 		item.draw.params.arrays.numVertices = weatherObject->particleCount;
 
-		//TODO: Cull non visable zones
+		const byte currentFrameScene = backEndData->currentFrame->currentScene;
+		const GLuint currentFrameUbo = backEndData->currentFrame->ubo[currentFrameScene];
+		const UniformBlockBinding uniformBlockBindings[] = {
+			{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA }
+		};
+		DrawItemSetUniformBlockBindings(item, uniformBlockBindings, frameAllocator);
+
+		SamplerBindingsWriter samplerBindingsWriter;
+		samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_SHADOWMAP);
+		samplerBindingsWriter.AddStaticImage(
+			weatherObject->drawImage != nullptr ? weatherObject->drawImage : tr.whiteImage,
+			TB_DIFFUSEMAP);
+		item.samplerBindings = samplerBindingsWriter.Finish(
+			frameAllocator, &item.numSamplerBindings);
+
+		// The update shader now wraps local XY at +/-1000, so every VBO slot
+		// stays inside its nominal zone even when the camera remaps the slots.
+		// Expand that box by the geometry shader's width and velocity tilt.
+		const float streakHeight = std::fabs(weatherObject->size[1]);
+		const float streakWidth = std::fabs(weatherObject->size[0]);
+		const float verticalVelocity = std::max(0.00001f,
+			weatherObject->minDownwardVelocity *
+			std::fabs(weatherObject->velocityOrientationScale));
+		const float tiltX = weatherObject->velocityOrientationScale != 0.0f ?
+			streakHeight * weatherObject->maxHorizontalVelocity[0] / verticalVelocity : 0.0f;
+		const float tiltY = weatherObject->velocityOrientationScale != 0.0f ?
+			streakHeight * weatherObject->maxHorizontalVelocity[1] / verticalVelocity : 0.0f;
+		const float marginX = streakWidth + tiltX + 8.0f;
+		const float marginY = streakWidth + tiltY + 8.0f;
+		const float marginZ = streakHeight + 8.0f +
+			weatherObject->maxVerticalVelocity * 50.0f;
+		const float mapHeight = tr.world->bmodels[0].bounds[1][2] -
+			tr.world->bmodels[0].bounds[0][2];
+		const bool canCull = r_weatherCull->integer != 0 &&
+			weatherObject->velocityBoundsReliable &&
+			std::isfinite(centerZoneOffsetX) && std::isfinite(centerZoneOffsetY) &&
+			std::isfinite(mapHeight) &&
+			std::isfinite(marginX) && std::isfinite(marginY) &&
+			std::isfinite(marginZ) &&
+			mapHeight > weatherObject->maxVerticalVelocity * 50.0f;
+		const bool debugChunks = r_weatherDebugChunks->integer != 0 &&
+			backEndData->realFrameNumber % 60 == 0;
+		if (debugChunks)
+			ri.Printf(PRINT_ALL,
+			"Weather type %d: 3x3 zones (center *), slot, culling, rendered particles\n",
+			weatherType);
 		int currentIndex = 0;
 		for (int y = -1; y <= 1; ++y)
 		{
 			for (int x = -1; x <= 1; ++x, ++currentIndex)
 			{
-				const byte currentFrameScene = backEndData->currentFrame->currentScene;
-				const GLuint currentFrameUbo = backEndData->currentFrame->ubo[currentFrameScene];
-				const UniformBlockBinding uniformBlockBindings[] = {
-					{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA }
+				const float zoneX = (centerZoneOffsetX + x) * CHUNK_EXTENDS;
+				const float zoneY = (centerZoneOffsetY + y) * CHUNK_EXTENDS;
+				vec3_t bounds[2] = {
+					{ zoneX - HALF_CHUNK_EXTENDS - marginX,
+					  zoneY - HALF_CHUNK_EXTENDS - marginY,
+					  tr.world->bmodels[0].bounds[0][2] - marginZ },
+					{ zoneX + HALF_CHUNK_EXTENDS + marginX,
+					  zoneY + HALF_CHUNK_EXTENDS + marginY,
+					  tr.world->bmodels[0].bounds[1][2] + marginZ }
 				};
-				DrawItemSetUniformBlockBindings(
-					item, uniformBlockBindings, frameAllocator);
+				const bool culled = canCull &&
+					R_CullBoxView(bounds, &backEnd.viewParms) == CULL_OUT;
+				if (debugChunks)
+				{
+					const char *status = canCull ? (culled ? "culled" : "visible") :
+						(r_weatherCull->integer ? "fallback" : "disabled");
+					ri.Printf(PRINT_ALL, "  %c(%+d,%+d) slot %d %s %d particles\n",
+						x == 0 && y == 0 ? '*' : ' ', x, y,
+						zoneMapping[currentIndex], status,
+						culled ? 0 : weatherObject->particleCount);
+					if (r_weatherDebugChunks->integer >= 2)
+						ri.Printf(PRINT_ALL,
+						"    AABB (%.1f %.1f %.1f) - (%.1f %.1f %.1f)\n",
+						bounds[0][0], bounds[0][1], bounds[0][2],
+						bounds[1][0], bounds[1][1], bounds[1][2]);
+				}
+				if (r_weatherDebugChunks->integer != 0)
+				{
+					const vec4_t visibleColor = { 0.1f, 0.9f, 0.2f, 0.65f };
+					const vec4_t culledColor = { 0.95f, 0.15f, 0.1f, 0.65f };
+					const vec4_t centerColor = { 1.0f, 0.9f, 0.1f, 0.9f };
+					RB_AddWeatherBounds(bounds, x == 0 && y == 0 ? centerColor :
+						culled ? culledColor : visibleColor);
+				}
+				if (culled)
+				{
+					++culledChunks;
+					continue;
+				}
 
 				UniformDataWriter uniformDataWriter;
 				uniformDataWriter.Start(&tr.weatherShader);
 				uniformDataWriter.SetUniformVec2(
 					UNIFORM_ZONEOFFSET,
-					(centerZoneOffsetX + x) * CHUNK_EXTENDS,
-					(centerZoneOffsetY + y) * CHUNK_EXTENDS);
+					zoneX, zoneY);
 				uniformDataWriter.SetUniformVec4(UNIFORM_COLOR, weatherObject->color);
 				uniformDataWriter.SetUniformVec4(UNIFORM_VIEWINFO, viewInfo);
 				uniformDataWriter.SetUniformMatrix4x4(UNIFORM_SHADOWMVP, tr.weatherSystem->weatherMVP);
 				item.uniformData = uniformDataWriter.Finish(*backEndData->perFrameMemory);
 
-				SamplerBindingsWriter samplerBindingsWriter;
-				samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_SHADOWMAP);
-				if (weatherObject->drawImage != NULL)
-					samplerBindingsWriter.AddStaticImage(weatherObject->drawImage, TB_DIFFUSEMAP);
-				else
-					samplerBindingsWriter.AddStaticImage(tr.whiteImage, TB_DIFFUSEMAP);
-
-				item.samplerBindings = samplerBindingsWriter.Finish(
-					frameAllocator, &item.numSamplerBindings);
-
 				item.draw.params.arrays.firstVertex = weatherObject->particleCount * zoneMapping[currentIndex];
 
 				uint32_t key = RB_CreateSortKey(item, 15, SS_SEE_THROUGH);
 				RB_AddDrawItem(backEndData->currentPass, key, item);
+				weatherDrawCalls++;
+				renderedVertices += item.draw.params.arrays.numVertices;
 			}
 		}
+	}
+	if (measureWeather)
+	{
+		const double cpuMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - cpuStart).count();
+		ri.Printf(PRINT_ALL,
+			"Weather: %d draws, %d culled chunks, %d render vertices, %d TF vertices, "
+			"RB_SurfaceWeather %.3f ms CPU\n",
+			weatherDrawCalls, culledChunks, renderedVertices, simulationVertices, cpuMs);
 	}
 }
 

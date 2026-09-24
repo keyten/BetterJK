@@ -50,6 +50,10 @@ struct weatherObject_t
 	VBO_t *vbo;
 	unsigned vboLastUpdateFrame;
 	vertexAttribute_t attribsTemplate[2];
+	float maxHorizontalVelocity[2];
+	float minDownwardVelocity;
+	float maxVerticalVelocity;
+	bool velocityBoundsReliable;
 
 	bool active;
 
@@ -92,6 +96,7 @@ enum weatherBrushType_t
 struct weatherSystem_t
 {
 	weatherObject_t weatherSlots[NUM_WEATHER_TYPES];
+	VBO_t *debugBoundsVBO;
 	windObject_t windSlots[MAX_WINDOBJECTS];
 	weatherBrushes_t weatherBrushes[MAX_WEATHER_ZONES * 2];
 	weatherBrushType_t weatherBrushType = WEATHER_BRUSHES_NONE;

@@ -14,8 +14,6 @@ layout(std140) uniform Scene
 uniform vec2 u_MapZExtents;
 uniform vec3 u_EnvForce;
 uniform vec4 u_RandomOffset;
-uniform vec2 u_ZoneOffset[9];
-uniform int u_ChunkParticles;
 
 in vec3 attr_Position;
 in vec3 attr_Color;
@@ -25,7 +23,6 @@ out vec3 var_Velocity;
 
 const float CHUNK_EXTENDS = 2000.0;
 const float HALF_CHUNK_EXTENDS = CHUNK_EXTENDS * 0.5;
-const float THREE_HALF_CHUNK_EXTENDS = 3.0 * HALF_CHUNK_EXTENDS;
 
 vec3 NewParticleZPosition( in vec3 in_position )
 {
@@ -49,16 +46,8 @@ void main()
 		var_Velocity.xy = u_EnvForce.xy;
 	}
 
-	int zone = gl_VertexID / u_ChunkParticles;
-	vec2 zoneOffset = u_ZoneOffset[zone] * CHUNK_EXTENDS;
-	vec2 sim_Position = var_Position.xy + zoneOffset;
-
-	if (any(greaterThan(abs(sim_Position).xy, vec2(THREE_HALF_CHUNK_EXTENDS))))
-	{
-		vec2 signs = sign(sim_Position.xy);
-		vec2 absPos = abs(sim_Position.xy) + vec2(THREE_HALF_CHUNK_EXTENDS);
-		sim_Position.xy = -signs * (THREE_HALF_CHUNK_EXTENDS - mod(absPos, 3.0 * CHUNK_EXTENDS));
-
-		var_Position.xy = sim_Position - zoneOffset;
-	}
+	// Keep each physical VBO slot within its own chunk. The CPU can then
+	// frustum-cull that slot without changing its particle identity or update.
+	var_Position.xy = mod(var_Position.xy + vec2(HALF_CHUNK_EXTENDS),
+		vec2(CHUNK_EXTENDS)) - vec2(HALF_CHUNK_EXTENDS);
 }
