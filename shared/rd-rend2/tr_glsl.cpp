@@ -131,6 +131,8 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_MaterialDebug",  GLSL_VEC4, 1 },
 	{ "u_FoliageDebug",   GLSL_VEC4, 1 },
 	{ "u_AutoGrass",      GLSL_VEC4, 1 },
+	{ "u_FoliageWind",    GLSL_VEC4, 1 },
+	{ "u_FoliageWindParams", GLSL_VEC4, 1 },
 	{ "u_DiffuseBRDF",    GLSL_INT,  1 },
 	{ "u_ParallaxBias",  GLSL_FLOAT, 1 },
 

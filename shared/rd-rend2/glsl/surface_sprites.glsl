@@ -51,6 +51,12 @@ uniform vec3 u_SpriteViewUp;
 uniform vec4 u_AutoGrass;
 #endif
 
+// r_foliageWind: x, y = unit wind direction, z = strength, w = speed
+uniform vec4 u_FoliageWind;
+// x = mode (0 legacy sway, 1 coherent breeze), y = debug color mode,
+// z = frozen time (seconds), w = 1 when the time is frozen
+uniform vec4 u_FoliageWindParams;
+
 #if defined(VELOCITY_PASS)
 layout(std140) uniform TemporalInfo
 {
@@ -89,7 +95,82 @@ vec2 AutoGrassCardDir()
 }
 #endif
 
-vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fadeScale)
+#if !defined(FACE_UP) && !defined(FX_SPRITE)
+// Lattice hash, wrapped to 1024 cells so large world coordinates stay exact
+float WindHash(in ivec2 cell)
+{
+	uint h = uint(cell.x & 1023) | (uint(cell.y & 1023) << 10u);
+	h *= 2654435761u;
+	h ^= h >> 15u;
+	h *= 2246822519u;
+	h ^= h >> 13u;
+	return float(h) * (1.0 / 4294967295.0);
+}
+
+// Smooth value noise in [0, 1]
+float WindNoise(in vec2 x)
+{
+	vec2 i = floor(x);
+	vec2 f = x - i;
+	f = f * f * (3.0 - 2.0 * f);
+	ivec2 c = ivec2(i);
+	float a = WindHash(c);
+	float b = WindHash(c + ivec2(1, 0));
+	float d = WindHash(c + ivec2(0, 1));
+	float e = WindHash(c + ivec2(1, 1));
+	return mix(mix(a, b, f.x), mix(d, e, f.x), f.y);
+}
+
+// debug output of the last FoliageWind evaluation
+float g_WindGust = 0.0;
+vec2 g_WindBend = vec2(0.0);
+
+// r_foliageWind 1: coherent breeze.  A pure function of the sprite anchor, its
+// stable random seed and time; no camera or instance input, so all cards of a
+// tuft, the shadow views and both velocity frames get the same displacement.
+// Returns the offset of the upper vertices.
+vec3 FoliageWind(in vec2 anchor, in float seed, in float t, in float height)
+{
+	vec2 dir = u_FoliageWind.xy;
+	vec2 side = vec2(-dir.y, dir.x);
+	float tw = t * u_FoliageWind.w;
+
+	// gust field scrolling downwind: patchy ~512u swells (value noise) moving
+	// ~60u/s, plus ~180u gust fronts moving ~70u/s whose crests are bent
+	// sideways so they don't form straight rows
+	float along = dot(anchor, dir);
+	float across = dot(anchor, side);
+	float gustL = WindNoise(anchor * (1.0 / 512.0) - dir * (tw * 0.12));
+	float gustS = sin(along * 0.035 - tw * 2.45 + 1.3 * sin(across * 0.013 + tw * 0.21));
+	float gust = max(0.25 + 0.75 * gustL + 0.18 * gustS, 0.0);
+
+	// the blade leans downwind and bobs with a ripple travelling along the wind
+	// (~125u, ~0.5Hz, small per blade phase offset); a faint cross wind flutter
+	// at a per blade rate breaks up the rows
+	float ripple = sin(tw * 3.0 - along * 0.05 + seed * 1.5);
+	float lean = gust * (0.6 + 0.3 * ripple);
+	float flutter = 0.2 * gust * sin(tw * (4.5 + 2.0 * seed) + seed * 6.2832);
+	g_WindGust = gustL;
+	g_WindBend = vec2(lean, flutter);
+
+	float h = abs(height);
+	vec2 disp = (dir * lean + side * flutter) * (h * 0.12 * u_FoliageWind.z * u_WindIdle);
+
+	// keep extreme ssWind values sane, then bend instead of stretching: pull
+	// the tip back towards the anchor height
+	float len2 = dot(disp, disp);
+	float maxLen = 0.5 * h;
+	if (len2 > maxLen * maxLen)
+	{
+		disp *= maxLen * inversesqrt(len2);
+		len2 = maxLen * maxLen;
+	}
+	float drop = len2 / (2.0 * max(h, 1.0));
+	return vec3(disp, -drop * sign(height));
+}
+#endif
+
+vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float wind_time, in float fadeScale)
 {
 	float width = attr_Position2.x;
 	float height = attr_Position2.y;
@@ -151,9 +232,17 @@ vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fad
 #if !defined(FACE_UP) && !defined(FX_SPRITE)
 	float isLowerVertex = float(offset.z == 0.0);
 	offset.xy += mix(skew, vec2(0.0), isLowerVertex);
-	float angle = (attr_Position.x + attr_Position.y) * 0.02 + (sprite_time * 0.0015);
-	float windsway = mix(height* u_WindIdle * 0.075, 0.0, isLowerVertex);
-	offset.xy += vec2(cos(angle), sin(angle)) * windsway;
+	if (u_FoliageWindParams.x < 0.5)
+	{
+		float angle = (attr_Position.x + attr_Position.y) * 0.02 + (sprite_time * 0.0015);
+		float windsway = mix(height* u_WindIdle * 0.075, 0.0, isLowerVertex);
+		offset.xy += vec2(cos(angle), sin(angle)) * windsway;
+	}
+	else if (u_WindIdle > 0.0)
+	{
+		vec3 wind = FoliageWind(attr_Position.xy, attr_Position.w, wind_time, height);
+		offset += wind * (1.0 - isLowerVertex);
+	}
 #endif
 	return offset;
 }
@@ -187,8 +276,15 @@ void main()
 #endif
 
 	float sprite_time = u_frameTime * 1000.0;
+	// r_foliageWindDebug 3 freezes the breeze in both frames
+	bool windFrozen = u_FoliageWindParams.w > 0.5;
+	float wind_time = windFrozen ? u_FoliageWindParams.z : u_frameTime;
 	int vertex_id = gl_VertexID % 4;
-	vec3 offset = CalculateVertexOffset(vertex_id, sprite_time, fadeScale);
+	vec3 offset = CalculateVertexOffset(vertex_id, sprite_time, wind_time, fadeScale);
+#if !defined(FACE_UP) && !defined(FX_SPRITE)
+	float windGust = g_WindGust;
+	vec2 windBend = g_WindBend;
+#endif
 
 	vec4 worldPos = vec4(attr_Position.xyz + offset, 1.0);
 	gl_Position = u_viewProjectionMatrix * worldPos;
@@ -199,7 +295,8 @@ void main()
 #if defined(VELOCITY_PASS)
 	var_Position = gl_Position;
 	sprite_time = u_previousFrameTime * 1000.0;
-	offset = CalculateVertexOffset(vertex_id, sprite_time, fadeScale);
+	wind_time = windFrozen ? u_FoliageWindParams.z : u_previousFrameTime;
+	offset = CalculateVertexOffset(vertex_id, sprite_time, wind_time, fadeScale);
 	worldPos = vec4(attr_Position.xyz + offset, 1.0);
 	var_prevPosition = u_previousViewProjectionMatrix * worldPos;
 #endif
@@ -213,6 +310,24 @@ void main()
 	var_TexCoords = texcoords[vertex_id];
 	var_Color = attr_Color;
 	var_Alpha = 1.0 - fadeScale;
+
+#if !defined(FACE_UP) && !defined(FX_SPRITE)
+	if (u_FoliageWindParams.x > 0.5 && u_FoliageWindParams.y > 0.5)
+	{
+		if (u_FoliageWindParams.y < 3.0)
+		{
+			// red = downwind lean, green = cross wind flutter, blue = calm;
+			// sprites without ssWind stay dark blue
+			float lean = clamp(windBend.x * u_WindIdle * u_FoliageWind.z, 0.0, 1.0);
+			var_Color = vec3(lean, 0.5 + 2.0 * windBend.y * u_WindIdle * u_FoliageWind.z, 1.0 - lean);
+		}
+		else
+		{
+			// large gust wave
+			var_Color = vec3(windGust);
+		}
+	}
+#endif
 
 #if defined(AUTO_GRASS)
 	var_Alpha *= 1.0 - cardFade;

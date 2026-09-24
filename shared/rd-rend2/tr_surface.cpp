@@ -2785,6 +2785,31 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 
 	if (shaderFlags & SSDEF_AUTO_GRASS)
 		uniformDataWriter.SetUniformVec4(UNIFORM_AUTOGRASS, autoGrass);
+
+	// r_foliageWind: global breeze.  The shader evaluates it from the sprite
+	// anchor, seed and time only, so every pass and both velocity frames agree.
+	{
+		static float frozenTime = -1.0f;
+		const int windDebug = r_foliageWindDebug->integer;
+		if (windDebug != 3)
+			frozenTime = -1.0f;
+		else if (frozenTime < 0.0f)
+			frozenTime = backEnd.refdef.floatTime;
+
+		const float yaw = DEG2RAD(r_foliageWindDirection->value);
+		vec4_t foliageWind = {
+			cosf(yaw), sinf(yaw),
+			r_foliageWindStrength->value * (windDebug == 1 ? 4.0f : 1.0f),
+			r_foliageWindSpeed->value };
+		vec4_t foliageWindParams = {
+			(float)r_foliageWind->integer, 0.0f,
+			MAX(frozenTime, 0.0f), (windDebug == 3) ? 1.0f : 0.0f };
+		if ((windDebug == 2 || windDebug == 4) &&
+			!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
+			foliageWindParams[1] = (float)windDebug;
+		uniformDataWriter.SetUniformVec4(UNIFORM_FOLIAGEWIND, foliageWind);
+		uniformDataWriter.SetUniformVec4(UNIFORM_FOLIAGEWINDPARAMS, foliageWindParams);
+	}
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWORIGIN, *spriteViewOrigin);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWLEFT, *spriteViewLeft);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWUP, *spriteViewUp);

@@ -274,6 +274,11 @@ cvar_t  *r_autoGrass;
 cvar_t  *r_autoGrassDebug;
 cvar_t  *r_autoGrassLodDist;
 cvar_t  *r_autoGrassWidth;
+cvar_t  *r_foliageWind;
+cvar_t  *r_foliageWindStrength;
+cvar_t  *r_foliageWindSpeed;
+cvar_t  *r_foliageWindDirection;
+cvar_t  *r_foliageWindDebug;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 cvar_t  *r_diffuseIBL;
@@ -1953,6 +1958,21 @@ void R_Register( void )
 	r_autoGrassWidth = ri_Cvar_Get_NoComm( "r_autoGrassWidth", "1", CVAR_ARCHIVE,
 		"r_autoGrass: width scale of the cards" );
 	ri.Cvar_CheckRange( r_autoGrassWidth, 0.25f, 2.0f, qfalse );
+	r_foliageWind = ri_Cvar_Get_NoComm( "r_foliageWind", "0", CVAR_ARCHIVE,
+		"Surface sprite wind: 0 = legacy circular sway, 1 = coherent breeze (gusts travelling downwind)" );
+	ri.Cvar_CheckRange( r_foliageWind, 0, 1, qtrue );
+	r_foliageWindStrength = ri_Cvar_Get_NoComm( "r_foliageWindStrength", "1", CVAR_ARCHIVE,
+		"r_foliageWind 1: global strength, multiplied by the ssWind / ssWindIdle of the material" );
+	ri.Cvar_CheckRange( r_foliageWindStrength, 0.0f, 4.0f, qfalse );
+	r_foliageWindSpeed = ri_Cvar_Get_NoComm( "r_foliageWindSpeed", "1", CVAR_ARCHIVE,
+		"r_foliageWind 1: time scale of gusts and sway" );
+	ri.Cvar_CheckRange( r_foliageWindSpeed, 0.0f, 4.0f, qfalse );
+	r_foliageWindDirection = ri_Cvar_Get_NoComm( "r_foliageWindDirection", "30", CVAR_ARCHIVE,
+		"r_foliageWind 1: wind yaw in degrees, 0 = +X" );
+	ri.Cvar_CheckRange( r_foliageWindDirection, 0.0f, 360.0f, qfalse );
+	r_foliageWindDebug = ri_Cvar_Get_NoComm( "r_foliageWindDebug", "0", CVAR_CHEAT,
+		"Foliage wind debug: 1 = exaggerated strength, 2 = color by displacement, 3 = freeze time, 4 = color by large gust wave" );
+	ri.Cvar_CheckRange( r_foliageWindDebug, 0, 4, qtrue );
 	r_autoPBRConvert = ri_Cvar_Get_NoComm( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );

@@ -312,6 +312,11 @@ extern cvar_t  *r_autoGrass;
 extern cvar_t  *r_autoGrassDebug;
 extern cvar_t  *r_autoGrassLodDist;
 extern cvar_t  *r_autoGrassWidth;
+extern cvar_t  *r_foliageWind;
+extern cvar_t  *r_foliageWindStrength;
+extern cvar_t  *r_foliageWindSpeed;
+extern cvar_t  *r_foliageWindDirection;
+extern cvar_t  *r_foliageWindDebug;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 extern cvar_t  *r_diffuseIBL;
@@ -1964,6 +1969,8 @@ typedef enum
 	UNIFORM_MATERIALDEBUG,	// r_autoPBRDebug: rgb = color, a = 1 when on (tr_autopbr.cpp)
 	UNIFORM_FOLIAGEDEBUG,
 	UNIFORM_AUTOGRASS,		// r_autoGrass: cards, lod distance, debug mode, width scale
+	UNIFORM_FOLIAGEWIND,	// r_foliageWind: wind dir x, y, amplitude, speed
+	UNIFORM_FOLIAGEWINDPARAMS,	// r_foliageWind: mode, debug, frozen time, frozen flag
 	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
