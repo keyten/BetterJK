@@ -269,6 +269,25 @@ extern cvar_t  *r_ssrEmitters;
 extern cvar_t  *r_ssrEmitterIntensity;
 extern cvar_t  *r_ssrEmitterMaxRoughness;
 
+extern cvar_t  *r_ssgi;
+extern cvar_t  *r_ssgiSource;
+extern cvar_t  *r_ssgiIntensity;
+extern cvar_t  *r_ssgiQuality;
+extern cvar_t  *r_ssgiRays;
+extern cvar_t  *r_ssgiSteps;
+extern cvar_t  *r_ssgiMaxDistance;
+extern cvar_t  *r_ssgiThickness;
+extern cvar_t  *r_ssgiTemporal;
+extern cvar_t  *r_ssgiHistoryWeight;
+extern cvar_t  *r_ssgiDenoise;
+extern cvar_t  *r_ssgiHalfResolution;
+extern cvar_t  *r_ssgiHiZ;
+extern cvar_t  *r_ssgiEmissiveScale;
+extern cvar_t  *r_ssgiGlowScale;
+extern cvar_t  *r_ssgiCompare;
+extern cvar_t  *r_ssgiDebug;
+extern cvar_t  *r_ssgiFreezeHistory;
+
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
 extern cvar_t  *r_autoPBRConvert;
@@ -892,6 +911,9 @@ struct SceneBlock
 	// screen-space AO application, see RB_AOSceneParams (tr_ao.cpp)
 	vec4_t aoParams;	// application mode, lightmap fraction, multi-bounce, split x
 	vec4_t aoParams2;	// debug view, unused, unused, unused
+	// screen-space GI source, see RB_SSGISceneParams (tr_ssgi.cpp); only
+	// declared by lightall with USE_SSGI
+	vec4_t ssgiParams;	// source bits, linear scene, emissive scale, glow scale
 };
 
 struct LightsBlock
@@ -1093,6 +1115,11 @@ enum
 	TB_FPLUS_LIGHTS  = 11,
 	TB_FPLUS_GRID    = 12,
 	TB_FPLUS_INDICES = 13,
+
+	// screen-space GI inputs of the ssgi_*.glsl programs (tr_ssgi.cpp)
+	TB_SSGI_ALBEDO   = 14,
+	TB_SSGI_RADIANCE = 15,
+	TB_SSGI_SOURCE   = 16,
 	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
@@ -1100,9 +1127,27 @@ enum
 #define AO_DEPTH_MIPS 4
 
 // screen-space reflections (tr_ssr.cpp): mip levels of the opaque scene color
-// pyramid (roughness blur) and of the closest depth pyramid (Hi-Z tracing)
+// pyramid (roughness blur)
 #define SSR_COLOR_MIPS 7
-#define SSR_HIZ_MIPS 7
+
+// shared screen-space infrastructure (tr_screenspace.cpp): mip levels of the
+// closest depth pyramid (Hi-Z tracing of SSR and SSGI) and the attachments of
+// renderFbo written by the opaque lightall stages. Absent ones are GL_NONE
+// gaps: the fragment outputs have fixed locations.
+#define SCREEN_HIZ_MIPS 7
+enum
+{
+	SCREEN_ATTACHMENT_NORMAL		= 2,	// shared: octahedral normal, roughness, SSR receiver
+	SCREEN_ATTACHMENT_SSR_SPECULAR	= 3,
+	SCREEN_ATTACHMENT_SSR_CUBEMAP	= 4,
+	SCREEN_ATTACHMENT_SSGI_ALBEDO	= 5,
+	SCREEN_ATTACHMENT_SSGI_RADIANCE	= 6,
+	SCREEN_ATTACHMENT_FIRST			= SCREEN_ATTACHMENT_NORMAL,
+	SCREEN_ATTACHMENT_LAST			= SCREEN_ATTACHMENT_SSGI_RADIANCE,
+};
+
+// screen-space GI (tr_ssgi.cpp): mip levels of the half resolution source
+#define SSGI_SOURCE_MIPS 5
 
 // light saber and effect primitives reflected analytically by SSR (tr_ssr.cpp)
 #define SSR_MAX_EMITTERS 32
@@ -1554,6 +1599,13 @@ enum
 
 enum
 {
+	SSGIDEF_TRACE		= 0,	// ray march, linear
+	SSGIDEF_TRACE_HIZ	= 1,	// ray march, hierarchical depth
+	SSGIDEF_COUNT
+};
+
+enum
+{
 	REFRACTIONDEF_USE_DEFORM_VERTEXES		= 0x0001,
 	REFRACTIONDEF_USE_TCGEN_AND_TCMOD		= 0x0002,
 	REFRACTIONDEF_USE_RGBAGEN				= 0x0004,
@@ -1819,6 +1871,9 @@ typedef enum
 	UNIFORM_SSRREPROJECT,	// SSR view space -> previous frame clip space
 	UNIFORM_SSREMITTERS,	// SSR_MAX_EMITTERS * 3 vec4, see RB_SSRCollectEmitters
 	UNIFORM_SSREMITTERPARAMS,	// count, 0, max roughness, 0
+	UNIFORM_SSGIALBEDOMAP,		// tr_ssgi.cpp, see the ssgi_*.glsl headers
+	UNIFORM_SSGIRADIANCEMAP,
+	UNIFORM_SSGISOURCEMAP,
 
 	UNIFORM_FROXELFOGMODE,	// 0 = legacy fog, 1 = froxel volume lookup, 2 = none (composited), tr_volumetric.cpp
 	UNIFORM_FROXELVOLUME,	// integrated scattering / transmittance volume
@@ -2675,7 +2730,7 @@ typedef struct glstate_s {
 	int			texEnv[2];
 	int			faceCulling;
 	bool		blend;
-	bool		ssrAuxWrite;	// color mask of the SSR attachments of renderFbo
+	bool		screenAuxWrite;	// color mask of the screen-space attachments of renderFbo
 	float		minDepth;
 	float		maxDepth;
 	ivec2_t		viewportOrigin;
@@ -2824,7 +2879,9 @@ typedef struct {
 	qboolean    depthFill;
 	qboolean    refractionFill;
 	image_t    *screenAoImage;	// AO / contact shadow map lightall samples in this view (TB_SSAOMAP)
-	qboolean    ssrView;		// this view writes the SSR material attachments, see RB_SSRBeginView
+	qboolean    ssrView;		// this view gets SSR, see RB_ScreenSpaceBeginView
+	qboolean    ssgiView;		// this view gets SSGI, see RB_ScreenSpaceBeginView
+	qboolean    screenAuxView;	// opaque lightall stages write the screen-space attachments
 	qboolean    volumetricView;	// this view uses the froxel volume, see RB_VolumetricBeginView
 	qboolean    volumetricComposited;	// the froxel fog composite of this view ran
 } backEndState_t;
@@ -2921,16 +2978,27 @@ typedef struct trGlobals_s {
 	image_t					*froxelCarryImage[2];	// froxel fog: integration state between slices
 	image_t					*froxelTailImage;	// froxel fog: last slice radiance (rgb) and extinction (a)
 	image_t					*froxelNoiseImage;	// froxel fog: tiling density noise, r = macro, g = detail (64^3, mips)
+	// shared screen-space infrastructure (tr_screenspace.cpp)
+	image_t					*screenNormalImage;	// rg = octahedral world normal, b = roughness, a = SSR receiver
+	image_t					*screenHiZImage;	// closest linear view depth, SCREEN_HIZ_MIPS levels
 	// screen-space reflections (tr_ssr.cpp)
-	image_t					*ssrNormalImage;	// rg = octahedral world normal, b = roughness, a = receiver
 	image_t					*ssrSpecularImage;	// rgb = sqrt(specular IBL weight)
 	image_t					*ssrCubemapImage;	// rgb = cubemap specular added by lightall, a = view depth
 	image_t					*ssrColorImage;		// opaque HDR scene, SSR_COLOR_MIPS levels
-	image_t					*ssrHiZImage;		// closest linear view depth, SSR_HIZ_MIPS levels
 	image_t					*ssrTraceImage;		// xy = hit uv, z = hit distance / max, w = confidence
 	image_t					*ssrResolveImage;	// rgb = reflected radiance, a = confidence
 	image_t					*ssrHistoryImage[2];
 	image_t					*ssrHistoryGeomImage[2];	// x = view depth, yz = octahedral normal, w = roughness
+	// screen-space GI (tr_ssgi.cpp)
+	image_t					*ssgiAlbedoImage;	// rgb = sRGB diffuse albedo, a = receiver
+	image_t					*ssgiRadianceImage;	// rgb = linear GI source radiance, a = view depth
+	image_t					*ssgiSceneImage;	// copy of the opaque scene color (legacy scene / full scene source)
+	image_t					*ssgiSourceImage;	// half resolution GI source radiance, SSGI_SOURCE_MIPS levels
+	image_t					*ssgiTraceImage;	// rgb = GI (albedo free), a = confidence
+	image_t					*ssgiHitImage;		// x = hit distance / max, y = hit fraction
+	image_t					*ssgiHistoryImage[2];
+	image_t					*ssgiHistoryGeomImage[2];	// x = view depth, yz = octahedral normal, w = accumulated length
+	image_t					*ssgiDenoiseImage[2];
 
 	FBO_t					*renderFbo;
 	FBO_t					*depthVelocityFbo;
@@ -2964,11 +3032,16 @@ typedef struct trGlobals_s {
 	FBO_t					*froxelIntegrateFbo;	// layers attached per slice
 	FBO_t					*froxelCompositeFbo;	// color + glow of renderFbo, no depth
 	FBO_t					*ssrColorFbo[SSR_COLOR_MIPS];
-	FBO_t					*ssrHiZFbo[SSR_HIZ_MIPS];
 	FBO_t					*ssrTraceFbo;
 	FBO_t					*ssrResolveFbo;
 	FBO_t					*ssrHistoryFbo[2];
-	FBO_t					*ssrCompositeFbo;	// renderFbo color 0 only
+	FBO_t					*screenHiZFbo[SCREEN_HIZ_MIPS];
+	FBO_t					*screenCompositeFbo;	// renderFbo color 0 only
+	FBO_t					*ssgiSceneFbo;
+	FBO_t					*ssgiSourceFbo;
+	FBO_t					*ssgiTraceFbo;		// trace + hit
+	FBO_t					*ssgiHistoryFbo[2];	// history + geometry
+	FBO_t					*ssgiDenoiseFbo[2];
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -3043,12 +3116,18 @@ typedef struct trGlobals_s {
 	shaderProgram_t volumetricCompositeShader;
 	shaderProgram_t volumetricDebugShader;
 	shaderProgram_t ssrDownsampleShader;
-	shaderProgram_t ssrHiZShader[2];		// 0 = linearize, 1 = downsample mip
 	shaderProgram_t ssrTraceShader[SSRDEF_COUNT];
 	shaderProgram_t ssrResolveShader;
 	shaderProgram_t ssrTemporalShader;
 	shaderProgram_t ssrCompositeShader;
 	shaderProgram_t ssrDebugShader;
+	shaderProgram_t screenHiZShader[2];		// 0 = linearize, 1 = downsample mip (tr_screenspace.cpp)
+	shaderProgram_t ssgiSourceShader;
+	shaderProgram_t ssgiTraceShader[SSGIDEF_COUNT];
+	shaderProgram_t ssgiTemporalShader;
+	shaderProgram_t ssgiDenoiseShader;
+	shaderProgram_t ssgiCompositeShader;
+	shaderProgram_t ssgiDebugShader;
 	// Make sure staticUbo is right behind all shaderProgram_t or edit 
 	// R_ClearTr to make sure shaderPrograms are cached correctly
 
@@ -4482,6 +4561,67 @@ void R_ForwardPlusBenchmark_f(void);
 /*
 ============================================================
 
+SHARED SCREEN-SPACE INFRASTRUCTURE, tr_screenspace.cpp
+
+============================================================
+*/
+
+struct screenViewInfo_t
+{
+	vec4_t projection;	// P[0], P[5], P[8], P[9]
+	vec4_t depthParams;	// P[14], P[10], zFar, view space size of one pixel at depth 1
+	vec4_t viewport;	// view rectangle in texture coordinates
+	matrix_t worldToView;
+	matrix_t viewToWorld;
+	matrix_t viewProjection;
+};
+
+// temporal history of one screen-space consumer (main view)
+struct screenHistory_t
+{
+	qboolean valid;
+	unsigned frameNumber;
+	const world_t *world;
+	float traceScale;
+	vec3_t origin;
+	vec3_t forward;
+	float fovX;
+	float fovY;
+	int viewport[4];
+	matrix_t viewProjection;
+	int current;			// history image written last
+};
+
+qboolean R_ScreenSpaceResourcesEnabled(void);
+void R_CreateScreenSpaceImages(int width, int height, int hdrFormat);
+void R_AttachScreenSpaceRenderTargets(FBO_t *fbo, int multisample);
+void R_CreateScreenSpaceFBOs(void);
+void R_ScreenImageFilter(image_t *image, int maxLevel, qboolean linear);
+image_t *R_ScreenCreateImage(const char *name, int width, int height, int internalFormat, qboolean linear);
+image_t *R_ScreenCreateMipImage(const char *name, int width, int height, int internalFormat,
+	GLenum format, GLenum type, int numLevels, qboolean linear);
+FBO_t *R_ScreenCreateLevelFBO(const char *name, image_t *image, int level);
+FBO_t *R_ScreenCreatePairFBO(const char *name, image_t *image0, image_t *image1);
+void RB_ScreenSpaceBeginView(void);
+qboolean RB_ScreenSpaceActive(void);
+void RB_RenderScreenSpaceOpaque(void);
+void RB_ScreenSpaceDebugOverlay(void);
+void GL_SetScreenAuxWrite(bool enable);
+void GL_ResetScreenAuxWrite(void);
+int RB_ScreenBeginTimer(const char *name);
+void RB_ScreenEndTimer(int handle);
+void RB_ScreenSetViewUniforms(shaderProgram_t *sp, const screenViewInfo_t& info);
+void RB_ScreenBeginPass(FBO_t *fbo, shaderProgram_t *sp, int width, int height, uint32_t stateBits = GLS_DEPTHTEST_DISABLE);
+void RB_ScreenTexelSize(vec4_t out, int srcWidth, int srcHeight, int dstWidth, int dstHeight);
+void RB_ScreenSetLevelRange(image_t *image, int tmu, int baseLevel, int maxLevel);
+void RB_ScreenBindGeometry(void);
+qboolean RB_ScreenHistoryValid(const screenHistory_t& history, float traceScale);
+void RB_ScreenStoreHistory(screenHistory_t& history, const screenViewInfo_t& info, float traceScale, int written);
+qboolean RB_ScreenVelocityValid(void);
+
+/*
+============================================================
+
 SCREEN-SPACE REFLECTIONS, tr_ssr.cpp
 
 ============================================================
@@ -4489,15 +4629,33 @@ SCREEN-SPACE REFLECTIONS, tr_ssr.cpp
 
 qboolean R_SSRResourcesEnabled(void);
 qboolean R_SSRWantsVelocity(void);
+void R_SSRSelectResources(void);
 void R_CreateSSRImages(int width, int height, int hdrFormat);
-void R_AttachSSRRenderTargets(FBO_t *fbo, int multisample);
 void R_CreateSSRFBOs(void);
-void RB_SSRBeginView(void);
-qboolean RB_SSRActive(void);
-void RB_RenderSSR(void);
+qboolean RB_SSRWantsView(void);
+int RB_SSRDepthLevels(void);
+void RB_RenderSSR(const screenViewInfo_t& info);
 void RB_SSRDebugOverlay(void);
-void GL_SetSSRAuxWrite(bool enable);
-void GL_ResetSSRAuxWrite(void);
+
+/*
+============================================================
+
+SCREEN-SPACE DIFFUSE GI, tr_ssgi.cpp
+
+============================================================
+*/
+
+qboolean R_SSGIResourcesEnabled(void);
+qboolean R_SSGIWantsVelocity(void);
+void R_SSGISelectResources(void);
+void R_CreateSSGIImages(int width, int height, int hdrFormat);
+void R_CreateSSGIFBOs(void);
+void R_SSGICheckDependencies(void);
+qboolean RB_SSGIWantsView(void);
+int RB_SSGIDepthLevels(void);
+void RB_RenderSSGI(const screenViewInfo_t& info);
+void RB_SSGIDebugOverlay(void);
+void RB_SSGISceneParams(vec4_t ssgiParams);
 void R_SetMapColorGrading(const char *worldName);
 void R_UpdateColorGrading(void);
 
@@ -4575,8 +4733,8 @@ struct RenderState
 
 	bool transformFeedback;
 
-	// also write the SSR material attachments of renderFbo (tr_ssr.cpp)
-	bool ssrAux;
+	// also write the screen-space attachments of renderFbo (tr_screenspace.cpp)
+	bool screenAux;
 };
 
 struct DrawItem

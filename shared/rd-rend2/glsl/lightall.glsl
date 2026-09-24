@@ -382,6 +382,12 @@ layout(std140) uniform Scene
 	// z = multi-bounce approximation, w = split position in window pixels
 	vec4 u_AOParams;
 	vec4 u_AOParams2; // x = r_debugAO
+#if defined(USE_SSGI)
+	// screen-space GI source (tr_ssgi.cpp, RB_SSGISceneParams): x = source bits
+	// (1 dynamic light, 2 emissive, 4 legacy glow), y = 1 linear scene / 0 legacy
+	// display encoded, z = emissive scale, w = legacy glow scale
+	vec4 u_SSGIParams;
+#endif
 };
 
 layout(std140) uniform Camera
@@ -536,12 +542,23 @@ vec3 EmissiveLegacySceneToLinear(in vec3 color)
 	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
 }
 
+#if defined(USE_SSR) || defined(USE_SSGI)
+// Screen-space attachments of renderFbo (tr_screenspace.cpp): reflections
+// (tr_ssr.cpp, ssr_*.glsl) and diffuse GI (tr_ssgi.cpp, ssgi_*.glsl). Only
+// written by opaque stages, the others have them masked.
+out vec4 out_SSRNormal;   // rg = octahedral world normal, b = roughness, a = SSR receiver
 #if defined(USE_SSR)
-// Material attachments of renderFbo for screen-space reflections (tr_ssr.cpp,
-// ssr_*.glsl). Only written by opaque stages, the others have them masked.
-out vec4 out_SSRNormal;   // rg = octahedral world normal, b = roughness, a = receiver
 out vec4 out_SSRSpecular; // rgb = sqrt(specular IBL weight)
 out vec4 out_SSRCubemap;  // rgb = cubemap reflection added to out_Color, a = view depth
+#endif
+#if defined(USE_SSGI)
+out vec4 out_SSGIAlbedo;   // rgb = sRGB encoded diffuse albedo, a = GI receiver
+out vec4 out_SSGIRadiance; // rgb = linear GI source radiance, a = view depth
+
+// diffuse lobe of the dynamic lights of this fragment (scene space), the
+// view independent part of their outgoing radiance: bounced by the SSGI
+vec3 g_ssgiDynamicDiffuse = vec3(0.0);
+#endif
 
 vec2 SSREncodeNormal(in vec3 n)
 {
@@ -556,8 +573,54 @@ void SSRWriteNone(in vec3 worldPosition)
 {
 	float viewDepth = dot(worldPosition - u_ViewOrigin, normalize(u_ViewForward));
 	out_SSRNormal = vec4(0.5, 0.5, 1.0, 0.0);
+#if defined(USE_SSR)
 	out_SSRSpecular = vec4(0.0);
 	out_SSRCubemap = vec4(0.0, 0.0, 0.0, viewDepth);
+#endif
+#if defined(USE_SSGI)
+	out_SSGIAlbedo = vec4(0.0);
+	out_SSGIRadiance = vec4(0.0, 0.0, 0.0, viewDepth);
+#endif
+}
+#endif
+
+#if defined(USE_SSGI)
+// GI receiver: normal and diffuse albedo (after the metalness split: metals
+// have no diffuse lobe), stored sRGB encoded for 8 bit precision
+void SSGIWriteReceiver(in vec3 N, in float roughness, in vec3 albedo)
+{
+  #if !(defined(USE_SSR) && defined(PER_PIXEL_LIGHTING) && defined(USE_SPECULARMAP))
+	out_SSRNormal = vec4(SSREncodeNormal(N), roughness, 0.0);
+  #endif
+	albedo = clamp(albedo, 0.0, 1.0);
+	if (u_SSGIParams.y > 0.5)
+		albedo = EmissiveLinearToLegacyScene(albedo);
+	out_SSGIAlbedo = vec4(albedo, 1.0);
+}
+
+// GI source radiance, linear HDR. litColor = the stage color before its own
+// emission, in scene space.
+void SSGIWriteRadiance(in vec3 litColor, in vec3 emissiveLinear, in vec3 stageColor)
+{
+	int bits = int(u_SSGIParams.x);
+	bool linearScene = u_SSGIParams.y > 0.5;
+	vec3 radiance = vec3(0.0);
+	if ((bits & 1) != 0)
+	{
+		// the linear share of the dynamic diffuse light in the stored color
+		vec3 d = g_ssgiDynamicDiffuse;
+		radiance += linearScene ? d : max(
+			EmissiveLegacySceneToLinear(litColor) - EmissiveLegacySceneToLinear(litColor - d), vec3(0.0));
+	}
+	if ((bits & 2) != 0)
+		radiance += emissiveLinear * u_SSGIParams.z;
+	if ((bits & 4) != 0 && (u_EnableTextures.x > 0.5 || abs(u_EmissiveParams.w) == 2.0))
+	{
+		// legacy glow / auto emissive: the whole stage color, no physical intensity
+		radiance += (linearScene ? max(stageColor, vec3(0.0)) : EmissiveLegacySceneToLinear(stageColor)) *
+			u_SSGIParams.w;
+	}
+	out_SSGIRadiance.rgb = radiance;
 }
 #endif
 
@@ -1446,6 +1509,11 @@ vec3 EvaluateDynamicLight(
 	#else
 	vec3 reflectance = s.diffuse;
 	#endif
+	#if defined(USE_SSGI)
+	// the diffuse lobe only (view independent), after shadows and receiver
+	// visibility: the source of the screen-space GI
+	g_ssgiDynamicDiffuse += lightColor * reflectance * attenuation * NL;
+	#endif
 	#if defined(USE_SPECULARMAP)
 	float NH = clamp(dot(s.N, H), 0.0, 1.0);
 	float VH = clamp(dot(s.E, H), 0.0, 1.0);
@@ -1730,7 +1798,7 @@ void main()
 
 	vec2 texCoords = var_TexCoords.xy;
 	vec2 lmCoords = var_TexCoords.zw;
-#if defined(USE_SSR)
+#if defined(USE_SSR) || defined(USE_SSGI)
   #if defined(PER_PIXEL_LIGHTING)
 	SSRWriteNone(u_ViewOrigin - var_ViewDir.xyz);
   #else
@@ -1949,6 +2017,9 @@ void main()
 #else
 	out_Color.rgb += CalcIBLContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, specularAO, lightColor + ambientColor);
 #endif
+#if defined(USE_SSGI)
+	SSGIWriteReceiver(N, roughness, diffuse.rgb);
+#endif
 
   #if defined(USE_PRIMARY_LIGHT)
 	vec3  L2   = normalize(u_PrimaryLightOrigin.xyz);
@@ -2051,16 +2122,30 @@ void main()
   #if defined(USE_LIGHTMAP)
 	lightColor *= lightmapColor.rgb;
   #endif
+  #if defined(USE_SSGI)
+	vec3 vertexDynamicLight = CalcDynamicLightContribution(var_Position, var_Normal);
+	lightColor += vertexDynamicLight;
+	g_ssgiDynamicDiffuse = diffuse.rgb * vertexDynamicLight;
+	SSGIWriteReceiver(normalize(var_Normal), 1.0, diffuse.rgb);
+  #else
 	lightColor += CalcDynamicLightContribution(var_Position, var_Normal);
+  #endif
 
     out_Color.rgb = diffuse.rgb * lightColor;
 #endif
 
 	out_Color.a = diffuse.a;
+#if defined(USE_SSGI)
+	vec3 ssgiLitColor = out_Color.rgb;
+	vec3 ssgiEmissive = vec3(0.0);
+#endif
 	vec3 emissive = vec3(0.0);
 	if (abs(u_EmissiveParams.w) == 1.0)
 	{
 		vec3 emissiveLinear = texture(u_EmissiveMap, texCoords).rgb * u_EmissiveParams.rgb;
+#if defined(USE_SSGI)
+		ssgiEmissive = emissiveLinear;
+#endif
 		if (u_EmissiveParams.w > 0.0)
 		{
 			emissive = emissiveLinear;
@@ -2080,4 +2165,7 @@ void main()
 	// Legacy glow still exports the complete stage color. New emissive stages
 	// export only their masked emission when the legacy keyword is absent.
 	out_Glow = mix(vec4(emissive, out_Color.a), out_Color, u_EnableTextures.x);
+#if defined(USE_SSGI)
+	SSGIWriteRadiance(ssgiLitColor, ssgiEmissive, out_Color.rgb);
+#endif
 }

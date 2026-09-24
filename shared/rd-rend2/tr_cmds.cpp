@@ -539,6 +539,8 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	thisFrame->hasMainView = qfalse; // set by the first world scene, tr_motionblur.cpp
 	// latches r_forwardPlus for the whole frame (no switch between scenes)
 	R_ForwardPlusBeginFrame();
+	// SSGI dependency notes, printed once (tr_ssgi.cpp)
+	R_SSGICheckDependencies();
 	if ( thisFrame->sync )
 	{
 		GLsync sync = thisFrame->sync;
@@ -711,7 +713,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			{
 				// clear both, front and backbuffer.
 				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-				GL_ResetSSRAuxWrite();
+				GL_ResetScreenAuxWrite();
 				backEnd.colorMask[0] = qfalse;
 				backEnd.colorMask[1] = qfalse;
 				backEnd.colorMask[2] = qfalse;
@@ -783,7 +785,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 			if(r_anaglyphMode->modified)
 			{
 				qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-				GL_ResetSSRAuxWrite();
+				GL_ResetScreenAuxWrite();
 				backEnd.colorMask[0] = qfalse;
 				backEnd.colorMask[1] = qfalse;
 				backEnd.colorMask[2] = qfalse;

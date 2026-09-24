@@ -322,9 +322,12 @@ static void FBO_SetupDrawBuffers()
 	int numBuffers = 0;
 	GLenum bufs[8];
 
-	while ( currentFBO->colorBuffers[numBuffers] != 0 )
+	// attachments may leave gaps (renderFbo without the SSR attachments of
+	// the screen-space passes, see SCREEN_ATTACHMENT_*): GL_NONE there
+	for ( int i = 0; i < 8; i++ )
 	{
-		numBuffers++;
+		if ( currentFBO->colorBuffers[i] != 0 )
+			numBuffers = i + 1;
 	}
 
 	if ( numBuffers == 0 )
@@ -335,7 +338,7 @@ static void FBO_SetupDrawBuffers()
 	{
 		for ( int i = 0; i < numBuffers; i++ )
 		{
-			bufs[i] = GL_COLOR_ATTACHMENT0 + i;
+			bufs[i] = currentFBO->colorBuffers[i] != 0 ? GL_COLOR_ATTACHMENT0 + i : GL_NONE;
 		}
 
 		qglDrawBuffers (numBuffers, bufs);
@@ -434,7 +437,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.renderFbo);
 		FBO_CreateBuffer(tr.renderFbo, hdrFormat, 0, multisample);
 		FBO_CreateBuffer(tr.renderFbo, hdrFormat, 1, multisample);
-		R_AttachSSRRenderTargets(tr.renderFbo, multisample);
+		R_AttachScreenSpaceRenderTargets(tr.renderFbo, multisample);
 		FBO_CreateBuffer(tr.renderFbo, GL_DEPTH24_STENCIL8, 0, multisample);
 		FBO_SetupDrawBuffers();
 
@@ -447,7 +450,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.msaaResolveFbo);
 		FBO_AttachTextureImage(tr.renderImage, 0);
 		FBO_AttachTextureImage(tr.glowImage, 1);
-		R_AttachSSRRenderTargets(tr.msaaResolveFbo, 0);
+		R_AttachScreenSpaceRenderTargets(tr.msaaResolveFbo, 0);
 		R_AttachFBOTexturePackedDepthStencil(tr.renderDepthImage->texnum);
 		FBO_SetupDrawBuffers();
 
@@ -462,7 +465,7 @@ void FBO_Init(void)
 		FBO_Bind(tr.renderFbo);
 		FBO_AttachTextureImage(tr.renderImage, 0);
 		FBO_AttachTextureImage(tr.glowImage, 1);
-		R_AttachSSRRenderTargets(tr.renderFbo, 0);
+		R_AttachScreenSpaceRenderTargets(tr.renderFbo, 0);
 		R_AttachFBOTexturePackedDepthStencil(tr.renderDepthImage->texnum);
 		FBO_SetupDrawBuffers();
 
@@ -578,8 +581,8 @@ void FBO_Init(void)
 		R_CheckFBO(tr.historyFbo);
 	}
 
-	// screen-space reflection targets (tr_ssr.cpp)
-	R_CreateSSRFBOs();
+	// screen-space reflection / GI targets (tr_screenspace.cpp)
+	R_CreateScreenSpaceFBOs();
 
 	// froxel volumetric fog (tr_volumetric.cpp)
 	R_CreateVolumetricFBOs();

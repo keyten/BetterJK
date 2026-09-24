@@ -1,21 +1,28 @@
 /*[Fragment]*/
-// Shared by the ssr_*.glsl programs (screen-space reflections, tr_ssr.cpp).
+// Shared screen-space library of the ssr_*.glsl (screen-space reflections, tr_ssr.cpp) and ssgi_*.glsl
+// (screen-space diffuse GI, tr_ssgi.cpp) programs; the shared resources are owned by tr_screenspace.cpp.
 //
 // This file is not a program on its own: its fragment block is inserted into the fragment shaders of
-// the SSR programs, see GLSL_LoadGPUProgramSSR.
+// the SSR and SSGI programs, see GLSL_LoadGPUProgramScreenSpace.
 //
 // View space: x right, y up, z forward (positive linear depth), as in the screen-space AO passes.
 //
-// Material attachments of renderFbo, written by the opaque lightall stages (USE_SSR):
-//   u_SSRNormalMap    RGB10_A2  rg = octahedral world normal, b = roughness, a = receiver
-//   u_SSRSpecularMap  RGB10_A2  rgb = sqrt(W), W = specular IBL weight (F0 * EnvBRDF.x + EnvBRDF.y)
-//   u_SSRCubemapMap   RGBA16F   rgb = cubemap reflection C that lightall added, a = view depth
+// Attachments of renderFbo, written by the opaque lightall stages:
+//   u_SSRNormalMap    RGB10_A2  rg = octahedral world normal, b = roughness, a = SSR receiver (shared:
+//                               with USE_SSGI every lit opaque lightall fragment writes its normal)
+//   u_SSRSpecularMap  RGB10_A2  rgb = sqrt(W), W = specular IBL weight (F0 * EnvBRDF.x + EnvBRDF.y), SSR
+//   u_SSRCubemapMap   RGBA16F   rgb = cubemap reflection C that lightall added, a = view depth, SSR
+//   u_SSGIAlbedoMap   RGBA8     rgb = sRGB encoded diffuse albedo (no diffuse lobe of metals), a = GI receiver
+//   u_SSGIRadianceMap RGBA16F   rgb = linear GI source radiance (dynamic diffuse / emissive), a = view depth
 //
 // u_SSRHiZMap mip 0 holds the linear view depth of every pixel (SSR_DEPTH_VIEWMODEL for first person
 // surfaces drawn with a hacked depth range, SSR_DEPTH_SKY where nothing was drawn), mips 1.. the
 // closest depth of the 2x2 texels below (ignoring the view model).
 
 uniform sampler2D u_ScreenDepthMap;    // hardware depth
+uniform sampler2D u_SSGIAlbedoMap;
+uniform sampler2D u_SSGIRadianceMap;
+uniform sampler2D u_SSGISourceMap;     // GI source radiance at the hit points (half resolution, mips)
 uniform sampler2D u_SSRNormalMap;
 uniform sampler2D u_SSRSpecularMap;
 uniform sampler2D u_SSRCubemapMap;
@@ -101,6 +108,38 @@ bool SSRIsReceiver(ivec2 pix, float z, out vec4 normalRoughness)
 	return abs(storedDepth - z) <= 0.02 * z + 1.0;
 }
 
+// Pixel that gets screen-space GI: an opaque lightall surface (any material)
+// whose data belongs to the visible surface (as SSRIsReceiver). N = world normal.
+bool SSGIIsReceiver(ivec2 pix, float z, out vec3 N)
+{
+	N = vec3(0.0, 0.0, 1.0);
+	if (!SSRIsSurface(z) || texelFetch(u_SSGIAlbedoMap, pix, 0).a < 0.5)
+		return false;
+
+	float storedDepth = texelFetch(u_SSGIRadianceMap, pix, 0).a;
+	if (abs(storedDepth - z) > 0.02 * z + 1.0)
+		return false;
+
+	N = SSRDecodeNormal(texelFetch(u_SSRNormalMap, pix, 0).rg);
+	return true;
+}
+
+vec3 SSGISRGBToLinear(vec3 color)
+{
+	color = max(color, vec3(0.0));
+	vec3 lo = color * (1.0 / 12.92);
+	vec3 hi = pow((color + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
+}
+
+vec3 SSGILinearToSRGB(vec3 color)
+{
+	color = max(color, vec3(0.0));
+	vec3 lo = 12.92 * color;
+	vec3 hi = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+	return mix(lo, hi, greaterThanEqual(color, vec3(0.0031308)));
+}
+
 vec3 SSRSpecularWeight(ivec2 pix)
 {
 	vec3 w = texelFetch(u_SSRSpecularMap, pix, 0).rgb;
@@ -126,4 +165,199 @@ float SSRConeTangent(float roughness)
 	float power = 2.0 / (a * a) - 2.0;
 	float cosAngle = pow(0.244, 1.0 / (power + 1.0));
 	return sqrt(max(1.0 - cosAngle * cosAngle, 0.0)) / cosAngle;
+}
+
+/*
+Shared ray march (SSR reflection rays, SSGI diffuse rays). The caller sets up the ray with
+SSRSetupRay and marches it with SSRMarchRay; the pass specific parameters (steps, thickness, step
+distribution, Hi-Z budget) are arguments, so SSR and SSGI keep separate settings.
+
+The view space ray O -> E is projected to the screen: its pixel position and 1 / depth are linear in
+screen space (McGuire and Mara 2014), g_S0 + g_D * s and mix(g_k0, g_k1, s), s in [0, 1].
+USE_HIZ walks the closest depth mips instead of stepping evenly: cells the ray passes entirely in front
+of are skipped at once, the walk only descends to single pixels near surfaces.
+*/
+
+#define SSR_MAX_LINEAR_STEPS 256
+#define SSR_MAX_HIZ_ITERATIONS 1024
+#define SSR_MAX_REFINE_STEPS 16
+
+vec2 g_S0;
+vec2 g_D;
+float g_k0;
+float g_k1;
+
+vec2 SSRRayPixel(float s)
+{
+	return g_S0 + g_D * s;
+}
+
+float SSRRayDepth(float s)
+{
+	return 1.0 / mix(g_k0, g_k1, s);
+}
+
+float SSRSceneDepth(vec2 pixel)
+{
+	return texelFetch(u_SSRHiZMap, ivec2(pixel), 0).r;
+}
+
+// the depth buffer only has the front of the surfaces, assume this much
+// behind them is solid (grows with the distance, where depth is less precise)
+float SSRThickness(float z, float thickness)
+{
+	return thickness * (1.0 + z * (1.0 / 512.0));
+}
+
+// Projects the view space segment O -> E (both in front of the near plane) and clips it to the view
+// rectangle (pixel centers). u_SSRTexelSize.xy must be 1 / full resolution size.
+// sMin skips the pixels of the surface itself. False: the ray covers (almost) no pixels.
+bool SSRSetupRay(vec3 O, vec3 E, out float sMin, out float sMax, out float screenLength)
+{
+	vec2 invTexel = 1.0 / u_SSRTexelSize.xy;
+	g_S0 = SSRProjectToUV(O) * invTexel;
+	vec2 S1 = SSRProjectToUV(E) * invTexel;
+	g_D = S1 - g_S0;
+	g_k0 = 1.0 / O.z;
+	g_k1 = 1.0 / E.z;
+
+	vec2 viewMin = u_SSRViewport.xy * invTexel + 0.5;
+	vec2 viewMax = (u_SSRViewport.xy + u_SSRViewport.zw) * invTexel - 0.5;
+	sMax = 1.0;
+	if (S1.x > viewMax.x) sMax = min(sMax, (viewMax.x - g_S0.x) / g_D.x);
+	if (S1.x < viewMin.x) sMax = min(sMax, (viewMin.x - g_S0.x) / g_D.x);
+	if (S1.y > viewMax.y) sMax = min(sMax, (viewMax.y - g_S0.y) / g_D.y);
+	if (S1.y < viewMin.y) sMax = min(sMax, (viewMin.y - g_S0.y) / g_D.y);
+
+	screenLength = length(g_D);
+	sMin = min(1.5 / max(screenLength, 1.0e-6), sMax);
+	return screenLength * sMax >= 2.0;
+}
+
+// First crossing of a depth buffer surface (within its assumed thickness), refined by a binary search.
+//   steps:       linear march steps (ignored by USE_HIZ)
+//   stepPower:   linear step distribution, 1 = even, > 1 = denser near the origin
+//   thickness:   assumed surface thickness at depth 0 (world units), see SSRThickness
+//   refineSteps: binary search steps
+//   hizLevel:    coarsest Hi-Z level, hizIterations: Hi-Z iteration budget (USE_HIZ)
+// Returns the ray parameter of the hit in sHit.
+bool SSRMarchRay(
+	float sMin, float sMax, float screenLength, float jitter,
+	float steps, float stepPower, float thickness, float refineSteps,
+	float hizLevel, float hizIterations, out float sHit)
+{
+	bool hit = false;
+	float lo = 0.0;
+	float hi = 0.0;
+	sHit = 0.0;
+
+#if !defined(USE_HIZ)
+	steps = min(steps, screenLength * sMax);
+	float sPrev = sMin;
+	float zPrev = SSRRayDepth(sPrev);
+	for (int i = 1; i <= SSR_MAX_LINEAR_STEPS; i++)
+	{
+		if (float(i) > steps)
+			break;
+
+		float s;
+		if (stepPower == 1.0)
+			s = sMin + (sMax - sMin) * (float(i) - 1.0 + jitter) / steps;
+		else
+			s = sMin + (sMax - sMin) * pow((float(i) - 1.0 + jitter) / steps, stepPower);
+		float zRay = SSRRayDepth(s);
+		float zScene = SSRSceneDepth(SSRRayPixel(s));
+		if (SSRIsSurface(zScene))
+		{
+			float zNear = min(zPrev, zRay);
+			float zFar = max(zPrev, zRay);
+			if (zFar >= zScene && zNear <= zScene + SSRThickness(zScene, thickness))
+			{
+				hit = true;
+				lo = sPrev;
+				hi = s;
+				break;
+			}
+		}
+
+		sPrev = s;
+		zPrev = zRay;
+	}
+#else
+	int maxLevel = int(hizLevel);
+	int level = 0;
+	float sEps = 0.02 / screenLength;
+	float s = sMin + jitter / screenLength;
+	vec2 dirStep = vec2(g_D.x >= 0.0 ? 1.0 : 0.0, g_D.y >= 0.0 ? 1.0 : 0.0);
+	for (int i = 0; i < SSR_MAX_HIZ_ITERATIONS; i++)
+	{
+		if (float(i) >= hizIterations || s >= sMax)
+			break;
+
+		float cellSize = exp2(float(level));
+		vec2 cell = floor(SSRRayPixel(s) / cellSize);
+
+		// where the ray leaves the cell
+		vec2 boundary = (cell + dirStep) * cellSize;
+		float sExitX = g_D.x != 0.0 ? (boundary.x - g_S0.x) / g_D.x : 1.0e30;
+		float sExitY = g_D.y != 0.0 ? (boundary.y - g_S0.y) / g_D.y : 1.0e30;
+		float sExit = min(min(sExitX, sExitY), sMax);
+
+		ivec2 levelMax = textureSize(u_SSRHiZMap, level) - ivec2(1);
+		float cellZ = texelFetch(u_SSRHiZMap, clamp(ivec2(cell), ivec2(0), levelMax), level).r;
+		float zA = SSRRayDepth(s);
+		float zB = SSRRayDepth(sExit);
+		float zNear = min(zA, zB);
+		float zFar = max(zA, zB);
+
+		if (level > 0)
+		{
+			if (zFar < cellZ)
+			{
+				// entirely in front of everything in the cell
+				s = sExit + sEps;
+				level = min(level + 1, maxLevel);
+			}
+			else
+			{
+				level--;
+			}
+		}
+		else
+		{
+			if (SSRIsSurface(cellZ) && zFar >= cellZ && zNear <= cellZ + SSRThickness(cellZ, thickness))
+			{
+				hit = true;
+				lo = s;
+				hi = sExit;
+				break;
+			}
+
+			// in front: coarser again. Behind a surface: keep walking pixels
+			if (zFar < cellZ || !SSRIsSurface(cellZ))
+				level = min(level + 1, maxLevel);
+			s = sExit + sEps;
+		}
+	}
+#endif
+
+	if (!hit)
+		return false;
+
+	// binary search of the crossing
+	for (int i = 0; i < SSR_MAX_REFINE_STEPS; i++)
+	{
+		if (float(i) >= refineSteps)
+			break;
+
+		float mid = 0.5 * (lo + hi);
+		float zScene = SSRSceneDepth(SSRRayPixel(mid));
+		if (SSRIsSurface(zScene) && SSRRayDepth(mid) >= zScene)
+			hi = mid;
+		else
+			lo = mid;
+	}
+
+	sHit = hi;
+	return true;
 }

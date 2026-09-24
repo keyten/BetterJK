@@ -183,6 +183,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_SSRReproject",			GLSL_MAT4x4, 1 },
 	{ "u_SSREmitters",			GLSL_VEC4, SSR_MAX_EMITTERS * 3 },
 	{ "u_SSREmitterParams",		GLSL_VEC4, 1 },
+	{ "u_SSGIAlbedoMap",		GLSL_INT, 1 },
+	{ "u_SSGIRadianceMap",		GLSL_INT, 1 },
+	{ "u_SSGISourceMap",		GLSL_INT, 1 },
 
 	{ "u_FroxelFogMode",		GLSL_INT, 1 },
 	{ "u_FroxelVolume",			GLSL_INT, 1 },
@@ -476,6 +479,10 @@ static size_t GLSL_GetShaderHeader(
 	if (R_SSRResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSR\n");
 
+	// lightall writes the SSGI source / receiver attachments, tr_ssgi.cpp
+	if (R_SSGIResourcesEnabled())
+		Q_strcat(dest, size, "#define USE_SSGI\n");
+
 	if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
 		Q_strcat(dest, size, "#define USE_TONEMAPPING\n");
 
@@ -688,9 +695,13 @@ static void GLSL_BindShaderInterface( shaderProgram_t *program )
 	static const char *shaderOutputNames[] = {
 		"out_Color",  // Color output
 		"out_Glow",  // Glow output
-		"out_SSRNormal",  // SSR material attachments of renderFbo, tr_ssr.cpp
-		"out_SSRSpecular",
+		// screen-space attachments of renderFbo, tr_screenspace.cpp; the
+		// index is the attachment (SCREEN_ATTACHMENT_*)
+		"out_SSRNormal",  // shared normal (SSR, SSGI)
+		"out_SSRSpecular",  // SSR, tr_ssr.cpp
 		"out_SSRCubemap",
+		"out_SSGIAlbedo",  // SSGI, tr_ssgi.cpp
+		"out_SSGIRadiance",
 	};
 
 	const uint32_t attribs = program->attribs;
@@ -2642,13 +2653,15 @@ static int GLSL_LoadGPUProgramMotionBlur(
 	return numPrograms;
 }
 
-// Screen-space reflections (tr_ssr.cpp). Every program gets the fragment
-// block of ssr_common.glsl (encodings, view space reconstruction).
-static int GLSL_LoadGPUProgramSSR(
+// Screen-space passes: the shared depth pyramid (tr_screenspace.cpp),
+// reflections (tr_ssr.cpp) and diffuse GI (tr_ssgi.cpp). Every program gets
+// the fragment block of ssr_common.glsl (encodings, view space
+// reconstruction, the ray march).
+static int GLSL_LoadGPUProgramScreenSpace(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
 {
-	if (!R_SSRResourcesEnabled())
+	if (!R_ScreenSpaceResourcesEnabled())
 		return 0;
 
 	Allocator allocator(scratchAlloc.Base(), scratchAlloc.GetSize());
@@ -2691,20 +2704,38 @@ static int GLSL_LoadGPUProgramSSR(
 		GLSL_SetUniformInt(sp, UNIFORM_SSRHISTORYGEOMMAP, TB_ENVBRDFMAP);
 		GLSL_SetUniformInt(sp, UNIFORM_SSRHIZMAP, TB_SHADOWMAPARRAY);
 		GLSL_SetUniformInt(sp, UNIFORM_VELOCITYMAP, TB_SSAOMAP);
+		GLSL_SetUniformInt(sp, UNIFORM_SSGIALBEDOMAP, TB_SSGI_ALBEDO);
+		GLSL_SetUniformInt(sp, UNIFORM_SSGIRADIANCEMAP, TB_SSGI_RADIANCE);
+		GLSL_SetUniformInt(sp, UNIFORM_SSGISOURCEMAP, TB_SSGI_SOURCE);
 		qglUseProgram(0);
 		GLSL_FinishGPUShader(sp);
 		++numPrograms;
 	};
 
-	load(&tr.ssrDownsampleShader, "ssr_downsample", "ssr_downsample", fallback_ssr_downsampleProgram, nullptr);
-	load(&tr.ssrHiZShader[0], "ssr_hiz_linearize", "ssr_hiz", fallback_ssr_hizProgram, "#define LINEARIZE\n");
-	load(&tr.ssrHiZShader[1], "ssr_hiz", "ssr_hiz", fallback_ssr_hizProgram, nullptr);
-	load(&tr.ssrTraceShader[SSRDEF_TRACE], "ssr_trace", "ssr_trace", fallback_ssr_traceProgram, nullptr);
-	load(&tr.ssrTraceShader[SSRDEF_TRACE_HIZ], "ssr_trace_hiz", "ssr_trace", fallback_ssr_traceProgram, "#define USE_HIZ\n");
-	load(&tr.ssrResolveShader, "ssr_resolve", "ssr_resolve", fallback_ssr_resolveProgram, nullptr);
-	load(&tr.ssrTemporalShader, "ssr_temporal", "ssr_temporal", fallback_ssr_temporalProgram, nullptr);
-	load(&tr.ssrCompositeShader, "ssr_composite", "ssr_composite", fallback_ssr_compositeProgram, nullptr);
-	load(&tr.ssrDebugShader, "ssr_debug", "ssr_debug", fallback_ssr_debugProgram, nullptr);
+	load(&tr.screenHiZShader[0], "ssr_hiz_linearize", "ssr_hiz", fallback_ssr_hizProgram, "#define LINEARIZE\n");
+	load(&tr.screenHiZShader[1], "ssr_hiz", "ssr_hiz", fallback_ssr_hizProgram, nullptr);
+
+	if (R_SSRResourcesEnabled())
+	{
+		load(&tr.ssrDownsampleShader, "ssr_downsample", "ssr_downsample", fallback_ssr_downsampleProgram, nullptr);
+		load(&tr.ssrTraceShader[SSRDEF_TRACE], "ssr_trace", "ssr_trace", fallback_ssr_traceProgram, nullptr);
+		load(&tr.ssrTraceShader[SSRDEF_TRACE_HIZ], "ssr_trace_hiz", "ssr_trace", fallback_ssr_traceProgram, "#define USE_HIZ\n");
+		load(&tr.ssrResolveShader, "ssr_resolve", "ssr_resolve", fallback_ssr_resolveProgram, nullptr);
+		load(&tr.ssrTemporalShader, "ssr_temporal", "ssr_temporal", fallback_ssr_temporalProgram, nullptr);
+		load(&tr.ssrCompositeShader, "ssr_composite", "ssr_composite", fallback_ssr_compositeProgram, nullptr);
+		load(&tr.ssrDebugShader, "ssr_debug", "ssr_debug", fallback_ssr_debugProgram, nullptr);
+	}
+
+	if (R_SSGIResourcesEnabled())
+	{
+		load(&tr.ssgiSourceShader, "ssgi_source", "ssgi_source", fallback_ssgi_sourceProgram, nullptr);
+		load(&tr.ssgiTraceShader[SSGIDEF_TRACE], "ssgi_trace", "ssgi_trace", fallback_ssgi_traceProgram, nullptr);
+		load(&tr.ssgiTraceShader[SSGIDEF_TRACE_HIZ], "ssgi_trace_hiz", "ssgi_trace", fallback_ssgi_traceProgram, "#define USE_HIZ\n");
+		load(&tr.ssgiTemporalShader, "ssgi_temporal", "ssgi_temporal", fallback_ssgi_temporalProgram, nullptr);
+		load(&tr.ssgiDenoiseShader, "ssgi_denoise", "ssgi_denoise", fallback_ssgi_denoiseProgram, nullptr);
+		load(&tr.ssgiCompositeShader, "ssgi_composite", "ssgi_composite", fallback_ssgi_compositeProgram, nullptr);
+		load(&tr.ssgiDebugShader, "ssgi_debug", "ssgi_debug", fallback_ssgi_debugProgram, nullptr);
+	}
 
 	return numPrograms;
 }
@@ -3243,7 +3274,7 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramSSAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramScreenSpaceAO(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramMotionBlur(builder, allocator);
-	numEtcShaders += GLSL_LoadGPUProgramSSR(builder, allocator);
+	numEtcShaders += GLSL_LoadGPUProgramScreenSpace(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramVolumetric(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
@@ -3321,15 +3352,22 @@ void GLSL_ShutdownGPUShaders(void)
 	GLSL_DeleteGPUShader(&tr.volumetricCompositeShader);
 	GLSL_DeleteGPUShader(&tr.volumetricDebugShader);
 
-	GLSL_DeleteGPUShader(&tr.ssrDownsampleShader);
 	for ( i = 0; i < 2; i++)
-		GLSL_DeleteGPUShader(&tr.ssrHiZShader[i]);
+		GLSL_DeleteGPUShader(&tr.screenHiZShader[i]);
+	GLSL_DeleteGPUShader(&tr.ssrDownsampleShader);
 	for ( i = 0; i < SSRDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.ssrTraceShader[i]);
 	GLSL_DeleteGPUShader(&tr.ssrResolveShader);
 	GLSL_DeleteGPUShader(&tr.ssrTemporalShader);
 	GLSL_DeleteGPUShader(&tr.ssrCompositeShader);
 	GLSL_DeleteGPUShader(&tr.ssrDebugShader);
+	GLSL_DeleteGPUShader(&tr.ssgiSourceShader);
+	for ( i = 0; i < SSGIDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.ssgiTraceShader[i]);
+	GLSL_DeleteGPUShader(&tr.ssgiTemporalShader);
+	GLSL_DeleteGPUShader(&tr.ssgiDenoiseShader);
+	GLSL_DeleteGPUShader(&tr.ssgiCompositeShader);
+	GLSL_DeleteGPUShader(&tr.ssgiDebugShader);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);

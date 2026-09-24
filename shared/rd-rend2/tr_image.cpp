@@ -3659,8 +3659,8 @@ void R_CreateBuiltinImages( void ) {
 	// motion blur output target (tr_motionblur.cpp)
 	R_CreateMotionBlurImages(width, height, hdrFormat);
 
-	// screen-space reflection targets (tr_ssr.cpp)
-	R_CreateSSRImages(width, height, hdrFormat);
+	// screen-space reflection / GI targets (tr_screenspace.cpp)
+	R_CreateScreenSpaceImages(width, height, hdrFormat);
 
 	// froxel volumetric fog volumes (tr_volumetric.cpp)
 	R_CreateVolumetricImages(width, height);
@@ -3669,6 +3669,7 @@ void R_CreateBuiltinImages( void ) {
 		r_smaa->integer == 2
 		// || r_smaa->integer == 4
 		|| R_SSRWantsVelocity()
+		|| R_SSGIWantsVelocity()
 		|| R_MotionBlurEnabled()
 		// || r_taa->integer
 		);

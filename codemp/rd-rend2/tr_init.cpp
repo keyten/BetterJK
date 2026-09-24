@@ -229,6 +229,25 @@ cvar_t  *r_ssrEmitters;
 cvar_t  *r_ssrEmitterIntensity;
 cvar_t  *r_ssrEmitterMaxRoughness;
 
+cvar_t  *r_ssgi;
+cvar_t  *r_ssgiSource;
+cvar_t  *r_ssgiIntensity;
+cvar_t  *r_ssgiQuality;
+cvar_t  *r_ssgiRays;
+cvar_t  *r_ssgiSteps;
+cvar_t  *r_ssgiMaxDistance;
+cvar_t  *r_ssgiThickness;
+cvar_t  *r_ssgiTemporal;
+cvar_t  *r_ssgiHistoryWeight;
+cvar_t  *r_ssgiDenoise;
+cvar_t  *r_ssgiHalfResolution;
+cvar_t  *r_ssgiHiZ;
+cvar_t  *r_ssgiEmissiveScale;
+cvar_t  *r_ssgiGlowScale;
+cvar_t  *r_ssgiCompare;
+cvar_t  *r_ssgiDebug;
+cvar_t  *r_ssgiFreezeHistory;
+
 cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
 cvar_t  *r_autoPBRConvert;
@@ -1749,6 +1768,43 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_ssrEmitterIntensity, 0.0f, 16.0f, qfalse );
 	r_ssrEmitterMaxRoughness = ri.Cvar_Get( "r_ssrEmitterMaxRoughness", "0.35", CVAR_ARCHIVE, "SSR: rougher surfaces do not reflect light sabers / effects (their dynamic light highlight already does)" );
 	ri.Cvar_CheckRange( r_ssrEmitterMaxRoughness, 0.05f, 1.0f, qfalse );
+
+	r_ssgi = ri.Cvar_Get( "r_ssgi", "0", CVAR_ARCHIVE | CVAR_LATCH, "Screen-space diffuse GI: bounces dynamic light (sabers, blasters, explosions) and emission, not the baked lighting (needs vid_restart)" );
+	ri.Cvar_CheckRange( r_ssgi, 0, 1, qtrue );
+	r_ssgiSource = ri.Cvar_Get( "r_ssgiSource", "0", CVAR_ARCHIVE, "SSGI source: 0 = dynamic lights + emissive (recommended), 1 = emissive only, 2 = full scene (EXPERIMENTAL: bounces baked lighting twice)" );
+	ri.Cvar_CheckRange( r_ssgiSource, 0, 2, qtrue );
+	r_ssgiIntensity = ri.Cvar_Get( "r_ssgiIntensity", "1", CVAR_ARCHIVE, "SSGI indirect light scale (1 = physically based diffuse bounce, 0 = off)" );
+	ri.Cvar_CheckRange( r_ssgiIntensity, 0.0f, 8.0f, qfalse );
+	r_ssgiQuality = ri.Cvar_Get( "r_ssgiQuality", "1", CVAR_ARCHIVE, "SSGI quality: 0 = low, 1 = medium, 2 = high, 3 = ultra (rays, steps, resolution, denoise; not the intensity)" );
+	ri.Cvar_CheckRange( r_ssgiQuality, 0, 3, qtrue );
+	r_ssgiRays = ri.Cvar_Get( "r_ssgiRays", "0", CVAR_ARCHIVE, "SSGI rays per traced pixel and frame, 0 = from r_ssgiQuality" );
+	ri.Cvar_CheckRange( r_ssgiRays, 0, 8, qtrue );
+	r_ssgiSteps = ri.Cvar_Get( "r_ssgiSteps", "0", CVAR_ARCHIVE, "SSGI ray march steps (Hi-Z: iterations / 3), 0 = from r_ssgiQuality" );
+	ri.Cvar_CheckRange( r_ssgiSteps, 0, 256, qtrue );
+	r_ssgiMaxDistance = ri.Cvar_Get( "r_ssgiMaxDistance", "256", CVAR_ARCHIVE, "SSGI maximum ray length in world units" );
+	ri.Cvar_CheckRange( r_ssgiMaxDistance, 16.0f, 4096.0f, qfalse );
+	r_ssgiThickness = ri.Cvar_Get( "r_ssgiThickness", "12", CVAR_ARCHIVE, "SSGI assumed thickness of the depth buffer surfaces in world units (grows with the distance)" );
+	ri.Cvar_CheckRange( r_ssgiThickness, 0.5f, 256.0f, qfalse );
+	r_ssgiTemporal = ri.Cvar_Get( "r_ssgiTemporal", "1", CVAR_ARCHIVE, "SSGI temporal accumulation (reprojected, validated and clamped history)" );
+	ri.Cvar_CheckRange( r_ssgiTemporal, 0, 1, qtrue );
+	r_ssgiHistoryWeight = ri.Cvar_Get( "r_ssgiHistoryWeight", "0.9", CVAR_ARCHIVE, "SSGI maximum history weight of the temporal accumulation" );
+	ri.Cvar_CheckRange( r_ssgiHistoryWeight, 0.0f, 0.98f, qfalse );
+	r_ssgiDenoise = ri.Cvar_Get( "r_ssgiDenoise", "-1", CVAR_ARCHIVE, "SSGI edge-aware denoise passes (0-4), -1 = from r_ssgiQuality" );
+	ri.Cvar_CheckRange( r_ssgiDenoise, -1, 4, qtrue );
+	r_ssgiHalfResolution = ri.Cvar_Get( "r_ssgiHalfResolution", "-1", CVAR_ARCHIVE, "SSGI rays at half resolution: -1 = from r_ssgiQuality, 0 = full, 1 = half (applied at vid_restart)" );
+	ri.Cvar_CheckRange( r_ssgiHalfResolution, -1, 1, qtrue );
+	r_ssgiHiZ = ri.Cvar_Get( "r_ssgiHiZ", "-1", CVAR_ARCHIVE, "SSGI hierarchical depth tracing: -1 = from r_ssgiQuality, 0 = off, 1 = on" );
+	ri.Cvar_CheckRange( r_ssgiHiZ, -1, 1, qtrue );
+	r_ssgiEmissiveScale = ri.Cvar_Get( "r_ssgiEmissiveScale", "1", CVAR_ARCHIVE, "SSGI scale of explicit emissive materials (emissiveMap / emissiveColor / emissiveScale) as a light source" );
+	ri.Cvar_CheckRange( r_ssgiEmissiveScale, 0.0f, 16.0f, qfalse );
+	r_ssgiGlowScale = ri.Cvar_Get( "r_ssgiGlowScale", "0", CVAR_ARCHIVE, "SSGI scale of legacy glow / r_autoEmissive stages as a light source (no physical intensity, 0 = off)" );
+	ri.Cvar_CheckRange( r_ssgiGlowScale, 0.0f, 4.0f, qfalse );
+	r_ssgiCompare = ri.Cvar_Get( "r_ssgiCompare", "0", CVAR_ARCHIVE, "SSGI split screen: left half without, right half with screen-space GI" );
+	ri.Cvar_CheckRange( r_ssgiCompare, 0, 1, qtrue );
+	r_ssgiDebug = ri.Cvar_Get( "r_ssgiDebug", "0", CVAR_CHEAT, "SSGI debug view: 1 = ray hit mask, 2 = hit distance, 3 = raw one frame GI, 4 = temporal GI, 5 = history weight, 6 = denoised GI, 7 = dynamic light source, 8 = emissive source, 9 = final indirect light, 10 = receiver albedo" );
+	ri.Cvar_CheckRange( r_ssgiDebug, 0, 10, qtrue );
+	r_ssgiFreezeHistory = ri.Cvar_Get( "r_ssgiFreezeHistory", "0", CVAR_CHEAT, "SSGI debug: stop updating the temporal history" );
+	ri.Cvar_CheckRange( r_ssgiFreezeHistory, 0, 1, qtrue );
 	r_autoPBR = ri.Cvar_Get( "r_autoPBR", "0", CVAR_ARCHIVE, "PBR parameters of legacy materials without authored specular / packed maps: 0 = current rend2 fallback, 1 = generic dielectric, 2 = heuristic material classes" );
 	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
 	r_autoPBRDebug = ri.Cvar_Get( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );
@@ -2107,6 +2163,7 @@ static void R_InitBackEndFrameData()
 		// || r_smaa->integer == 4
 		// || r_taa->integer
 		|| (r_ssr->integer && r_ssrTemporal->integer)
+		|| r_ssgi->integer
 		|| r_motionBlur->integer
 		);
 

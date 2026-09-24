@@ -311,9 +311,9 @@ void GL_State( uint32_t stateBits )
 			qglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		}
 
-		// the SSR attachments of renderFbo are only written by the draws
+		// the screen-space attachments of renderFbo are only written by the draws
 		// that ask for it, see RB_SetRenderState
-		GL_ResetSSRAuxWrite();
+		GL_ResetScreenAuxWrite();
 	}
 
 	//
@@ -640,8 +640,8 @@ void RB_BeginDrawingView (void) {
 		qglClearBufferfv (GL_COLOR, 1, colorBlack);
 	}
 
-	// screen-space reflections of this view: clears the SSR attachments
-	RB_SSRBeginView();
+	// screen-space reflections / GI of this view: clears their attachments
+	RB_ScreenSpaceBeginView();
 
 	// froxel volumetric fog of this view (tr_volumetric.cpp)
 	RB_VolumetricBeginView();
@@ -1088,7 +1088,7 @@ static void RB_SetRenderState(const RenderState& renderState)
 {
 	GL_Cull(renderState.cullType);
 	GL_State(renderState.stateBits);
-	GL_SetSSRAuxWrite(renderState.ssrAux);
+	GL_SetScreenAuxWrite(renderState.screenAux);
 	GL_DepthRange(
 		renderState.depthRange.minDepth,
 		renderState.depthRange.maxDepth);
@@ -1189,7 +1189,7 @@ static void RB_DrawItems(
 		}
 	}
 
-	GL_SetSSRAuxWrite(false);
+	GL_SetScreenAuxWrite(false);
 }
 
 void RB_AddDrawItem( Pass *pass, uint32_t sortKey, const DrawItem& drawItem )
@@ -1456,7 +1456,7 @@ static void RB_SubmitRenderPass(
 		return sortKeys[a] < sortKeys[b];
 	});
 
-	const qboolean ssr = RB_SSRActive();
+	const qboolean ssr = RB_ScreenSpaceActive();
 	const qboolean froxelFog = RB_VolumetricCompositeActive();
 	if (!ssr && !froxelFog)
 	{
@@ -1464,9 +1464,9 @@ static void RB_SubmitRenderPass(
 		return;
 	}
 
-	// Screen-space reflections replace part of the cubemap reflections of
-	// the opaque surfaces: draw the opaque sort (without its fog passes),
-	// trace and composite, then decals, fog and everything blended on top.
+	// Screen-space GI and reflections work on the opaque surfaces: draw the
+	// opaque sort (without its fog passes), run them (tr_screenspace.cpp),
+	// then decals, fog and everything blended on top.
 	// See RB_CreateSortKey for the key layout.
 	uint32_t numOpaqueItems = 0;
 	if (ssr)
@@ -1505,7 +1505,7 @@ static void RB_SubmitRenderPass(
 
 	RB_DrawItems(numOpaqueItems, renderPass.drawItems, drawOrder);
 	if (ssr)
-		RB_RenderSSR();
+		RB_RenderScreenSpaceOpaque();
 	RB_DrawItems(numFoggedItems - numOpaqueItems, renderPass.drawItems, drawOrder + numOpaqueItems);
 	if (froxelFog)
 		RB_VolumetricComposite();
@@ -2214,7 +2214,7 @@ static void RB_RenderDepthOnly( drawSurf_t *drawSurfs, int numDrawSurfs )
 		!backEnd.colorMask[1],
 		!backEnd.colorMask[2],
 		!backEnd.colorMask[3]);
-	GL_ResetSSRAuxWrite();
+	GL_ResetScreenAuxWrite();
 	backEnd.depthFill = qfalse;
 
 	if (tr.msaaResolveVelocityFbo && needVelocityBuffer)
@@ -2409,6 +2409,7 @@ static void RB_UpdateSceneConstants(gpuFrame_t *frame, const trRefdef_t *refdef)
 	sceneBlock.currentTime = refdef->floatTime;
 	sceneBlock.frameTime = refdef->frameTime;
 	RB_AOSceneParams(sceneBlock.aoParams, sceneBlock.aoParams2);
+	RB_SSGISceneParams(sceneBlock.ssgiParams);
 	frame->time = refdef->floatTime;
 
 	tr.sceneUboOffset = RB_AppendConstantsData(
@@ -3002,7 +3003,7 @@ static const void *RB_ColorMask(const void *data)
 	backEnd.colorMask[3] = (qboolean)(!cmd->rgba[3]);
 
 	qglColorMask(cmd->rgba[0], cmd->rgba[1], cmd->rgba[2], cmd->rgba[3]);
-	GL_ResetSSRAuxWrite();
+	GL_ResetScreenAuxWrite();
 
 	return (const void *)(cmd + 1);
 }
@@ -3469,7 +3470,7 @@ const void *RB_PostProcess(const void *data)
 
 	RB_AODebugOverlay();
 	RB_MotionBlurDebugOverlay();
-	RB_SSRDebugOverlay();
+	RB_ScreenSpaceDebugOverlay();
 	RB_VolumetricDebugOverlay();
 
 	backEnd.framePostProcessed = qtrue;

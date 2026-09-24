@@ -8,6 +8,13 @@ Code: `shared/rd-rend2/tr_ssr.cpp`, shaders `ssr_common.glsl` (library), `ssr_hi
 `ssr_trace.glsl`, `ssr_resolve.glsl`, `ssr_temporal.glsl`, `ssr_composite.glsl`, `ssr_debug.glsl`; material output
 in `lightall.glsl`.
 
+**Shared infrastructure** (`tr_screenspace.cpp`, also used by the screen-space GI, see `rend2-ssgi.md`): the normal
+attachment (2), the MSAA resolve of depth and attachments, the linear depth + closest-depth Hi-Z pyramid
+(`screenHiZ`), the color-0-only composite FBO, the ray march (`SSRSetupRay` / `SSRMarchRay` in `ssr_common.glsl`,
+pass-specific steps / thickness / step distribution as arguments), the history cut detection and the GPU timers.
+They exist when `r_ssr` **or** `r_ssgi` is on; neither requires the other. With SSGI on, every opaque lightall
+fragment writes its normal, while the SSR receiver flag (`a`) keeps its meaning, so the SSR output does not change.
+
 Off by default (`r_ssr 0`, latched): no resources are created, lightall is compiled exactly as before (the
 preprocessed source without `USE_SSR` is identical to the previous one), renderFbo has its two old attachments and
 the main pass is drawn in one piece. The image is unchanged.
@@ -85,10 +92,11 @@ look.
 2. Depth prepass (+ velocity), screen-space AO / contact shadows: unchanged.
 3. Main pass, **opaque part**: `RB_SubmitRenderPass` sorts the draw items as before and splits at the first item
    of a later sort, or of the fog pass stage of the opaque sort (see `RB_CreateSortKey`).
-4. `RB_RenderSSR` (once per view):
-   1. MSAA: resolve depth into `renderDepthImage` and attachments 2-4 into their textures
-   2. `ssrColor` mip 0 = copy of color 0 (resolves MSAA), mips 1-6: 4x4 box downsample (`ssr_downsample`)
-   3. `ssrHiZ` mip 0 = linear view depth (`ssr_hiz` LINEARIZE); with Hi-Z tracing also mips 1-6 = closest depth
+4. `RB_RenderScreenSpaceOpaque` (once per view, tr_screenspace.cpp):
+   1. shared: MSAA: resolve depth into `renderDepthImage` and the attachments into their textures; `screenHiZ`
+      mip 0 = linear view depth (`ssr_hiz` LINEARIZE), with Hi-Z tracing (SSR or SSGI) also mips 1-6 = closest depth
+   2. screen-space GI when enabled (`rend2-ssgi.md`), composited into color 0 first
+   3. `RB_RenderSSR`: `ssrColor` mip 0 = copy of color 0 (resolves MSAA), mips 1-6: 4x4 box downsample (`ssr_downsample`)
    4. trace (`ssr_trace`, full or half resolution) -> `ssrTrace`
    5. resolve (`ssr_resolve`, full resolution) -> `ssrResolve`
    6. optional temporal accumulation (`ssr_temporal`) -> `ssrHistory[current]`
@@ -107,7 +115,7 @@ replaces), without particles or glass in it.
 | image | format | size |
 |---|---|---|
 | `ssrColor` | as renderImage, 7 mips | full |
-| `ssrHiZ` | R32F, 7 mips | full |
+| `screenHiZ` (shared) | R32F, 7 mips | full |
 | `ssrTrace` | RGBA16 (hit uv 1/65535, distance, confidence) | full (half resolution uses a quarter) |
 | `ssrResolve` | RGBA16F (premultiplied radiance, confidence) | full |
 | `ssrHistory[2]`, `ssrHistoryGeom[2]` | RGBA16F | full, only with `r_ssrTemporal 1` |
@@ -229,7 +237,8 @@ color of the view before the rest of the pass and go through the normal tone map
 A/B: `r_ssr 0` is the previous renderer; `r_ssrCompare 1` shows cubemap-only and hybrid side by side in the same
 frame; `r_ssrDebug 8` vs `9` shows the reflection term alone. `build/ab/*-pressr.dll` (HEAD) vs `*-ssr.dll`.
 
-GPU timers: `r_speeds 100` lists "SSR inputs", "SSR trace", "SSR resolve", "SSR temporal", "SSR composite".
+GPU timers: `r_speeds 100` lists "Screen geometry" (shared MSAA resolve + depth pyramid), "SSR inputs" (color
+pyramid), "SSR trace", "SSR resolve", "SSR temporal", "SSR composite".
 
 ## GPU cost
 
@@ -285,5 +294,6 @@ To check in game (`r_ssr 1`, `r_ssrCompare 1`, `r_ssrDebug 4/6/9/10`):
 - A screen-space emissive layer for the remaining additive effects (exact look, on screen only), next to the
   analytic emitters.
 - Pack the material buffer tighter (R11G11B10F for `C`), or reuse the prepass for the normal.
-- Depth pyramid shared with GTAO; compute shader tracing on GL 4.3+.
+- Depth pyramid shared with GTAO (GTAO uses farthest-weighted averages built before the main pass, a different
+  filter); compute shader tracing on GL 4.3+.
 - Screen-space specular occlusion from the trace for the cubemap part that remains.

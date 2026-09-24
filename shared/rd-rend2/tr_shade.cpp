@@ -602,12 +602,12 @@ uint32_t RB_CreateSkySortKey(const DrawItem& item, int stage, int skyNumber, int
 	return key;
 }
 
-// Opaque lightall stages of a view with screen-space reflections also write
-// the SSR material attachments of renderFbo (tr_ssr.cpp). Blended stages
-// must not: they would blend the material data.
-static bool RB_WritesSSRMaterial( const shaderProgram_t *sp, uint32_t stateBits, bool forceRefraction )
+// Opaque lightall stages of a view with screen-space reflections / GI also
+// write the screen-space attachments of renderFbo (tr_screenspace.cpp).
+// Blended stages must not: they would blend the material data.
+static bool RB_WritesScreenMaterial( const shaderProgram_t *sp, uint32_t stateBits, bool forceRefraction )
 {
-	if ( !backEnd.ssrView || backEnd.depthFill || backEnd.refractionFill || forceRefraction )
+	if ( !backEnd.screenAuxView || backEnd.depthFill || backEnd.refractionFill || forceRefraction )
 		return false;
 
 	if ( sp < tr.lightallShader || sp >= tr.lightallShader + LIGHTDEF_COUNT )
@@ -2267,7 +2267,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		DrawItem item = {};
 		item.renderState.stateBits = stateBits;
 		item.renderState.cullType = forceRefraction ? CT_TWO_SIDED : cullType;
-		item.renderState.ssrAux = RB_WritesSSRMaterial(sp, stateBits, forceRefraction);
+		item.renderState.screenAux = RB_WritesScreenMaterial(sp, stateBits, forceRefraction);
 		item.renderState.depthRange = RB_GetDepthRange(backEnd.currentEntity, input->shader);
 		item.program = sp;
 		item.ibo = input->externalIBO ? input->externalIBO : backEndData->currentFrame->dynamicIbo;
