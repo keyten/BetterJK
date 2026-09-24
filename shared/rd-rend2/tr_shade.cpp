@@ -2292,7 +2292,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			if (enableDLights && R_ForwardPlusActive())
 			{
 				if (RB_ForwardPlusViewEnabled(backEnd.viewParms.currentViewParm))
+				{
 					RB_ForwardPlusBindTextures(samplerBindingsWriter);
+					if (R_AreaLightsActive())
+						RB_AreaLightsBindTextures(samplerBindingsWriter);
+				}
 				else
 					enableDLights = false;
 			}

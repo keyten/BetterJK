@@ -357,5 +357,17 @@ typedef struct refimport_s {
 	typedef	refexport_t* (QDECL *GetRefAPI_t) (int apiVersion, refimport_t *rimp);
 #endif
 
+// Optional renderer extension (rend2 LTC area lights, r_ltcAreaLights),
+// looked up as "GetRefAreaLightAPI" next to GetRefAPI: renderers without it
+// simply lack the symbol, so refexport_t and REF_API_VERSION stay unchanged.
+// AddLineLightToScene returns qfalse when the light was not taken (area
+// lights off): the caller adds its old point light instead.
+typedef struct refAreaLightExport_s {
+	void		(*AddAreaLightToScene)( const vec3_t center, const vec3_t right, const vec3_t up, float halfWidth, float halfHeight, float range, float r, float g, float b, int twoSided );
+	qboolean	(*AddLineLightToScene)( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b );
+} refAreaLightExport_t;
+
+typedef	const refAreaLightExport_t* (QDECL *GetRefAreaLightAPI_t) ( void );
+
 #endif
 

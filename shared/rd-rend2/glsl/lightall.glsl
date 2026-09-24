@@ -46,7 +46,7 @@ layout(std140) uniform Camera
 	ivec4 u_FPlusGrid;    // grid texel base, light texel base, tiles x, tiles y
 	vec4 u_FPlusParams;   // tile size, depth slices, slice scale, slice bias
 	vec4 u_FPlusParams2;  // viewport x, viewport y, enabled, near slice distance
-	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, unused
+	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, r_ltcDebug
 };
 
 layout(std140) uniform Entity
@@ -422,7 +422,7 @@ layout(std140) uniform Camera
 	ivec4 u_FPlusGrid;    // grid texel base, light texel base, tiles x, tiles y
 	vec4 u_FPlusParams;   // tile size, depth slices, slice scale, slice bias
 	vec4 u_FPlusParams2;  // viewport x, viewport y, enabled, near slice distance
-	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, unused
+	vec4 u_FPlusDebug;    // r_forwardPlusDebug, selected light, max lights per cluster, r_ltcDebug
 };
 
 layout(std140) uniform Entity
@@ -471,6 +471,11 @@ uniform int u_LightMask;
 uniform samplerBuffer  u_FPlusLights;
 uniform usamplerBuffer u_FPlusGridMap;
 uniform usamplerBuffer u_FPlusIndexMap;
+#if defined(USE_LTC) && defined(PER_PIXEL_LIGHTING)
+// LTC area lights (tr_arealights.cpp, tr_ltc_data.h)
+uniform sampler2D u_LtcMatrixMap;    // inverse LTC matrix (m00, m02, m20, m22)
+uniform sampler2D u_LtcAmplitudeMap; // norm, fresnel, 0, horizon clipped sphere form factor
+#endif
 uniform sampler2D u_DiffuseMap;
 
 #if defined(USE_ENTITY_GRID) && defined(PER_PIXEL_LIGHTING)
@@ -1699,15 +1704,26 @@ list, tr_forwardplus.cpp) only differ in which lights they iterate.
 
 // Forward+: the cluster of this fragment and its light list
 #define FPLUS_HARD_CAP 256		// guards the loop against corrupted counts
-#define FPLUS_LIGHT_TEXELS 3
+#define FPLUS_LIGHT_TEXELS 5
+
+// area light types / flags, tr_local.h DLIGHT_* / AREALIGHT_*
+#define FPLUS_TYPE_RECT 1.0
+#define FPLUS_TYPE_LINE 2.0
+#define AREALIGHT_TWO_SIDED     1
+#define AREALIGHT_SPECULAR_ONLY 2
+#define AREALIGHT_DYNAMIC       4
+#define AREALIGHT_SELECTED      8
 
 struct FPlusLight
 {
-	vec3  origin;
-	float radius;
-	vec3  color;
-	float type;			// 0 = point
+	vec3  origin;		// area lights: centre
+	float radius;		// area lights: influence range
+	vec3  color;		// area lights: radiance
+	float type;			// 0 = point, FPLUS_TYPE_*
 	int   shadowSlot;	// < 0 = unshadowed
+	int   flags;		// area lights: AREALIGHT_*
+	float halfWidth;	// area lights: along right (line: half length)
+	float halfHeight;	// area lights: along up (line: tube radius)
 };
 
 bool FPlusEnabled()
@@ -1763,6 +1779,9 @@ FPlusLight FPlusFetchLight(in int lightIndex)
 	light.color = t1.rgb;
 	light.type = t1.w;
 	light.shadowSlot = int(t2.x);
+	light.flags = int(t2.y);
+	light.halfWidth = t2.z;
+	light.halfHeight = t2.w;
 	return light;
 }
 
@@ -1945,6 +1964,184 @@ vec3 EvaluateDynamicLight(
 	return lightColor * reflectance * attenuation * NL;
 }
 
+#if defined(USE_LTC)
+/*
+LTC area lights (tr_arealights.cpp), Forward+ only. Rectangles, and lines
+(sabers) as a thin rectangle turned towards the receiver. The polygon integral
+[Heitz et al. 2016] with the horizon clipped sphere approximation [Hill and
+Heitz 2016]; tables from tools/ltcfit (tr_ltc_data.h):
+  specular = FF(M^-1 * quad) * (F0 * norm + (1 - F0) * fresnel)
+  diffuse  = FF(quad) * albedo           (exact Lambert form factor)
+FF = form factor (cosine weighted solid angle / pi). The light color is the
+emitted radiance. Attenuation is the geometry itself; the smooth window at the
+influence range only hides the Forward+ cull radius.
+*/
+#define LTC_LUT_SIZE  64.0
+#define LTC_LUT_SCALE ((LTC_LUT_SIZE - 1.0) / LTC_LUT_SIZE)
+#define LTC_LUT_BIAS  (0.5 / LTC_LUT_SIZE)
+
+#if defined(USE_LTC_DEBUG)
+vec3 g_ltcSpecular = vec3(0.0);
+vec3 g_ltcDiffuse = vec3(0.0);
+vec3 g_ltcMode = vec3(0.0);		// source mode tint, weighted by contribution
+float g_ltcBest = 0.0;
+int g_ltcBestLight = -1;		// strongest area light here (r_ltcDebug 8)
+#endif
+
+// integral of the cosine lobe over one edge; the rational fit of
+// theta / sin(theta) includes the 1 / (2 pi) of the form factor
+vec3 LtcIntegrateEdgeVec(in vec3 v1, in vec3 v2)
+{
+	float x = dot(v1, v2);
+	float y = abs(x);
+	float a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+	float b = 3.4175940 + (4.1616724 + y) * y;
+	float v = a / b;
+	float thetaSinTheta = (x > 0.0) ? v : 0.5 * inversesqrt(max(1.0 - x * x, 1e-7)) - v;
+	return cross(v1, v2) * thetaSinTheta;
+}
+
+// form factor of the quad q0..q3 (receiver at the origin, tangent frame,
+// winding: cross(q1 - q0, q3 - q0) points away from the emitting side)
+// transformed by Minv, clipped by the horizon
+float LtcQuadFormFactor(in mat3 Minv, in vec3 q0, in vec3 q1, in vec3 q2, in vec3 q3, in bool twoSided)
+{
+	vec3 L0 = normalize(Minv * q0);
+	vec3 L1 = normalize(Minv * q1);
+	vec3 L2 = normalize(Minv * q2);
+	vec3 L3 = normalize(Minv * q3);
+	vec3 F = LtcIntegrateEdgeVec(L0, L1) + LtcIntegrateEdgeVec(L1, L2) +
+		LtcIntegrateEdgeVec(L2, L3) + LtcIntegrateEdgeVec(L3, L0);
+	float len = length(F);
+	if (len <= 1e-7)
+		return 0.0;
+	float z = F.z / len;
+	if (dot(q0, cross(q1 - q0, q3 - q0)) < 0.0)
+	{
+		// the back of the emitter
+		if (!twoSided)
+			return 0.0;
+		z = -z;
+	}
+	vec2 uv = vec2(z * 0.5 + 0.5, len) * LTC_LUT_SCALE + LTC_LUT_BIAS;
+	return len * texture(u_LtcAmplitudeMap, uv).w;
+}
+
+vec3 EvaluateAreaLight(in DLightSurface s, in FPlusLight light, in int lightIndex)
+{
+	int base = u_FPlusGrid.y + lightIndex * FPLUS_LIGHT_TEXELS;
+	vec3 right = texelFetch(u_FPlusLights, base + 3).xyz;
+	vec3 up = texelFetch(u_FPlusLights, base + 4).xyz;
+	bool twoSided = (light.flags & AREALIGHT_TWO_SIDED) != 0;
+	vec3 toReceiver = s.position - light.origin;
+
+	if (light.type == FPLUS_TYPE_LINE)
+	{
+		// the blade seen from the receiver: a ribbon one tube diameter wide,
+		// facing it (same projected area as the tube)
+		vec3 n = toReceiver - right * dot(toReceiver, right);
+		float l = length(n);
+		if (l < 1e-3)
+			return vec3(0.0);
+		up = cross(n / l, right);
+		twoSided = true;
+	}
+	else if (!twoSided && dot(toReceiver, cross(right, up)) <= 0.0)
+		return vec3(0.0);
+
+	// influence window from the closest point of the emitter
+	vec3 closest = light.origin +
+		right * clamp(dot(toReceiver, right), -light.halfWidth, light.halfWidth) +
+		up * clamp(dot(toReceiver, up), -light.halfHeight, light.halfHeight);
+	float d = length(s.position - closest) / max(light.radius, 1.0);
+	float d2 = d * d;
+	float window = clamp(1.0 - d2 * d2, 0.0, 1.0);
+	window *= window;
+	if (window <= 0.0)
+		return vec3(0.0);
+
+	// POM self shadow: towards the centre (one ray, not one per corner)
+	window *= DynamicLightReceiverVisibility(s, normalize(light.origin - s.position));
+
+	// receiver tangent frame, T1 in the plane of N and E
+	vec3 N = s.N;
+	float NE = dot(N, s.E);
+	vec3 T1 = s.E - N * NE;
+	if (dot(T1, T1) < 1e-8)
+		T1 = abs(N.z) < 0.999 ? cross(N, vec3(0.0, 0.0, 1.0)) : vec3(1.0, 0.0, 0.0);
+	T1 = normalize(T1);
+	vec3 T2 = cross(N, T1);
+	mat3 toTangent = transpose(mat3(T1, T2, N));
+
+	vec3 R = right * light.halfWidth;
+	vec3 U = up * light.halfHeight;
+	vec3 c = light.origin - s.position;
+	vec3 q0 = toTangent * (c - R - U);
+	vec3 q1 = toTangent * (c - R + U);
+	vec3 q2 = toTangent * (c + R + U);
+	vec3 q3 = toTangent * (c + R - U);
+
+	vec3 radiance = light.color * window;
+	vec3 diffuseOut = vec3(0.0);
+	vec3 specularOut = vec3(0.0);
+	float formFactor = 0.0;
+
+	// static stock lamps: the lightmap already has their diffuse light
+	#if defined(USE_CLOTH_BRDF)
+	formFactor = LtcQuadFormFactor(mat3(1.0), q0, q1, q2, q3, twoSided);
+	#endif
+	if ((light.flags & AREALIGHT_SPECULAR_ONLY) == 0)
+	{
+		#if !defined(USE_CLOTH_BRDF)
+		formFactor = LtcQuadFormFactor(mat3(1.0), q0, q1, q2, q3, twoSided);
+		#endif
+		diffuseOut = radiance * s.diffuse * formFactor;
+		#if defined(USE_SSGI)
+		// view independent diffuse only: the screen-space GI source
+		g_ssgiDynamicDiffuse += diffuseOut;
+		#endif
+	}
+
+	#if defined(USE_SPECULARMAP)
+	#if !defined(USE_CLOTH_BRDF)
+	vec2 uv = vec2(sqrt(clamp(s.roughness, 0.0, 1.0)), sqrt(1.0 - clamp(NE, 0.0, 1.0)));
+	uv = uv * LTC_LUT_SCALE + LTC_LUT_BIAS;
+	vec4 t1 = texture(u_LtcMatrixMap, uv);
+	vec4 t2 = texture(u_LtcAmplitudeMap, uv);
+	mat3 Minv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));
+	float specFF = LtcQuadFormFactor(Minv, q0, q1, q2, q3, twoSided);
+	// Schlick split as F_Schlick, including its no-specular cut
+	vec3 F = s.specular * t2.x + (1.0 - s.specular) * t2.y * clamp(50.0 * s.specular.g, 0.0, 1.0);
+	specularOut = radiance * specFF * F;
+	#else
+	// cloth (Charlie) lobe: wide, a representative point is enough
+	vec3 L = normalize(closest - s.position);
+	vec3 H = normalize(L + s.E);
+	float NL = clamp(dot(N, L), 0.0, 1.0);
+	specularOut = radiance * M_PI * formFactor * CalcSpecular(s.specular,
+		clamp(dot(N, H), 0.0, 1.0), NL, NE, clamp(dot(L, H), 0.0, 1.0),
+		clamp(dot(s.E, H), 0.0, 1.0), s.roughness);
+	#endif
+	#endif
+
+	#if defined(USE_LTC_DEBUG)
+	g_ltcSpecular += specularOut;
+	g_ltcDiffuse += diffuseOut;
+	vec3 tint = light.type == FPLUS_TYPE_LINE ? vec3(0.1, 1.0, 0.2) :
+		(light.flags & AREALIGHT_DYNAMIC) != 0 ? vec3(1.0, 0.5, 0.05) :
+		(light.flags & AREALIGHT_SPECULAR_ONLY) != 0 ? vec3(0.1, 0.35, 1.0) : vec3(0.1, 0.9, 1.0);
+	float strength = dot(specularOut + diffuseOut, vec3(0.2126, 0.7152, 0.0722));
+	g_ltcMode += tint * strength;
+	if (strength > g_ltcBest)
+	{
+		g_ltcBest = strength;
+		g_ltcBestLight = lightIndex;
+	}
+	#endif
+	return diffuseOut + specularOut;
+}
+#endif
+
 vec3 CalcDynamicLightContribution(
 	in float roughness,
 	in vec3 N,
@@ -1987,8 +2184,19 @@ vec3 CalcDynamicLightContribution(
 		{
 			int lightIndex = FPlusLightIndex(list.x + k);
 			FPlusLight light = FPlusFetchLight(lightIndex);
-			if (light.type != 0.0 || FPlusDebugSkipLight(light, lightIndex))
+			if (FPlusDebugSkipLight(light, lightIndex))
 				continue;
+			if (light.type != 0.0)
+			{
+				// area light (r_ltcAreaLights): only in the USE_LTC programs
+#if defined(USE_LTC)
+#if defined(USE_PARALLAXMAP)
+				g_pomLightWeight = PomLocalLightWeight(pomCut, light.origin - s.position, light.color, light.radius);
+#endif
+				outColor += EvaluateAreaLight(s, light, lightIndex);
+#endif
+				continue;
+			}
 			lightOrigin = light.origin;
 			lightColor = light.color;
 			lightRadius = light.radius;
@@ -2126,6 +2334,54 @@ bool FPlusDebugColor(in vec3 position, in vec3 litColor, in vec3 dynamicLight, o
 	return true;
 #endif
 }
+
+#if defined(USE_LTC_DEBUG) && defined(PER_PIXEL_LIGHTING)
+// r_ltcDebug (tr_arealights.cpp): 1 specular, 2 diffuse, 3 source mode,
+// 4 area lights per cluster, 5 influence bounds, 8 strongest light id.
+// 6 / 7 (outlines / normals) are polygons drawn on the lit image.
+bool LtcDebugColor(in vec3 position, in vec3 litColor, out vec3 color)
+{
+	color = litColor;
+	int mode = int(u_FPlusDebug.w);
+	if (!FPlusEnabled() || mode <= 0 || mode == 6 || mode == 7 || mode > 8)
+		return false;
+
+	if (mode == 1)
+		color = g_ltcSpecular;
+	else if (mode == 2)
+		color = g_ltcDiffuse;
+	else if (mode == 3)
+		color = g_ltcMode + litColor * 0.05;
+	else if (mode == 4 || mode == 5)
+	{
+		ivec2 list = FPlusClusterLights(position);
+		int count = 0;
+		vec3 sum = vec3(0.0);
+		for (int k = 0; k < list.y; k++)
+		{
+			int lightIndex = FPlusLightIndex(list.x + k);
+			FPlusLight light = FPlusFetchLight(lightIndex);
+			if (light.type == 0.0)
+				continue;
+			count++;
+			float d = length(light.origin - position) / max(light.radius, 1.0);
+			if (d < 1.0)
+			{
+				vec3 c = (light.flags & AREALIGHT_SELECTED) != 0 ? vec3(1.0) : FPlusHashColor(lightIndex);
+				sum += c * (0.25 + 0.75 * (1.0 - d)) * 0.5;
+			}
+		}
+		if (mode == 4)
+			color = count == 0 ? litColor * 0.15 :
+				mix(vec3(0.0, 0.2, 1.0), vec3(1.0, 0.1, 0.0), clamp(float(count - 1) / 7.0, 0.0, 1.0));
+		else
+			color = litColor * 0.15 + sum;
+	}
+	else if (mode == 8)
+		color = g_ltcBestLight < 0 ? litColor * 0.1 : FPlusHashColor(g_ltcBestLight);
+	return true;
+}
+#endif
 
 float luma(vec3 color)
 {
@@ -2873,6 +3129,21 @@ void main()
 		else
 			debugColor = vec3(1.0, 0.0, 1.0); // legacy fallback: no probe
 		out_Color = vec4(debugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+#endif
+
+#if defined(USE_LTC_DEBUG) && defined(PER_PIXEL_LIGHTING)
+	// r_ltcDebug 1-5, 8, written unlit (tone mapping is bypassed)
+	vec3 ltcDebugColor;
+	if (LtcDebugColor(u_ViewOrigin - viewDir, out_Color.rgb, ltcDebugColor))
+	{
+		out_Color = vec4(ltcDebugColor, diffuse.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
     #if defined(USE_SSR) && defined(USE_SPECULARMAP)
 		out_SSRSpecular = vec4(0.0);

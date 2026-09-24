@@ -57,7 +57,7 @@ slot from the light data instead of assuming slot == light index.
 #include <chrono>
 #include <vector>
 
-#define FPLUS_LIGHT_TEXELS		3
+#define FPLUS_LIGHT_TEXELS		5	// must match lightall.glsl
 #define FPLUS_MAX_VIEWS			ARRAY_LEN(tr.cameraUboOffsets)
 #define FPLUS_LIGHT_CAPACITY	(MAX_SCENES * MAX_RENDER_DLIGHTS * FPLUS_LIGHT_TEXELS)
 #define FPLUS_GRID_CAPACITY		(1 << 19)	// clusters per frame (all scenes / views)
@@ -280,6 +280,9 @@ void R_ForwardPlusBeginFrame( void )
 		s_fp.testLights = 0;
 
 	s_fp.active = (qboolean)(r_forwardPlus->integer != 0 && !s_fp.gpuFailed);
+
+	// LTC area lights depend on this frame's Forward+ state
+	R_AreaLightsBeginFrame();
 }
 
 /*
@@ -473,6 +476,9 @@ static void R_ForwardPlusSelectShadows( const trRefdef_t *refdef )
 	{
 		history[i] = budget ? R_MatchShadowHistory(refdef->dlights + i) : -1;
 		score[i] = s_fp.importance[i] * (history[i] >= 0 ? 1.3f : 1.0f);
+		// area lights are unshadowed (LTC is not an area shadow)
+		if ( refdef->dlights[i].areaType != DLIGHT_POINT )
+			score[i] = -1.0f;
 		candidates[i] = i;
 	}
 
@@ -484,6 +490,8 @@ static void R_ForwardPlusSelectShadows( const trRefdef_t *refdef )
 	for ( int k = 0; k < count; k++ )
 	{
 		const int light = candidates[k];
+		if ( score[light] < 0.0f )
+			continue;
 		if ( history[light] >= 0 )
 		{
 			const int slot = s_fp.shadowHistory[history[light]].slot;
@@ -498,7 +506,7 @@ static void R_ForwardPlusSelectShadows( const trRefdef_t *refdef )
 	for ( int k = 0; k < count; k++ )
 	{
 		const int light = candidates[k];
-		if ( s_fp.shadowSlot[light] >= 0 )
+		if ( s_fp.shadowSlot[light] >= 0 || score[light] < 0.0f )
 			continue;
 		while ( slotUsed[nextFree] )
 			nextFree++;
@@ -590,11 +598,16 @@ int R_GetUboDlights( const trRefdef_t *refdef, int *lightIndexes, int *shadowLay
 	}
 
 	R_ForwardPlusPrepareScene(refdef);
-	const int n = Q_min(s_fp.numLights, MAX_DLIGHTS);
-	for ( int i = 0; i < n; i++ )
+	// point lights only: the legacy Lights block has no area light shape
+	int n = 0;
+	for ( int k = 0; k < s_fp.numLights && n < MAX_DLIGHTS; k++ )
 	{
-		lightIndexes[i] = s_fp.order[i];
-		shadowLayers[i] = s_fp.shadowSlot[s_fp.order[i]];
+		const int light = s_fp.order[k];
+		if ( refdef->dlights[light].areaType != DLIGHT_POINT )
+			continue;
+		lightIndexes[n] = light;
+		shadowLayers[n] = s_fp.shadowSlot[light];
+		n++;
 	}
 	return n;
 }
@@ -794,7 +807,7 @@ static void RB_ForwardPlusBuildView(
 	VectorSet4(out->debug,
 		(float)Com_Clampi(0, 9, r_forwardPlusDebug->integer),
 		(float)r_forwardPlusDebugLight->integer,
-		(float)maxPerCluster, 0.0f);
+		(float)maxPerCluster, R_AreaLightsDebugParam());
 
 	s_fp.current.views++;
 	if ( collectStats )
@@ -843,9 +856,24 @@ void RB_UpdateForwardPlus( gpuFrame_t *frame, const trRefdef_t *refdef )
 	{
 		const dlight_t *dl = refdef->dlights + i;
 		float *t = lightData[i * FPLUS_LIGHT_TEXELS];
+		// point:  origin, radius | color, 0 | shadow slot
+		// area:   centre, cull radius | radiance, type | -1, flags, half width,
+		//         half height | right | up (tr_arealights.cpp)
 		VectorSet4(t + 0, dl->origin[0], dl->origin[1], dl->origin[2], dl->radius);
-		VectorSet4(t + 4, dl->color[0], dl->color[1], dl->color[2], 0.0f);	// type: point
-		VectorSet4(t + 8, (float)s_fp.shadowSlot[i], 0.0f, 0.0f, 0.0f);
+		VectorSet4(t + 4, dl->color[0], dl->color[1], dl->color[2], (float)dl->areaType);
+		VectorSet4(t + 8, (float)s_fp.shadowSlot[i], (float)dl->areaFlags, dl->halfWidth, dl->halfHeight);
+		if ( dl->areaType != DLIGHT_POINT )
+		{
+			// the window reaches range = cull radius - half diagonal
+			t[3] = dl->radius - sqrtf(dl->halfWidth * dl->halfWidth + dl->halfHeight * dl->halfHeight);
+			VectorSet4(t + 12, dl->areaRight[0], dl->areaRight[1], dl->areaRight[2], 0.0f);
+			VectorSet4(t + 16, dl->areaUp[0], dl->areaUp[1], dl->areaUp[2], 0.0f);
+		}
+		else
+		{
+			VectorSet4(t + 12, 0.0f, 0.0f, 0.0f, 0.0f);
+			VectorSet4(t + 16, 0.0f, 0.0f, 0.0f, 0.0f);
+		}
 	}
 	const int lightBase = RB_ForwardPlusUpload(fb, FPLUS_BUFFER_LIGHTS, lightData,
 		s_fp.numLights * FPLUS_LIGHT_TEXELS);
@@ -909,6 +937,11 @@ void RB_ForwardPlusBindTextures( SamplerBindingsWriter& samplers )
 
 qboolean RB_ForwardPlusDebugBypassesToneMap( void )
 {
+	if ( R_AreaLightsActive() && r_ltcDebug->integer >= 1 && r_ltcDebug->integer <= 8 &&
+		r_ltcDebug->integer != 6 && r_ltcDebug->integer != 7 )
+	{
+		return qtrue;	// r_ltcDebug views written unlit
+	}
 	return (qboolean)(s_fp.active && r_forwardPlusDebug->integer >= 1 && r_forwardPlusDebug->integer <= 9);
 }
 

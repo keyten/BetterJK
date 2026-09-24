@@ -336,6 +336,14 @@ extern cvar_t  *r_forwardPlusDebug;
 extern cvar_t  *r_forwardPlusDebugLight;
 extern cvar_t  *r_dynamicShadowMaxLights;
 
+extern cvar_t  *r_ltcAreaLights;
+extern cvar_t  *r_ltcDebug;
+extern cvar_t  *r_ltcDebugLight;
+extern cvar_t  *r_ltcIntensityScale;
+extern cvar_t  *r_ltcStaticDiffuse;
+extern cvar_t  *r_ltcMaxLights;
+extern cvar_t  *r_saberAreaLights;
+
 extern cvar_t  *r_normalMapping;
 extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
@@ -638,7 +646,33 @@ typedef struct dlight_s {
 
 	vec3_t	transformed;		// origin in local coordinate system
 	int		additive;			// texture detail is lost tho when the lightmap is dark
+
+	// LTC area light (tr_arealights.cpp), Forward+ only. Point lights: type 0
+	// and the fields below unused. Area lights: origin = centre, radius =
+	// influence / cull radius (not an attenuation radius), color = emitted
+	// radiance (not normalised), emitting side = cross(right, up)
+	int		areaType;			// DLIGHT_POINT, DLIGHT_RECT, DLIGHT_LINE
+	int		areaFlags;			// AREALIGHT_*
+	int		areaId;				// map light index, -1 = scene (dynamic) light
+	vec3_t	areaRight;			// unit
+	vec3_t	areaUp;				// unit (LINE: unused, rebuilt per pixel)
+	float	halfWidth;			// along right (LINE: half length)
+	float	halfHeight;			// along up (LINE: tube radius)
 } dlight_t;
+
+enum
+{
+	DLIGHT_POINT,
+	DLIGHT_RECT,
+	DLIGHT_LINE,
+	// reserved: DLIGHT_DISK, DLIGHT_SPOT
+};
+
+// area light flags, packed in the Forward+ light data (lightall.glsl)
+#define AREALIGHT_TWO_SIDED		1
+#define AREALIGHT_SPECULAR_ONLY	2	// static stock lamps: the lightmap has the diffuse
+#define AREALIGHT_DYNAMIC		4	// scene light (saber, API), else map file light
+#define AREALIGHT_SELECTED		8	// r_ltcDebug highlight
 
 // a trRefEntity_t has all the information passed in by
 // the client game, as well as some locally derived info
@@ -961,7 +995,7 @@ struct CameraBlock
 	int fplusGrid[4];		// grid texel base, light texel base, tiles x, tiles y
 	vec4_t fplusParams;		// tile size (pixels), depth slices, slice scale, slice bias
 	vec4_t fplusParams2;	// viewport x, viewport y, enabled, near slice distance
-	vec4_t fplusDebug;		// r_forwardPlusDebug, selected light, max lights per cluster, unused
+	vec4_t fplusDebug;		// r_forwardPlusDebug, selected light, max lights per cluster, r_ltcDebug
 };
 
 struct SceneBlock
@@ -1216,6 +1250,11 @@ enum
 	// static rain occlusion depth map (tr.weatherDepthImage) of lightall,
 	// r_weatherWetness (tr_weather.cpp). Needs GL_MAX_TEXTURE_IMAGE_UNITS > 19.
 	TB_WEATHERDEPTH  = 19,
+
+	// LTC area light lookup tables of lightall (tr_arealights.cpp, USE_LTC).
+	// Needs GL_MAX_TEXTURE_IMAGE_UNITS > 21, else r_ltcAreaLights stays off.
+	TB_LTC_MATRIX    = 20,
+	TB_LTC_AMPLITUDE = 21,
 	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
@@ -1441,6 +1480,8 @@ typedef struct shader_s {
 
 	qboolean	explicitlyDefined;		// found in a .shader file
 	qboolean	alphaShadow;			// q3map_alphashadow: use the base alpha as a sun-shadow cutout
+	float		surfaceLight;			// q3map_surfacelight / surfacelight value, 0 = none (area light hint only)
+	vec3_t		surfaceLightColor;		// q3map_lightRGB / lightColor, all 0 = not given
 	uint16_t foliageSignals;       // registration-time material evidence
 	uint8_t  foliageHint;          // foliageClass_t, before model/surface vetoes
 	qboolean	silhouettePOM;			// silhouettePOM: displaced silhouette shell (tr_pom_silhouette.cpp)
@@ -2073,6 +2114,9 @@ typedef enum
 	UNIFORM_POMTRAVERSAL,	// POM view ray: adaptive (0/1), min steps, max steps, binary steps
 	UNIFORM_POMLOD,			// POM: fade start, 1 / fade width (0 off), local light mode, max local lights
 	UNIFORM_POMDEBUG,		// POM: frozen sun direction (0 = live), debug view
+
+	UNIFORM_LTCMATRIXMAP,		// LTC area lights: tr.ltcMatrixImage (USE_LTC)
+	UNIFORM_LTCAMPLITUDEMAP,	// LTC area lights: tr.ltcAmplitudeImage (USE_LTC)
 
 	UNIFORM_WEATHERDEPTHMAP,	// r_weatherWetness: tr.weatherDepthImage
 	UNIFORM_WEATHERMVP,			// world -> weather depth clip space
@@ -3217,6 +3261,8 @@ typedef struct trGlobals_s {
 	image_t                 *renderCubeImage;
 	image_t                 *renderCubeDepthImage;
 	image_t					*envBrdfImage;
+	image_t					*ltcMatrixImage;	// LTC inverse matrix (tr_ltc_data.h)
+	image_t					*ltcAmplitudeImage;	// LTC norm, fresnel, sphere form factor
 	image_t					*probeAverageImage;
 	image_t					*textureDepthImage;
 	image_t					*weatherDepthImage;
@@ -4898,6 +4944,33 @@ void R_ShutdownForwardPlus(void);
 void R_ForwardPlusStats_f(void);
 void R_SpawnTestLights_f(void);
 void R_ForwardPlusBenchmark_f(void);
+
+/*
+============================================================
+
+LTC AREA LIGHTS, tr_arealights.cpp (Forward+ only)
+
+============================================================
+*/
+
+qboolean R_AreaLightsActive(void);
+dlight_t *R_AllocSceneDlight(void);
+void R_AreaLightsBeginFrame(void);
+void R_CreateLtcImages(void);
+void R_LoadAreaLights(const char *mapName);
+void R_ClearAreaLights(void);
+void R_AddAreaLightsToScene(const refdef_t *fd);
+void R_AreaLightsDrawDebug(void);
+void RB_AreaLightsBindTextures(SamplerBindingsWriter& samplers);
+float R_AreaLightsDebugParam(void);
+void RE_AddAreaLightToScene(const vec3_t center, const vec3_t right, const vec3_t up,
+	float halfWidth, float halfHeight, float range, float r, float g, float b, int twoSided);
+qboolean RE_AddLineLightToScene(const vec3_t start, const vec3_t end, float radius,
+	float range, float r, float g, float b);
+void R_ReloadAreaLights_f(void);
+void R_AreaLightsList_f(void);
+void R_AreaLightsNearest_f(void);
+void R_ExtractAreaLights_f(void);
 
 /*
 ============================================================

@@ -369,6 +369,13 @@ static void CL_OpenUIMenu( int menuID ) {
 	UIVM_SetActiveMenu( (uiMenuCommand_t)menuID );
 }
 
+// optional renderer extension (tr_public.h): qfalse without it
+static qboolean CL_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b ) {
+	if ( !reAreaLights || !reAreaLights->AddLineLightToScene )
+		return qfalse;
+	return reAreaLights->AddLineLightToScene( start, end, radius, range, r, g, b );
+}
+
 static void CGFX_AddLine( vec3_t start, vec3_t end, float size1, float size2, float sizeParm, float alpha1, float alpha2, float alphaParm, vec3_t sRGB, vec3_t eRGB, float rgbParm, int killTime, qhandle_t shader, int flags ) {
 	FX_AddLine( start, end, size1, size2, sizeParm, alpha1, alpha2, alphaParm, sRGB, eRGB, rgbParm, killTime, shader, flags );
 }
@@ -1911,6 +1918,7 @@ void CL_BindCGame( void ) {
 		cgi.G2API_GetSurfaceName				= CL_G2API_GetSurfaceName;
 
 		cgi.ext.R_Font_StrLenPixels				= re->ext.Font_StrLenPixels;
+		cgi.ext.R_AddLineLightToScene			= CL_R_AddLineLightToScene;
 
 		GetCGameAPI = (GetCGameAPI_t)cgvm->GetModuleAPI;
 		ret = GetCGameAPI( CGAME_API_VERSION, &cgi );

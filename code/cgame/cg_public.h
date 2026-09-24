@@ -221,6 +221,10 @@ Ghoul2 Insert End
 
 	CG_OPENJK_MENU_PAINT,
 	CG_OPENJK_GETMENU_BYNAME,
+
+	// LTC line light (rend2 area light extension), returns qfalse when not
+	// taken; only called with r_saberAreaLights set (older engines lack it)
+	CG_R_ADDLINELIGHTTOSCENE,
 } cgameImport_t;
 
 #ifdef JK2_MODE

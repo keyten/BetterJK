@@ -568,6 +568,7 @@ extern	vmCvar_t		cg_bobup;
 extern	vmCvar_t		cg_bobpitch;
 extern	vmCvar_t		cg_bobroll;
 extern	vmCvar_t		cg_shadows;
+extern	vmCvar_t		r_saberAreaLights;
 extern	vmCvar_t		cg_renderToTextureFX;
 extern	vmCvar_t		cg_shadowCullDistance;
 extern	vmCvar_t		cg_paused;
@@ -1035,6 +1036,7 @@ qboolean	cgi_R_inPVS( vec3_t p1, vec3_t p2 );
 // significant construction
 void	cgi_R_AddPolyToScene( qhandle_t hShader , int numVerts, const polyVert_t *verts );
 void	cgi_R_AddLightToScene( const vec3_t org, float intensity, float r, float g, float b );
+qboolean	cgi_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b );
 void	cgi_R_RenderScene( const refdef_t *fd );
 void	cgi_R_SetColor( const float *rgba );	// NULL = 1,1,1,1
 void	cgi_R_DrawStretchPic( float x, float y, float w, float h,

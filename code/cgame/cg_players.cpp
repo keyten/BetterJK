@@ -5629,6 +5629,41 @@ static void CG_RGBForSaberColor( saber_colors_t color, vec3_t rgb )
 	}
 }
 
+/*
+r_saberAreaLights (rend2 LTC area lights): every blade lights as a line along
+it instead of one averaged point light. qfalse = the renderer did not take
+it (area lights off, other renderer): the caller adds its point light, never
+both.
+*/
+static qboolean CG_SaberBladeLineLights( saberInfo_t *saber, int firstBlade, int lastBlade )
+{
+	qboolean taken = qfalse;
+	int i;
+
+	if ( !r_saberAreaLights.integer )
+	{
+		return qfalse;
+	}
+	for ( i = firstBlade; i <= lastBlade; i++ )
+	{
+		bladeInfo_t *blade = &saber->blade[i];
+		vec3_t rgb, tip;
+
+		if ( blade->length < MIN_SABERBLADE_DRAW_LENGTH )
+		{
+			continue;
+		}
+		CG_RGBForSaberColor( blade->color, rgb );
+		VectorMA( blade->muzzlePoint, blade->length, blade->muzzleDir, tip );
+		if ( !cgi_R_AddLineLightToScene( blade->muzzlePoint, tip, blade->radius*0.5f, blade->length*1.4f, rgb[0], rgb[1], rgb[2] ) )
+		{
+			return taken;
+		}
+		taken = qtrue;
+	}
+	return taken;
+}
+
 static void CG_DoSaberLight( saberInfo_t *saber )
 {
 	int firstBlade = 0;
@@ -5665,6 +5700,11 @@ static void CG_DoSaberLight( saberInfo_t *saber )
 		{
 			lastBlade = saber->bladeStyle2Start;
 		}
+	}
+
+	if ( CG_SaberBladeLineLights( saber, firstBlade, lastBlade ) )
+	{
+		return;
 	}
 
 	vec3_t		positions[MAX_BLADES*2], mid={0}, rgbs[MAX_BLADES*2], rgb={0};
@@ -5792,7 +5832,14 @@ static void CG_DoSaber( vec3_t origin, vec3_t dir, float length, float lengthMax
 	{//FIXME: RGB combine all the colors of the sabers you're using into one averaged color!
 		vec3_t rgb={1,1,1};
 		CG_RGBForSaberColor( color, rgb );
-		cgi_R_AddLightToScene( mid, (length*1.4f) + (Q_flrand(0.0f, 1.0f)*3.0f), rgb[0], rgb[1], rgb[2] );
+		// r_saberAreaLights: a line along the blade instead (never both)
+		vec3_t tip;
+		VectorMA( origin, length, dir, tip );
+		if ( !r_saberAreaLights.integer ||
+			!cgi_R_AddLineLightToScene( origin, tip, radius*0.5f, length*1.4f, rgb[0], rgb[1], rgb[2] ) )
+		{
+			cgi_R_AddLightToScene( mid, (length*1.4f) + (Q_flrand(0.0f, 1.0f)*3.0f), rgb[0], rgb[1], rgb[2] );
+		}
 	}
 
 	memset( &saber, 0, sizeof( refEntity_t ));

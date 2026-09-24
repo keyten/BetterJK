@@ -214,6 +214,9 @@ void RB_AddDlightFlares( void ) {
 		fog = tr.world->fogs;
 
 	for (i=0 ; i<backEnd.refdef.num_dlights ; i++, l++) {
+		if ( l->areaType != DLIGHT_POINT ) {
+			continue;	// LTC area lights (tr_arealights.cpp) have no flare
+		}
 
 		if(fog)
 		{

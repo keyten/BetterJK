@@ -384,6 +384,7 @@ typedef struct {
 extern	clientStatic_t		cls;
 
 extern	refexport_t		*re;		// interface to refresh .dll
+extern	const refAreaLightExport_t	*reAreaLights;	// optional renderer extension, may be NULL
 
 //
 // cvars

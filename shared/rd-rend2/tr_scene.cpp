@@ -252,6 +252,26 @@ void RE_AddMiniRefEntityToScene( const miniRefEntity_t *miniRefEnt ) {
 
 /*
 =====================
+R_AllocSceneDlight
+
+A cleared point light, NULL when the frame is full: MAX_DLIGHTS, or
+MAX_RENDER_DLIGHTS with r_forwardPlus 1 (area lights use it too)
+=====================
+*/
+dlight_t *R_AllocSceneDlight( void ) {
+	if ( r_numdlights >= R_DlightCapacity() ) {
+		R_ForwardPlusNoteDroppedLight();
+		return NULL;
+	}
+	dlight_t *dl = &backEndData->dlights[r_numdlights++];
+	Com_Memset( dl, 0, sizeof( *dl ) );
+	dl->areaType = DLIGHT_POINT;
+	dl->areaId = -1;
+	return dl;
+}
+
+/*
+=====================
 RE_AddDynamicLightToScene
 
 =====================
@@ -262,15 +282,13 @@ void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, floa
 	if ( !tr.registered ) {
 		return;
 	}
-	// MAX_DLIGHTS, or MAX_RENDER_DLIGHTS with r_forwardPlus 1 (per frame)
-	if ( r_numdlights >= R_DlightCapacity() ) {
-		R_ForwardPlusNoteDroppedLight();
-		return;
-	}
 	if ( intensity <= 0 ) {
 		return;
 	}
-	dl = &backEndData->dlights[r_numdlights++];
+	dl = R_AllocSceneDlight();
+	if ( !dl ) {
+		return;
+	}
 	VectorCopy (org, dl->origin);
 	dl->radius = intensity;
 	dl->color[0] = r;
@@ -489,6 +507,9 @@ void RE_BeginScene(const refdef_t *fd)
 
 	// r_spawnTestLights (developer only), before the scene takes its lights
 	R_ForwardPlusAddTestLights(fd);
+
+	// r_ltcAreaLights: the map's area lights (and r_ltcDebug 6 / 7 polygons)
+	R_AddAreaLightsToScene(fd);
 
 	tr.refdef.num_dlights = r_numdlights - r_firstSceneDlight;
 	tr.refdef.dlights = &backEndData->dlights[r_firstSceneDlight];

@@ -226,6 +226,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PomLod",				GLSL_VEC4, 1 },
 	{ "u_PomDebug",				GLSL_VEC4, 1 },
 
+	{ "u_LtcMatrixMap",			GLSL_INT, 1 },
+	{ "u_LtcAmplitudeMap",		GLSL_INT, 1 },
+
 	{ "u_WeatherDepthMap",		GLSL_INT, 1 },
 	{ "u_WeatherMvp",			GLSL_MAT4x4, 1 },
 	{ "u_WetnessParams",		GLSL_VEC4, 1 },
@@ -2173,6 +2176,15 @@ static int GLSL_LoadGPUProgramLightAll(
 		if (r_forwardPlusDebug->integer)
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_FPLUS_DEBUG\n");
 
+		// LTC area lights (latched, tr_arealights.cpp): the rectangle
+		// integration is only compiled in when enabled, off costs nothing
+		if (r_ltcAreaLights->integer && maxFragmentSamplers > TB_LTC_AMPLITUDE)
+		{
+			Q_strcat(extradefines, sizeof(extradefines), "#define USE_LTC\n");
+			if (r_ltcDebug->integer)
+				Q_strcat(extradefines, sizeof(extradefines), "#define USE_LTC_DEBUG\n");
+		}
+
 		// POM self shadow rays and debug views (latched, tr_pom.cpp): only in
 		// the parallax permutations, compiled only when asked for
 		if (i & LIGHTDEF_USE_PARALLAXMAP)
@@ -2385,6 +2397,8 @@ static int GLSL_LoadGPUProgramLightAll(
 			GLSL_SetUniformInt(program, UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);
 			GLSL_SetUniformInt(program, UNIFORM_FPLUSINDICES, TB_FPLUS_INDICES);
 			GLSL_SetUniformInt(program, UNIFORM_WEATHERDEPTHMAP, TB_WEATHERDEPTH);
+			GLSL_SetUniformInt(program, UNIFORM_LTCMATRIXMAP, TB_LTC_MATRIX);
+			GLSL_SetUniformInt(program, UNIFORM_LTCAMPLITUDEMAP, TB_LTC_AMPLITUDE);
 			if ( variant == 1 )
 				GLSL_SetPomSilhouetteUnits(program);
 			qglUseProgram(0);

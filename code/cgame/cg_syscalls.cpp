@@ -327,6 +327,10 @@ void	cgi_R_AddLightToScene( const vec3_t org, float intensity, float r, float g,
 	Q_syscall( CG_R_ADDLIGHTTOSCENE, org, PASSFLOAT(intensity), PASSFLOAT(r), PASSFLOAT(g), PASSFLOAT(b) );
 }
 
+qboolean	cgi_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b ) {
+	return (qboolean)Q_syscall( CG_R_ADDLINELIGHTTOSCENE, start, end, PASSFLOAT(radius), PASSFLOAT(range), PASSFLOAT(r), PASSFLOAT(g), PASSFLOAT(b) );
+}
+
 void	cgi_R_RenderScene( const refdef_t *fd ) {
 	Q_syscall( CG_R_RENDERSCENE, fd );
 }

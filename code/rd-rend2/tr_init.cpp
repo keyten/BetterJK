@@ -297,6 +297,13 @@ cvar_t  *r_forwardPlusMaxLightsPerCluster;
 cvar_t  *r_forwardPlusDebug;
 cvar_t  *r_forwardPlusDebugLight;
 cvar_t  *r_dynamicShadowMaxLights;
+cvar_t  *r_ltcAreaLights;
+cvar_t  *r_ltcDebug;
+cvar_t  *r_ltcDebugLight;
+cvar_t  *r_ltcIntensityScale;
+cvar_t  *r_ltcStaticDiffuse;
+cvar_t  *r_ltcMaxLights;
+cvar_t  *r_saberAreaLights;
 
 cvar_t  *r_normalMapping;
 cvar_t  *r_specularMapping;
@@ -1661,6 +1668,10 @@ static consoleCommand_t	commands[] = {
 	{ "r_autoPomSilhouette",	R_AutoPomSilhouette_f },
 	{ "r_spawnTestLights",	R_SpawnTestLights_f },
 	{ "r_forwardPlusBenchmark",	R_ForwardPlusBenchmark_f },
+	{ "r_reloadAreaLights",	R_ReloadAreaLights_f },
+	{ "r_ltcList",			R_AreaLightsList_f },
+	{ "r_ltcNearest",		R_AreaLightsNearest_f },
+	{ "r_extractAreaLights",	R_ExtractAreaLights_f },
 	{ "skinlist",			R_SkinList_f },
 	{ "fontlist",			R_FontList_f },
 	{ "screenshot",			R_ScreenShotJPEG_f },
@@ -2008,6 +2019,15 @@ void R_Register( void )
 	r_forwardPlusDebugLight = ri_Cvar_Get_NoComm( "r_forwardPlusDebugLight", "0", CVAR_CHEAT, "Forward+: light index shown by r_forwardPlusDebug 9" );
 	r_dynamicShadowMaxLights = ri_Cvar_Get_NoComm( "r_dynamicShadowMaxLights", "4", CVAR_ARCHIVE, "Forward+: dynamic lights with a shadow cube (needs r_dlightMode 2), the most important ones get them" );
 	ri.Cvar_CheckRange( r_dynamicShadowMaxLights, 0, MAX_DLIGHT_SHADOWS, qtrue );
+
+	r_ltcAreaLights = ri_Cvar_Get_NoComm( "r_ltcAreaLights", "0", CVAR_ARCHIVE | CVAR_LATCH, "LTC rectangle / line area lights (maps/<map>.arealights.json, saber lines), requires r_forwardPlus 1" );
+	r_ltcDebug = ri_Cvar_Get_NoComm( "r_ltcDebug", "0", CVAR_CHEAT | CVAR_LATCH, "LTC area light debug: 1 specular, 2 diffuse, 3 source mode, 4 area lights per cluster, 5 influence bounds, 6 outlines, 7 normals / axes, 8 strongest light id" );
+	r_ltcDebugLight = ri_Cvar_Get_NoComm( "r_ltcDebugLight", "-1", CVAR_CHEAT, "LTC area light highlighted by r_ltcDebug (map light id, -1 = nearest)" );
+	r_ltcIntensityScale = ri_Cvar_Get_NoComm( "r_ltcIntensityScale", "1", CVAR_ARCHIVE, "LTC area lights: radiance multiplier" );
+	r_ltcStaticDiffuse = ri_Cvar_Get_NoComm( "r_ltcStaticDiffuse", "0", CVAR_ARCHIVE, "LTC area lights: also diffuse for static_specular map lights (their diffuse is usually baked in the lightmap)" );
+	r_ltcMaxLights = ri_Cvar_Get_NoComm( "r_ltcMaxLights", "64", CVAR_ARCHIVE, "LTC area lights: map lights per scene, nearest first" );
+	ri.Cvar_CheckRange( r_ltcMaxLights, 0, MAX_RENDER_DLIGHTS, qtrue );
+	r_saberAreaLights = ri_Cvar_Get_NoComm( "r_saberAreaLights", "0", CVAR_ARCHIVE, "Saber blades light as LTC lines instead of a point light (requires r_ltcAreaLights 1)" );
 
 	r_normalMapping = ri_Cvar_Get_NoComm( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
 	r_specularMapping = ri_Cvar_Get_NoComm( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable specular mapping" );
@@ -2814,6 +2834,7 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		R_DeleteTextures();
 		R_DestroyGPUBuffers();
 		R_ShutdownForwardPlus();
+		R_ClearAreaLights();
 		R_ShutdownPomSilhouette();
 
 		if (!destroyWindow && !restarting)
@@ -2981,6 +3002,18 @@ unsigned int AnyLanguage_ReadCharFromString_JK2(char **text, qboolean *pbIsTrail
 	return AnyLanguage_ReadCharFromString(text, pbIsTrailingPunctuation);
 }
 #endif
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+GetRefAreaLightAPI
+
+Optional extension (tr_public.h): LTC area lights, tr_arealights.cpp
+@@@@@@@@@@@@@@@@@@@@@
+*/
+extern "C" Q_EXPORT const refAreaLightExport_t* QDECL GetRefAreaLightAPI ( void ) {
+	static const refAreaLightExport_t areaLights = { RE_AddAreaLightToScene, RE_AddLineLightToScene };
+	return &areaLights;
+}
 
 /*
 @@@@@@@@@@@@@@@@@@@@@

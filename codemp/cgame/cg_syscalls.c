@@ -224,6 +224,10 @@ int trap_R_Font_StrLenPixels(const char *text, const int iFontIndex, const float
 	float width = (float)Q_syscall( CG_R_FONT_STRLENPIXELS, text, iFontIndex, PASSFLOAT(1.0f));
 	return width * scale;
 }
+// legacy VM cgame: no line lights, the caller keeps its point light
+static qboolean trap_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b ) {
+	return qfalse;
+}
 float trap_R_Font_StrLenPixelsFloat(const char *text, const int iFontIndex, const float scale) {
 	//HACK! RE_Font_StrLenPixels works better with 1.0f scale
 	float width = (float)Q_syscall( CG_R_FONT_STRLENPIXELS, text, iFontIndex, PASSFLOAT(1.0f));
@@ -944,4 +948,5 @@ static void TranslateSyscalls( void ) {
 	trap->G2API_GetSurfaceName				= trap_G2API_GetSurfaceName;
 
 	trap->ext.R_Font_StrLenPixels			= trap_R_Font_StrLenPixelsFloat;
+	trap->ext.R_AddLineLightToScene			= trap_R_AddLineLightToScene;
 }

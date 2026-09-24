@@ -2873,13 +2873,22 @@ static qboolean ParseShader( const char **text )
 			continue;
 		}
 		// q3map_surfacelight deprecated as of 16 Jul 01
+		// kept only as a hint for r_extractAreaLights (tr_arealights.cpp);
+		// nothing renders from it
 		else if ( !Q_stricmp( token, "surfacelight" ) || !Q_stricmp( token, "q3map_surfacelight" ) )
 		{
+			token = COM_ParseExt( text, qfalse );
+			shader.surfaceLight = atof( token );
 			SkipRestOfLine( text );
 			continue;
 		}
-		else if ( !Q_stricmp( token, "lightColor" ) )
+		else if ( !Q_stricmp( token, "lightColor" ) || !Q_stricmp( token, "q3map_lightRGB" ) )
 		{
+			for ( int c = 0; c < 3; c++ )
+			{
+				token = COM_ParseExt( text, qfalse );
+				shader.surfaceLightColor[c] = atof( token );
+			}
 			SkipRestOfLine( text );
 			continue;
 		}

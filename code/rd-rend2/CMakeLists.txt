@@ -31,6 +31,8 @@ set(SPRend2Files
 	"${SharedDir}/rd-rend2/tr_autopbr.cpp"
 	"${SharedDir}/rd-rend2/tr_foliage.cpp"
 	"${SharedDir}/rd-rend2/tr_forwardplus.cpp"
+	"${SharedDir}/rd-rend2/tr_arealights.cpp"
+	"${SharedDir}/rd-rend2/tr_ltc_data.h"
 	"${SharedDir}/rd-rend2/tr_screenspace.cpp"
 	"${SharedDir}/rd-rend2/tr_ssgi.cpp"
 	"${SharedDir}/rd-rend2/tr_pom_silhouette.cpp"

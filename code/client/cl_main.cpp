@@ -86,6 +86,7 @@ clientStatic_t		cls;
 
 // Structure containing functions exported from refresh DLL
 refexport_t	re;
+const refAreaLightExport_t	*reAreaLights = NULL;	// optional, see tr_public.h
 static void *rendererLib = NULL;
 
 //RAZFIXME: BAD BAD, maybe? had to move it out of ghoul2_shared.h -> CGhoul2Info_v at the least..
@@ -897,6 +898,7 @@ static void CL_ShutdownRef( qboolean restarting ) {
 	}
 
 	memset( &re, 0, sizeof( re ) );
+	reAreaLights = NULL;
 
 	if ( rendererLib != NULL ) {
 		Sys_UnloadDll (rendererLib);
@@ -1191,6 +1193,9 @@ void CL_InitRef( void ) {
 	}
 
 	re = *ret;
+
+	GetRefAreaLightAPI_t GetRefAreaLightAPI = (GetRefAreaLightAPI_t)Sys_LoadFunction( rendererLib, "GetRefAreaLightAPI" );
+	reAreaLights = GetRefAreaLightAPI ? GetRefAreaLightAPI() : NULL;
 
 	Com_Printf( "-------------------------------\n");
 

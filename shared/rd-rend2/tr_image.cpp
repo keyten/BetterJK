@@ -3733,6 +3733,7 @@ void R_CreateBuiltinImages( void ) {
 	R_CreateDlightImage();
 	R_CreateFogImage();
 	R_CreateEnvBrdfLUT();
+	R_CreateLtcImages();
 	R_CreateSMAAImages();
 
 	int width = glConfig.vidWidth;
