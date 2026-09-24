@@ -2881,6 +2881,93 @@ void R_LoadPackedMaterialImage(shaderStage_t *stage, const char *packedImageName
 	Z_Free(packedPic);
 }
 
+/*
+================
+R_BuildNormalHeightImage
+
+heightMap keyword (docs/rend2-pom.md): the red channel of heightName (white =
+high) replaces the alpha of the normal map, the result is an ordinary
+IMGTYPE_NORMALHEIGHT image (flipped and swizzled like a _nh file), so POM,
+silhouette POM and the velocity pass need no extra sampler. normalName NULL =
+flat normal. The height map is resampled bilinearly (wrapping) to the normal
+map size.
+================
+*/
+image_t *R_BuildNormalHeightImage(const char *normalName, const char *heightName, int flags)
+{
+	char packedName[MAX_QPATH];
+	char baseName[MAX_QPATH];
+	unsigned hash = 2166136261u;
+	for (const char *c = heightName; *c; c++)
+		hash = (hash ^ (unsigned)tolower((unsigned char)*c)) * 16777619u;
+	COM_StripExtension(normalName ? normalName : heightName, baseName, sizeof(baseName));
+	baseName[MAX_QPATH - 16] = '\0';
+	Com_sprintf(packedName, sizeof(packedName), "%s+h%08x", baseName, hash);
+
+	image_t *image = R_GetLoadedImage(packedName, flags);
+	if (image)
+		return image;
+
+	byte *heightPic = NULL;
+	int heightWidth = 0, heightHeight = 0;
+	R_LoadImage(heightName, &heightPic, &heightWidth, &heightHeight);
+	if (!heightPic)
+		return NULL;
+
+	byte *pic = NULL;
+	int width = 0, height = 0;
+	if (normalName)
+	{
+		R_LoadImage(normalName, &pic, &width, &height);
+		if (!pic)
+		{
+			Z_Free(heightPic);
+			return NULL;
+		}
+	}
+	else
+	{
+		width = heightWidth;
+		height = heightHeight;
+		pic = (byte *)R_Malloc(width * height * 4, TAG_TEMP_WORKSPACE);
+		for (int i = 0; i < width * height; i++)
+		{
+			pic[i * 4 + 0] = 128;
+			pic[i * 4 + 1] = 128;
+			pic[i * 4 + 2] = 255;
+		}
+	}
+
+	for (int y = 0; y < height; y++)
+	{
+		const float fy = ((float)y + 0.5f) * (float)heightHeight / (float)height - 0.5f;
+		const int y0 = (int)floorf(fy);
+		const float ty = fy - (float)y0;
+		const int ya = ((y0 % heightHeight) + heightHeight) % heightHeight;
+		const int yb = (ya + 1) % heightHeight;
+		for (int x = 0; x < width; x++)
+		{
+			const float fx = ((float)x + 0.5f) * (float)heightWidth / (float)width - 0.5f;
+			const int x0 = (int)floorf(fx);
+			const float tx = fx - (float)x0;
+			const int xa = ((x0 % heightWidth) + heightWidth) % heightWidth;
+			const int xb = (xa + 1) % heightWidth;
+			const float h00 = heightPic[(ya * heightWidth + xa) * 4];
+			const float h10 = heightPic[(ya * heightWidth + xb) * 4];
+			const float h01 = heightPic[(yb * heightWidth + xa) * 4];
+			const float h11 = heightPic[(yb * heightWidth + xb) * 4];
+			const float h = (h00 + (h10 - h00) * tx) + ((h01 + (h11 - h01) * tx) - (h00 + (h10 - h00) * tx)) * ty;
+			// flipped like R_FindImageFile does for IMGTYPE_NORMALHEIGHT
+			pic[(y * width + x) * 4 + 3] = (byte)(255 - Com_Clampi(0, 255, (int)(h + 0.5f)));
+		}
+	}
+	Z_Free(heightPic);
+
+	image = R_CreateImage(packedName, pic, width, height, IMGTYPE_NORMALHEIGHT, flags, 0);
+	Z_Free(pic);
+	return image;
+}
+
 image_t *R_BuildSDRSpecGlossImage(shaderStage_t *stage, const char *specImageName, int flags)
 {
 	char	sdrName[MAX_QPATH];

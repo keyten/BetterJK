@@ -332,6 +332,21 @@ extern cvar_t  *r_specularMapping;
 extern cvar_t  *r_deluxeMapping;
 extern cvar_t  *r_deluxeSpecular;
 extern cvar_t  *r_parallaxMapping;
+extern cvar_t  *r_pomSelfShadow;
+extern cvar_t  *r_pomSelfShadowLights;
+extern cvar_t  *r_pomSelfShadowMaxLocalLights;
+extern cvar_t  *r_pomSelfShadowSteps;
+extern cvar_t  *r_pomSelfShadowStrength;
+extern cvar_t  *r_pomSelfShadowBias;
+extern cvar_t  *r_pomSelfShadowSoftness;
+extern cvar_t  *r_pomAdaptiveSteps;
+extern cvar_t  *r_pomMinSteps;
+extern cvar_t  *r_pomMaxSteps;
+extern cvar_t  *r_pomBinarySteps;
+extern cvar_t  *r_pomFadeStart;
+extern cvar_t  *r_pomFadeEnd;
+extern cvar_t  *r_pomDebug;
+extern cvar_t  *r_pomDebugFreezeLight;
 extern cvar_t  *r_pomSilhouette;
 extern cvar_t  *r_pomSilhouetteDistance;
 extern cvar_t  *r_pomSilhouetteFade;
@@ -1326,6 +1341,9 @@ typedef struct {
 	vec3_t emissiveColor;
 	float  emissiveIntensity;
 	float  parallaxBias;
+	// pomSelfShadow <0..1> keyword (tr_pom.cpp), 1 when not given
+	float  pomSelfShadowStrength;
+	qboolean pomSelfShadowSet;
 
 	surfaceSprite_t	*ss;
 
@@ -2034,6 +2052,11 @@ typedef enum
 	UNIFORM_POMPARAMS,		// silhouette POM: min / max linear steps, binary steps, view dependence
 	UNIFORM_POMPARAMS2,		// silhouette POM: draw mode, depth mode, ortho pixel footprint, debug view
 	UNIFORM_POMFADE,		// silhouette POM: crossfade start, 1 / width, debug split x, unused
+
+	UNIFORM_POMSHADOW,		// POM self shadow (tr_pom.cpp): strength (0 off), steps, bias, softness
+	UNIFORM_POMTRAVERSAL,	// POM view ray: adaptive (0/1), min steps, max steps, binary steps
+	UNIFORM_POMLOD,			// POM: fade start, 1 / fade width (0 off), local light mode, max local lights
+	UNIFORM_POMDEBUG,		// POM: frozen sun direction (0 = live), debug view
 
 	UNIFORM_WEATHERDEPTHMAP,	// r_weatherWetness: tr.weatherDepthImage
 	UNIFORM_WEATHERMVP,			// world -> weather depth clip space
@@ -4682,6 +4705,7 @@ void R_AddDecals( void );
 image_t	*R_FindImageFile( const char *name, imgType_t type, int flags );
 void R_LoadPackedMaterialImage(shaderStage_t *stage, const char *packedImageName, int flags);
 image_t *R_BuildSDRSpecGlossImage(shaderStage_t *stage, const char *specImageName, int flags);
+image_t *R_BuildNormalHeightImage(const char *normalName, const char *heightName, int flags);
 image_t *R_BuildLegacySpecORMSImage(const char *specImageName, int flags);
 qhandle_t RE_RegisterShader( const char *name );
 qhandle_t RE_RegisterShaderNoMip( const char *name );
@@ -4804,6 +4828,10 @@ void R_PomSilhouetteCollect(world_t *world, msurface_t *surf, const packedVertex
 void R_PomSilhouetteFinishWorld(world_t *world);
 qboolean R_PomSilhouetteActive(void);
 void R_PomSilhouetteBeginFrame(void);
+
+// POM self shadowing / adaptive traversal (tr_pom.cpp)
+void R_PomBeginFrame(void);
+void R_PomSetUniforms(const shaderStage_t *stage, UniformDataWriter& uniforms);
 int R_PomSilhouetteSurfaceMode(msurface_t *surf);
 void R_PomSilhouetteAddDrawSurfs(msurface_t *surf, int mode, int entityNum, int fogIndex, int dlightBits, bool isPostRenderEntity, int cubemapIndex);
 void RB_SetPomMode(int mode);

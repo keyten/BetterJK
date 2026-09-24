@@ -551,6 +551,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	// latches r_forwardPlus for the whole frame (no switch between scenes)
 	R_ForwardPlusBeginFrame();
 	R_PomSilhouetteBeginFrame();
+	R_PomBeginFrame();
 	// SSGI dependency notes, printed once (tr_ssgi.cpp)
 	R_SSGICheckDependencies();
 	if ( thisFrame->sync )

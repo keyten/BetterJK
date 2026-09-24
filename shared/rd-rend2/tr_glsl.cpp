@@ -219,6 +219,11 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PomParams2",			GLSL_VEC4, 1 },
 	{ "u_PomFade",				GLSL_VEC4, 1 },
 
+	{ "u_PomShadow",			GLSL_VEC4, 1 },
+	{ "u_PomTraversal",			GLSL_VEC4, 1 },
+	{ "u_PomLod",				GLSL_VEC4, 1 },
+	{ "u_PomDebug",				GLSL_VEC4, 1 },
+
 	{ "u_WeatherDepthMap",		GLSL_INT, 1 },
 	{ "u_WeatherMvp",			GLSL_MAT4x4, 1 },
 	{ "u_WetnessParams",		GLSL_VEC4, 1 },
@@ -2163,6 +2168,16 @@ static int GLSL_LoadGPUProgramLightAll(
 		// r_forwardPlusDebug views (latched): only compiled when asked for
 		if (r_forwardPlusDebug->integer)
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_FPLUS_DEBUG\n");
+
+		// POM self shadow rays and debug views (latched, tr_pom.cpp): only in
+		// the parallax permutations, compiled only when asked for
+		if (i & LIGHTDEF_USE_PARALLAXMAP)
+		{
+			if (r_pomSelfShadow->integer)
+				Q_strcat(extradefines, sizeof(extradefines), "#define USE_POM_SELFSHADOW\n");
+			if (r_pomDebug->integer)
+				Q_strcat(extradefines, sizeof(extradefines), "#define USE_POM_DEBUG\n");
+		}
 
 		if (lightType)
 		{

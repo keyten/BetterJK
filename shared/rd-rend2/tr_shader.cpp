@@ -1211,6 +1211,10 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 	qboolean depthMaskExplicit = qfalse;
 	char bufferPackedTextureName[MAX_QPATH];
 	char bufferBaseColorTextureName[MAX_QPATH];
+	// heightMap <name>: packed into the normal map alpha after parsing
+	char normalMapName[MAX_QPATH] = "";
+	char heightMapName[MAX_QPATH] = "";
+	int normalMapFlags = IMGFLAG_NONE;
 
 	stage->active = qtrue;
 	stage->specularType = SPEC_NONE;
@@ -1335,6 +1339,8 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 				flags |= IMGFLAG_NO_COMPRESSION;
 
 			flags |= IMGFLAG_NOLIGHTSCALE;
+			Q_strncpyz(normalMapName, token, sizeof(normalMapName));
+			normalMapFlags = flags;
 			stage->bundle[TB_NORMALMAP].image[0] = R_FindImageFile(token, type, flags);
 
 			if (!stage->bundle[TB_NORMALMAP].image[0])
@@ -1803,6 +1809,35 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 			stage->parallaxBias = atof(token);
 		}
 		//
+		// heightMap <name>: explicit height (red channel, white = high) for
+		// POM, replaces the alpha of the normal map (tr_pom.cpp)
+		//
+		else if (!Q_stricmp(token, "heightMap"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for heightMap in shader '%s'\n", shader.name);
+				continue;
+			}
+			Q_strncpyz(heightMapName, token, sizeof(heightMapName));
+		}
+		//
+		// pomSelfShadow <0..1>: POM self shadow strength of this material,
+		// times r_pomSelfShadowStrength; 0 turns it off (noisy height maps)
+		//
+		else if (!Q_stricmp(token, "pomSelfShadow"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for pomSelfShadow in shader '%s'\n", shader.name);
+				continue;
+			}
+			stage->pomSelfShadowStrength = Com_Clamp(0.0f, 1.0f, atof(token));
+			stage->pomSelfShadowSet = qtrue;
+		}
+		//
 		// normalScale <xy>
 		// or normalScale <x> <y>
 		// or normalScale <x> <y> <height>
@@ -2222,6 +2257,36 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 			flags |= IMGFLAG_NO_COMPRESSION;
 
 		R_LoadPackedMaterialImage(stage, bufferPackedTextureName, flags);
+	}
+
+	//
+	// explicit height map: priority over the alpha of a normalHeightMap
+	//
+	if (heightMapName[0] && r_normalMapping->integer)
+	{
+		int flags = normalMapFlags;
+		if (!normalMapName[0])
+		{
+			flags = IMGFLAG_NOLIGHTSCALE;
+			if (!shader.noMipMaps)
+				flags |= IMGFLAG_MIPMAP;
+			if (!shader.noPicMip)
+				flags |= IMGFLAG_PICMIP;
+			if (shader.noTC)
+				flags |= IMGFLAG_NO_COMPRESSION;
+		}
+
+		image_t *image = R_BuildNormalHeightImage(normalMapName[0] ? normalMapName : NULL, heightMapName, flags);
+		if (image)
+		{
+			if (!stage->bundle[TB_NORMALMAP].image[0])
+				VectorSet4(stage->normalScale, r_baseNormalX->value, r_baseNormalY->value, 1.0f, r_baseParallax->value);
+			stage->bundle[TB_NORMALMAP].image[0] = image;
+		}
+		else
+		{
+			ri.Printf(PRINT_WARNING, "WARNING: could not build heightMap '%s' in shader '%s'\n", heightMapName, shader.name);
+		}
 	}
 
 	//

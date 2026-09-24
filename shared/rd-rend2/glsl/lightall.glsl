@@ -664,6 +664,13 @@ uniform vec4 u_PuddleParams2;  // 1 / pattern scale (world)
 // Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
 uniform int u_DiffuseBRDF;
 uniform float u_ParallaxBias;
+#if defined(USE_PARALLAXMAP)
+// tr_pom.cpp R_PomSetUniforms, docs/rend2-pom.md
+uniform vec4 u_PomShadow;		// self shadow strength (0 = off), steps, start bias (depth), softness
+uniform vec4 u_PomTraversal;	// adaptive steps (0 = legacy 16 + 8), min steps, max steps, binary steps
+uniform vec4 u_PomLod;			// fade start, 1 / fade width (0 = no fade), self shadowed local lights (>= 256 all)
+uniform vec4 u_PomDebug;		// frozen sun direction (0 = live), r_pomDebug view
+#endif
 
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_CUBEMAP)
 uniform vec4 u_CubeMapInfo;
@@ -1207,11 +1214,64 @@ float sunShadow(in vec3 viewOrigin, in vec3 viewDir, in vec3 biasOffset, in samp
 #endif
 
 #if defined(USE_PARALLAXMAP)
-float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, in float parallaxBias)
-{
-	const int linearSearchSteps = 16;
-	const int binarySearchSteps = 8;
+#define POM_VIEW_MAX_LINEAR_STEPS 64
+#define POM_VIEW_MAX_BINARY_STEPS 16
+#define POM_SHADOW_MAX_STEPS 32
 
+// State of the POM view ray hit of this fragment, shared by the self shadow
+// rays of every light (GetPomSelfShadow). Filled by GetParallaxOffset or, for
+// silhouette POM shells, by PomSilhouetteFragment. Height convention: the red
+// channel of the normalHeightMap is the flipped height (tr_image.cpp), i.e. the
+// depth s in [0, 1] below the top of the relief, 0 = top.
+struct PomSurface
+{
+	bool  valid;
+	vec2  uv;			// hit texture coordinate
+	float depth;		// hit depth s
+	vec3  T, B, N;		// world frame the relief is extruded along (N = up)
+	vec2  scale;		// texture units per unit of s per unit of tangent slope: aspect * parallaxDepth
+	vec2  gradX, gradY;	// texture gradients for every height sample
+	float fade;			// distance fade, 1 = full POM
+	float viewSamples;
+	float shadowSamples;
+};
+PomSurface g_pom;
+float g_pomLightWeight = 0.0;	// self shadow weight of the dynamic light being evaluated
+float g_pomLocalShadow = 1.0;	// r_pomDebug 5: darkest local light self shadow
+
+// r_pomFadeStart / r_pomFadeEnd: 1 near, 0 beyond the end (normal mapping)
+float PomDistanceFade(in float viewDistance)
+{
+	if (u_PomLod.y <= 0.0)
+		return 1.0;
+	return 1.0 - clamp((viewDistance - u_PomLod.x) * u_PomLod.y, 0.0, 1.0);
+}
+
+// ordinary POM: tangent frame of the vertex shader tangentViewDir, which
+// includes the normal map aspect correction
+void PomInitSurface(in vec2 texCoords, in vec2 dx, in vec2 dy, in float fade)
+{
+	g_pom.valid = false;
+	g_pom.uv = texCoords;
+	g_pom.depth = 0.0;
+	g_pom.N = normalize(var_Normal.xyz);
+	g_pom.T = normalize(var_Tangent.xyz);
+	g_pom.B = cross(g_pom.N, g_pom.T) * var_Tangent.w;
+	vec2 normalSize = vec2(textureSize(u_NormalMap, 0));
+	float normalMapAspect = normalSize.y / normalSize.x;
+	vec2 aspect = vec2(max(1.0, normalMapAspect), max(1.0, 1.0 / normalMapAspect));
+	g_pom.scale = aspect * (u_NormalScale.a * fade);
+	g_pom.gradX = dx;
+	g_pom.gradY = dy;
+	g_pom.fade = fade;
+	g_pom.viewSamples = 0.0;
+	g_pom.shadowSamples = 0.0;
+}
+
+// linearSearchSteps / binarySearchSteps: 16 / 8 is the legacy traversal
+float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, in float parallaxBias,
+	in int linearSearchSteps, in int binarySearchSteps, in vec2 dx, in vec2 dy)
+{
 	vec2 dp = fract(inDp - parallaxBias * ds);
 
 	// current size of search window
@@ -1223,9 +1283,6 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 	// best match found (starts with last position 1.0)
 	float bestDepth = 1.0;
 
-	vec2 dx = dFdx(inDp);
-	vec2 dy = dFdy(inDp);
-
 	// try sampling at least one border pixel
 	vec2 tMin = (vec2(0.0) - dp) / ds;
 	vec2 tMax = (vec2(1.0) - dp) / ds;
@@ -1235,12 +1292,15 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 	depth -= size-stepFraction;
 
 	// search front to back for first point inside object
-	for(int i = 0; i < linearSearchSteps; ++i)
+	for(int i = 0; i < POM_VIEW_MAX_LINEAR_STEPS; ++i)
 	{
+		if (i >= linearSearchSteps)
+			break;
 		depth += size;
 
 		// height is flipped before uploaded to the gpu
 		float t = textureGrad(normalMap, dp + ds * depth, dx, dy).r;
+		g_pom.viewSamples += 1.0;
 
 		if(depth >= t)
 		{
@@ -1252,8 +1312,10 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 	depth = bestDepth;
 
 	// recurse around first point (depth) for closest match
-	for(int i = 0; i < binarySearchSteps; ++i)
+	for(int i = 0; i < POM_VIEW_MAX_BINARY_STEPS; ++i)
 	{
+		if (i >= binarySearchSteps)
+			break;
 		size *= 0.5;
 
 		// height is flipped before uploaded to the gpu
@@ -1267,6 +1329,7 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 
 		depth += size;
 	}
+	g_pom.viewSamples += float(binarySearchSteps) + 2.0;
 
 	float beforeDepth = textureGrad(normalMap,  dp + ds * (depth-size), dx, dy).r - depth + size;
 	float afterDepth  = textureGrad(normalMap, dp + ds * depth, dx, dy).r - depth;
@@ -1274,17 +1337,111 @@ float RayIntersectDisplaceMap(in vec2 inDp, in vec2 ds, in sampler2D normalMap, 
 	float weight = mix(0.0, beforeDepth / deltaDepth , deltaDepth > 0);
 	bestDepth += weight*size;
 
+	// the virtual hit, for the self shadow rays
+	g_pom.uv = dp + ds * bestDepth;
+	g_pom.depth = bestDepth;
+
 	return bestDepth - parallaxBias;
+}
+
+// Self shadowing of direct light by the relief (r_pomSelfShadow): marches
+// from the view ray hit towards the light, L = world direction towards the
+// light (normalized). Soft visibility from the deepest occluder penetration
+// along the ray, nearer occluders count more. 1 = lit. Only for direct light:
+// the callers multiply the sun shadow and the dynamic light attenuation,
+// never ambient, lightmap ambient, IBL, SSR, SSGI or emissive.
+// Compiled only with r_pomSelfShadow set at renderer start
+// (USE_POM_SELFSHADOW): the rays are inlined at every call site.
+float GetPomSelfShadow(in vec3 L)
+{
+#if !defined(USE_POM_SELFSHADOW)
+	return 1.0;
+#else
+	float strength = clamp(u_PomShadow.x, 0.0, 1.0) * g_pom.fade;
+	if (!g_pom.valid || strength <= 0.0)
+		return 1.0;
+
+	vec3 Lt = vec3(dot(L, g_pom.T), dot(L, g_pom.B), dot(L, g_pom.N));
+	// towards the base plane every ray ends in the relief: fade to full
+	// shadow below 3 degrees instead of marching nearly horizontal rays
+	const float minElevation = 0.05;
+	float horizon = clamp(Lt.z / minElevation, 0.0, 1.0);
+	float visibility = 0.0;
+	float s0 = g_pom.depth - u_PomShadow.z;
+	if (horizon > 0.0)
+	{
+		visibility = 1.0;
+		if (s0 > 0.0)
+		{
+			// texture offset per unit of s climbed towards the light
+			vec2 duv = Lt.xy / max(Lt.z, minElevation) * g_pom.scale;
+			int steps = int(u_PomShadow.y);
+			float invSteps = 1.0 / float(steps);
+			float occlusion = 0.0;
+			for (int i = 0; i < POM_SHADOW_MAX_STEPS; i++)
+			{
+				if (i >= steps || occlusion >= 1.0)
+					break;
+				float f = (float(i) + 0.5) * invSteps;
+				float s = s0 * (1.0 - f);
+				// height is flipped before uploaded to the gpu
+				float h = textureGrad(u_NormalMap, g_pom.uv + duv * (g_pom.depth - s), g_pom.gradX, g_pom.gradY).r;
+				g_pom.shadowSamples += 1.0;
+				occlusion = max(occlusion, (s - h) * u_PomShadow.w * (1.0 - f));
+			}
+			visibility = 1.0 - clamp(occlusion, 0.0, 1.0);
+		}
+		visibility *= horizon;
+	}
+	return mix(1.0, visibility, strength);
+#endif
+}
+
+// r_pomDebugFreezeLight keeps the sun direction of the moment it was set
+vec3 PomSunDirection(in vec3 primaryLightDir)
+{
+	return dot(u_PomDebug.xyz, u_PomDebug.xyz) > 0.0 ? normalize(u_PomDebug.xyz) : primaryLightDir;
+}
+
+vec3 PomDebugHeat(in float x)
+{
+	x = clamp(x, 0.0, 1.0);
+	return clamp(vec3(1.5 - abs(4.0 * x - 3.0), 1.5 - abs(4.0 * x - 2.0), 1.5 - abs(4.0 * x - 1.0)), 0.0, 1.0);
 }
 #endif
 
 vec2 GetParallaxOffset(in vec2 texCoords, in vec3 tangentDir)
 {
 #if defined(USE_PARALLAXMAP)
-	vec3 offsetDir = normalize(tangentDir);
-	offsetDir.xy *= -u_NormalScale.a / offsetDir.z;
+	vec2 dx = dFdx(texCoords);
+	vec2 dy = dFdy(texCoords);
+	float fade = PomDistanceFade(length(var_ViewDir.xyz));
+	PomInitSurface(texCoords, dx, dy, fade);
+	if (fade <= 0.0)
+		return vec2(0.0);
 
-	return offsetDir.xy * RayIntersectDisplaceMap(texCoords, offsetDir.xy, u_NormalMap, u_ParallaxBias);
+	vec3 offsetDir = normalize(tangentDir);
+
+	// r_pomAdaptiveSteps: more linear steps towards grazing angles, fewer
+	// with the distance fade; off = the legacy 16 + 8 traversal
+	int linearSteps = 16;
+	int binarySteps = 8;
+	if (u_PomTraversal.x > 0.0)
+	{
+		float grazing = 1.0 - abs(offsetDir.z);
+		float steps = mix(u_PomTraversal.y, u_PomTraversal.z, grazing);
+		steps = mix(min(4.0, steps), steps, fade);
+		linearSteps = int(steps + 0.5);
+		binarySteps = int(u_PomTraversal.w);
+	}
+
+	offsetDir.xy *= -u_NormalScale.a / offsetDir.z;
+	offsetDir.xy *= fade;
+
+	vec2 offset = offsetDir.xy * RayIntersectDisplaceMap(texCoords, offsetDir.xy, u_NormalMap, u_ParallaxBias,
+		linearSteps, binarySteps, dx, dy);
+	g_pom.valid = true;
+	return offset;
 #else
 	return vec2(0.0);
 #endif
@@ -1629,12 +1786,95 @@ struct DLightSurface
 	vec3  vertexNormal;
 };
 
-// receiver side visibility of one light (hook for e.g. parallax self
-// shadowing), 1 = not occluded
+// receiver side visibility of one light, 1 = not occluded: POM self
+// shadowing (tr_pom.cpp) for the lights the budget picked, legacy and
+// Forward+ alike; it scales the attenuation before the SSGI source is taken
 float DynamicLightReceiverVisibility(in DLightSurface s, in vec3 L)
 {
+#if defined(USE_PARALLAXMAP)
+	if (g_pomLightWeight > 0.0)
+	{
+		float visibility = mix(1.0, GetPomSelfShadow(L), g_pomLightWeight);
+		g_pomLocalShadow = min(g_pomLocalShadow, visibility);
+		return visibility;
+	}
+#endif
 	return 1.0;
 }
+
+#if defined(USE_PARALLAXMAP)
+// estimated contribution of a light at the receiver, for the self shadow budget
+float PomLightImportance(in vec3 toLight, in vec3 lightColor, in float lightRadius)
+{
+	float attenuation = CalcLightAttenuation(lightRadius * lightRadius / max(dot(toLight, toLight), 1e-6));
+	return dot(lightColor, vec3(0.2126, 0.7152, 0.0722)) * attenuation;
+}
+
+// r_pomSelfShadowLights 1 / 2: only the N strongest lights at this pixel get a
+// self shadow ray. Returns the importance of the (N+1)-th strongest light; the
+// weight of a light fades in between 1x and 1.5x of it, so the choice changes
+// without pops. 0 = every light, < 0 = none.
+float PomLocalLightCut(in vec3 position, in bool fplus, in ivec2 list)
+{
+#if !defined(USE_POM_SELFSHADOW)
+	return -1.0;
+#else
+	int maxLights = int(u_PomLod.z);
+	if (clamp(u_PomShadow.x, 0.0, 1.0) * g_pom.fade <= 0.0 || !g_pom.valid || maxLights <= 0)
+		return -1.0;
+	if (maxLights >= list.y)
+		return 0.0;
+	maxLights = min(maxLights, 4);
+
+	float top[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0);
+	for (int k = 0; k < list.y; k++)
+	{
+		vec3 lightOrigin, lightColor;
+		float lightRadius;
+		if (fplus)
+		{
+			FPlusLight light = FPlusFetchLight(FPlusLightIndex(list.x + k));
+			if (light.type != 0.0)
+				continue;
+			lightOrigin = light.origin;
+			lightColor = light.color;
+			lightRadius = light.radius;
+		}
+		else
+		{
+			if ( ( u_LightMask & ( 1 << k ) ) == 0 )
+				continue;
+			lightOrigin = u_Lights[k].origin.xyz;
+			lightColor = u_Lights[k].color;
+			lightRadius = u_Lights[k].radius;
+		}
+		float importance = PomLightImportance(lightOrigin - position, lightColor, lightRadius);
+		// insert into the descending list of the maxLights + 1 strongest
+		for (int j = 0; j < 5; j++)
+		{
+			if (j > maxLights)
+				break;
+			if (importance > top[j])
+			{
+				float moved = top[j];
+				top[j] = importance;
+				importance = moved;
+			}
+		}
+	}
+	return max(top[maxLights], 1e-8);
+#endif
+}
+
+float PomLocalLightWeight(in float cut, in vec3 toLight, in vec3 lightColor, in float lightRadius)
+{
+	if (cut < 0.0)
+		return 0.0;
+	if (cut == 0.0)
+		return 1.0;
+	return smoothstep(cut, cut * 1.5, PomLightImportance(toLight, lightColor, lightRadius));
+}
+#endif
 
 // shadowLayer: cube index in u_ShadowMap2 (6 layers each), < 0 = unshadowed
 vec3 EvaluateDynamicLight(
@@ -1723,6 +1963,9 @@ vec3 CalcDynamicLightContribution(
 	// lightall permutation inlines it, a second copy doubled the compile time
 	bool fplus = FPlusEnabled();
 	ivec2 list = fplus ? FPlusClusterLights(s.position) : ivec2(0, min(u_NumLights, MAX_DLIGHTS));
+#if defined(USE_PARALLAXMAP)
+	float pomCut = PomLocalLightCut(s.position, fplus, list);
+#endif
 	for (int k = 0; k < list.y; k++)
 	{
 		vec3 lightOrigin, lightColor;
@@ -1748,6 +1991,9 @@ vec3 CalcDynamicLightContribution(
 			lightRadius = u_Lights[k].radius;
 			shadowLayer = k;
 		}
+#if defined(USE_PARALLAXMAP)
+		g_pomLightWeight = PomLocalLightWeight(pomCut, lightOrigin - s.position, lightColor, lightRadius);
+#endif
 		outColor += EvaluateDynamicLight(s, lightOrigin, lightColor, lightRadius, shadowLayer);
 	}
 	return outColor;
@@ -2043,6 +2289,7 @@ void PomSilhouetteFragment(inout vec2 texCoords, inout vec2 lmCoords, out vec3 v
 	hit.uv = texCoords;
 	hit.lmUV = lmCoords;
 	hit.position = position;
+	hit.depth = 0.0;
 	hit.t = 0.0;
 	hit.samples = 0.0;
 
@@ -2073,6 +2320,20 @@ void PomSilhouetteFragment(inout vec2 texCoords, inout vec2 lmCoords, out vec3 v
 
 	hit = PomSilhouetteTrace(u_NormalMap, aspect, parallaxDepth, position, rayDir, texCoords,
 		var_PomShell.x, var_PomShell.y, PomHeaderTexel(var_PomHeader), T, B, N, g_pomGradX, g_pomGradY);
+
+	// the shell hit feeds the same self shadow rays as ordinary POM
+	g_pom.valid = hit.hit;
+	g_pom.uv = hit.uv;
+	g_pom.depth = hit.depth;
+	g_pom.T = T;
+	g_pom.B = B;
+	g_pom.N = N;
+	g_pom.scale = aspect * parallaxDepth;
+	g_pom.gradX = g_pomGradX;
+	g_pom.gradY = g_pomGradY;
+	g_pom.fade = 1.0;
+	g_pom.viewSamples = hit.samples;
+	g_pom.shadowSamples = 0.0;
 	if (!hit.hit)
 	{
 		// r_pomSilhouetteDebug 6 keeps the pixels the ray missed
@@ -2277,6 +2538,9 @@ void main()
 	#if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
 	SunCascadeResult sunInfo;
 	#endif
+	#if defined(USE_PARALLAXMAP)
+	float pomSunShadow = 1.0;
+	#endif
 
   #if defined(USE_SHADOWMAP)
 	vec3 primaryLightDir = normalize(u_PrimaryLightOrigin.xyz);
@@ -2292,6 +2556,12 @@ void main()
 	#endif
 	// contact shadows only refine the near field of the cascaded shadow map
 	float shadowValue = cascadeShadow * contactShadow * NPL;
+	#if defined(USE_PARALLAXMAP)
+	// POM self shadow: part of the sun visibility, so it applies wherever the
+	// sun shadow does (r_sunlightMode 1 lightmap modulation, 2 direct sun)
+	pomSunShadow = GetPomSelfShadow(PomSunDirection(primaryLightDir));
+	shadowValue *= pomSunShadow;
+	#endif
 
     #if defined(SHADOWMAP_MODULATE)
 	vec3 ambientScale = mix(vec3(1.0), u_PrimaryLightAmbient, u_EnableTextures.z);
@@ -2642,6 +2912,39 @@ void main()
     #endif
 		return;
 	}
+
+  #if defined(USE_PARALLAXMAP) && defined(USE_POM_DEBUG)
+	// r_pomDebug 1-8 (compiled with r_pomDebug set at renderer start), written unlit (tone mapping is bypassed)
+	int pomView = int(u_PomDebug.w);
+	if (pomView >= 1)
+	{
+		float shade = 0.35 + 0.65 * NE;
+		vec3 debugColor;
+		if (pomView == 1)	// raw height at the undisplaced coordinate
+			debugColor = vec3(1.0 - textureGrad(u_NormalMap, var_TexCoords.xy, g_pom.gradX, g_pom.gradY).r);
+		else if (pomView == 2)	// displaced texture coordinate
+			debugColor = vec3(fract(texCoords), 0.0);
+		else if (pomView == 3)	// view ray hit depth, white = top
+			debugColor = g_pom.valid ? vec3(1.0 - g_pom.depth) : vec3(0.3, 0.0, 0.3);
+		else if (pomView == 4)	// sun self shadow (1 without a sun shadow map)
+			debugColor = vec3(pomSunShadow) * shade;
+		else if (pomView == 5)	// darkest self shadow of the dynamic lights
+			debugColor = vec3(g_pomLocalShadow) * shade;
+		else if (pomView == 6)	// view ray height samples
+			debugColor = g_pom.valid ? PomDebugHeat(g_pom.viewSamples / 74.0) : vec3(0.3) * shade;
+		else if (pomView == 7)	// self shadow height samples, all lights
+			debugColor = PomDebugHeat(g_pom.shadowSamples / (3.0 * max(u_PomShadow.y, 1.0)));
+		else	// distance fade
+			debugColor = PomDebugHeat(g_pom.fade) * shade;
+		out_Color = vec4(debugColor, 1.0);
+		out_Glow = vec4(0.0, 0.0, 0.0, 1.0);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+  #endif
 
   #if defined(USE_SILHOUETTE_POM)
 	// r_pomSilhouetteDebug 4-8, 10, 11 (1-3 are overlays, 9 is the crossfade

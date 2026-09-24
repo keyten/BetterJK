@@ -46,6 +46,7 @@ struct PomHit
 	vec2  uv;			// displaced texture coordinate
 	vec2  lmUV;			// lightmap coordinate at the hit
 	vec3  position;		// virtual world position
+	float depth;		// depth s of the hit in the height field volume (POM self shadow)
 	float t;			// world distance from the shell fragment
 	float samples;		// height samples taken
 };
@@ -183,6 +184,7 @@ PomHit PomSilhouetteTrace(in sampler2D heightMap, in vec2 aspect, in float paral
 	result.uv = uv0;
 	result.lmUV = vec2(0.0);
 	result.position = position0;
+	result.depth = s0;
 	result.t = 0.0;
 	result.samples = 0.0;
 
@@ -287,6 +289,7 @@ PomHit PomSilhouetteTrace(in sampler2D heightMap, in vec2 aspect, in float paral
 	result.hit = true;
 	result.t = t;
 	result.uv = uv0 + dir.xy * t;
+	result.depth = s0 + dir.z * t;
 	result.position = position0 + rayDir * t;
 	result.lmUV = PomLightmapCoords(header, result.uv);
 	return result;
