@@ -262,6 +262,7 @@ extern cvar_t  *r_weatherWetDarkening;
 extern cvar_t  *r_weatherWetNormal;
 extern cvar_t  *r_weatherWetBias;
 extern cvar_t  *r_weatherWetnessDebug;
+extern cvar_t  *r_weatherWetEntityFacing;
 extern cvar_t  *r_weatherPuddles;
 extern cvar_t  *r_puddleCoverage;
 extern cvar_t  *r_puddleRoughness;
@@ -2077,6 +2078,7 @@ typedef enum
 	UNIFORM_WEATHERMVP,			// world -> weather depth clip space
 	UNIFORM_WETNESSPARAMS,		// strength, roughness scale, darkening, normal flattening
 	UNIFORM_WETNESSPARAMS2,		// depth bias, normal offset, debug mode, split x
+	UNIFORM_WETNESSPARAMS3,		// facing floor, physical porosity (0/1), material class, unused
 	UNIFORM_PUDDLEPARAMS,		// coverage (<= 0 off, < 0 ineligible), roughness, slope min, slope max
 	UNIFORM_PUDDLEPARAMS2,		// 1 / scale
 	UNIFORM_PUDDLEHEIGHT,		// relief depth low, 1 / (high - low) (0: no height), softness, fill bias
@@ -4764,6 +4766,8 @@ void R_ClassifyMaterial(shaderStage_t *stage, const char *shaderName, const char
 qboolean R_AutoPBRSpecularScale(const shaderStage_t *stage, vec4_t out);
 qboolean R_AutoPBRDebugColor(const shaderStage_t *stage, vec4_t out);
 const char *R_MaterialClassName(materialClass_t cls);
+// r_weatherWetness response of the stage class: darkening, wet roughness scale, normal flattening
+void R_WetnessResponse(const shaderStage_t *stage, vec3_t out);
 qboolean R_IsAutoPBRSource(pbrSource_t source);
 qboolean R_IsGouraudStage(const shaderStage_t *stage);
 void R_PBRDumpMaterials_f(void);

@@ -658,6 +658,7 @@ uniform sampler2D u_WeatherDepthMap; // static top-down rain occlusion depth (D1
 uniform mat4 u_WeatherMvp;
 uniform vec4 u_WetnessParams;  // strength (< 0: excluded draw), roughness scale, darkening, normal flattening
 uniform vec4 u_WetnessParams2; // depth bias, normal offset (world), debug view, split x
+uniform vec4 u_WetnessParams3; // facing floor, physical porosity (0/1), material class, unused
 uniform vec4 u_PuddleParams;   // coverage (0: off, < 0: excluded draw), roughness, slope min, slope max
 uniform vec4 u_PuddleParams2;  // 1 / pattern scale (world)
 uniform vec4 u_PuddleHeight;   // relief depth low, 1 / (high - low) (0: no usable height), softness, fill bias
@@ -2537,7 +2538,8 @@ void main()
 		if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z == 1.0)
 			rainExposure = ComputeRainExposure(u_ViewOrigin - viewDir, wetGeoNormal);
 		// walls get about half the rain, faces pointing down none
-		float facing = mix(0.5, 1.0, clamp(wetGeoNormal.z, 0.0, 1.0)) * step(-0.2, wetGeoNormal.z);
+		// (entities: most of the side, u_WetnessParams3.x)
+		float facing = mix(u_WetnessParams3.x, 1.0, clamp(wetGeoNormal.z, 0.0, 1.0)) * step(-0.2, wetGeoNormal.z);
 		wetness = rainExposure * max(u_WetnessParams.x, 0.0) * facing;
 		if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
 			wetness = 0.0;	// dry / wet split
@@ -2678,10 +2680,13 @@ void main()
 		// a water film darkens porous (rough, dielectric) albedo and smooths
 		// the surface; F0 is kept: dielectrics stay dielectric, metals metal.
 		// diffuse is already (1 - metal) scaled on the ORMS path.
+		// generic class: physical porosity from the material; other classes
+		// (cloth, armor, ...) use their darkening as is
 		float porosity = roughness;
     #if defined(USE_SPECULARMAP) && !defined(USE_SPECGLOSS)
 		porosity *= 1.0 - ORMS.z;
     #endif
+		porosity = mix(1.0, porosity, u_WetnessParams3.y);
 		diffuse.rgb *= 1.0 - wetness * u_WetnessParams.z * porosity;
 		roughness = mix(roughness, max(roughness * u_WetnessParams.y, 0.08), wetness);
 	}
@@ -2919,8 +2924,8 @@ void main()
   #endif
 
   #if defined(USE_WETNESS)
-	// r_weatherWetnessDebug 1-15 (not 4), written unlit (tone mapping is bypassed)
-	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 15.0 && u_WetnessParams2.z != 4.0)
+	// r_weatherWetnessDebug 1-16 (not 4), written unlit (tone mapping is bypassed)
+	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 16.0 && u_WetnessParams2.z != 4.0)
 	{
 		float shade = 0.35 + 0.65 * NE;
 		vec3 debugColor;
@@ -2936,7 +2941,7 @@ void main()
 			debugDepth = PuddleRelief(debugRawDepth);
 		}
     #endif
-		if (u_WetnessParams2.z >= 11.0 && u_WetnessParams2.z != 13.0 && u_WetnessParams2.z != 15.0 && debugDepth < 0.0)
+		if (u_WetnessParams2.z >= 11.0 && u_WetnessParams2.z <= 15.0 && u_WetnessParams2.z != 13.0 && u_WetnessParams2.z != 15.0 && debugDepth < 0.0)
 			debugColor = vec3(1.0, 0.0, 1.0) * shade;
 		else if (u_WetnessParams2.z == 11.0)	// raw sampled height, white = 1 (top of the 0..1 range)
 			debugColor = vec3(1.0 - debugRawDepth);
@@ -2975,6 +2980,13 @@ void main()
 		else if (u_WetnessParams2.z == 8.0)
 			debugColor = mix(mix(vec3(0.25), vec3(0.2, 0.9, 0.9), puddleEdge),
 				vec3(0.05, 0.2, 1.0), puddle) * shade;
+		else if (u_WetnessParams2.z == 16.0)	// wet response class, r_autoPBRDebug 1 colors
+		{
+			int cls = int(u_WetnessParams3.z + 0.5);
+			vec3 classColors[7] = vec3[7](vec3(0.55), vec3(1.0, 0.85, 0.1), vec3(1.0, 0.5, 0.4),
+				vec3(0.2, 0.4, 1.0), vec3(0.55, 0.28, 0.08), vec3(0.15, 0.9, 0.3), vec3(0.8, 0.15, 0.9));
+			debugColor = (u_WetnessParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) : classColors[clamp(cls, 0, 6)]) * shade;
+		}
 		else // 10: eligibility
 			debugColor = (u_PuddleParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) :
 				u_PuddleParams.x > 0.0 ? vec3(0.1, 0.8, 0.1) : vec3(0.25)) * shade;

@@ -590,7 +590,7 @@ qboolean RB_AODebugBypassesToneMap( void )
 		(r_sunShadowMode->integer && r_shadowDebug->integer >= 1 && r_shadowDebug->integer <= 9) ||
 		(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9) ||
 		(r_autoPBRDebug->integer >= 1 && r_autoPBRDebug->integer <= 2) ||
-		(r_weatherWetness->integer && r_weatherWetnessDebug->integer >= 1 && r_weatherWetnessDebug->integer <= 15 && r_weatherWetnessDebug->integer != 4) ||
+		(r_weatherWetness->integer && r_weatherWetnessDebug->integer >= 1 && r_weatherWetnessDebug->integer <= 16 && r_weatherWetnessDebug->integer != 4) ||
 		(r_diffuseIBL->integer && r_diffuseIBLDebug->integer >= 1 && r_diffuseIBLDebug->integer <= 5) ||
 		RB_ForwardPlusDebugBypassesToneMap() ||
 		RB_PomSilhouetteDebugBypassesToneMap());

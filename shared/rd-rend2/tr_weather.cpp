@@ -1682,12 +1682,21 @@ void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
 
 	// strength < 0 marks an ineligible draw for r_weatherWetnessDebug 2
 	const float strength = eligible ? Com_Clamp(0.0f, 1.0f, r_weatherWetStrength->value) : -1.0f;
-	const vec4_t params = {
-		strength,
-		Com_Clamp(0.05f, 1.0f, r_weatherWetRoughness->value),
-		Com_Clamp(0.0f, 1.0f, r_weatherWetDarkening->value),
-		Com_Clamp(0.0f, 1.0f, r_weatherWetNormal->value)
+	// per material class response (tr_autopbr.cpp): cloth only darkens,
+	// armor / metal get glossier
+	vec3_t response;
+	R_WetnessResponse(pStage, response);
+	const vec4_t params = { strength, response[1], response[0], response[2] };
+	// characters and props stand in the rain: their sides get almost as wet
+	// as their tops, world walls about half
+	const bool entity = backEnd.currentEntity && backEnd.currentEntity != &tr.worldEntity;
+	const vec4_t params3 = {
+		entity ? Com_Clamp(0.0f, 1.0f, r_weatherWetEntityFacing->value) : 0.5f,
+		pStage->materialClass == MATCLASS_GENERIC ? 1.0f : 0.0f,
+		(float)pStage->materialClass,
+		0.0f
 	};
+	uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS3, params3);
 	const vec4_t params2 = {
 		MAX(r_weatherWetBias->value, 0.0f) / ws->depthRangeWorld,	// world units -> depth
 		0.5f * ws->texelSizeWorld,

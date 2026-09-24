@@ -76,6 +76,39 @@ static const materialDefaults_t materialDefaults[MATCLASS_COUNT] = {
 	{ "hair",       1.0f,  0.80f, 0.0f,  0.50f, { 0.80f, 0.15f, 0.90f } },	// hair and fur
 };
 
+// r_weatherWetness response per class. Porous materials soak water and get
+// darker, non porous ones get a smooth water film. Cloth and hair only darken:
+// a roughness scale of 1 keeps highlights, cubemap and SSR unchanged.
+typedef struct
+{
+	float	darkening;		// albedo darkening of a fully wet surface
+	float	roughnessScale;	// wet roughness = roughness * scale
+	float	normalFlatten;	// normal map detail lost under the water film
+} wetnessResponse_t;
+
+static const wetnessResponse_t wetnessResponses[MATCLASS_COUNT] = {
+	//  dark   rough  normal
+	{ 0.35f, 0.50f, 0.30f },	// generic: stone, concrete, world (physical porosity)
+	{ 0.00f, 0.70f, 0.20f },	// metal: water film only
+	{ 0.10f, 0.60f, 0.10f },	// skin: slight sheen
+	{ 0.55f, 1.00f, 0.00f },	// cloth: soaks, only darker
+	{ 0.30f, 0.60f, 0.20f },	// leather
+	{ 0.05f, 0.45f, 0.10f },	// plastic / armor: non porous, glossier
+	{ 0.45f, 0.85f, 0.00f },	// hair: clumps and darkens
+};
+
+void R_WetnessResponse( const shaderStage_t *stage, vec3_t out )
+{
+	int cls = stage->materialClass;
+	if ( cls < 0 || cls >= MATCLASS_COUNT )
+		cls = MATCLASS_GENERIC;
+	const wetnessResponse_t *w = &wetnessResponses[cls];
+	out[0] = Com_Clamp( 0.0f, 1.0f, w->darkening * r_weatherWetDarkening->value );
+	// the cvar scales the smoothing (1 - scale), 1 = table value
+	out[1] = Com_Clamp( 0.05f, 1.0f, 1.0f - (1.0f - w->roughnessScale) * r_weatherWetRoughness->value );
+	out[2] = Com_Clamp( 0.0f, 1.0f, w->normalFlatten * r_weatherWetNormal->value );
+}
+
 // r_autoPBRDebug colors of stages r_autoPBR does not change
 static const vec3_t debugColorAuthored = { 1.0f, 1.0f, 1.0f };
 static const vec3_t debugColorScalar   = { 0.55f, 0.95f, 1.0f };

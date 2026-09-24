@@ -230,6 +230,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_WeatherMvp",			GLSL_MAT4x4, 1 },
 	{ "u_WetnessParams",		GLSL_VEC4, 1 },
 	{ "u_WetnessParams2",		GLSL_VEC4, 1 },
+	{ "u_WetnessParams3",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams2",		GLSL_VEC4, 1 },
 	{ "u_PuddleHeight",		GLSL_VEC4, 1 },
