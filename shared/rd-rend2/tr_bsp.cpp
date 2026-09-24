@@ -4075,6 +4075,30 @@ static void R_GenerateSurfaceSprites(
 	out->numIndices = out->numSprites * 6;
 	out->fogIndex = fogIndex;
 
+	// anchor bounds padded by the largest card, used by the r_autoGrass lod
+	ClearBounds(out->spriteMins, out->spriteMaxs);
+	float pad = 0.0f;
+	for (size_t i = out->baseVertex; i < sprites->size(); i += 4)
+	{
+		const sprite_t &sp = (*sprites)[i];
+		AddPointToBounds(sp.position, out->spriteMins, out->spriteMaxs);
+		pad = MAX(pad, MAX(sp.widthHeight[0], std::fabs(sp.widthHeight[1])) +
+			MAX(std::fabs(sp.skew[0]), std::fabs(sp.skew[1])));
+	}
+	if (out->numSprites > 0)
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			out->spriteMins[i] -= pad;
+			out->spriteMaxs[i] += pad;
+		}
+	}
+	else
+	{
+		VectorClear(out->spriteMins);
+		VectorClear(out->spriteMaxs);
+	}
+
 	out->vbo = NULL;
 	out->ibo = NULL;
 

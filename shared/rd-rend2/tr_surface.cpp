@@ -2699,16 +2699,6 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		shaderFlags |= SSDEF_VELOCITY;
 	}
 
-	shaderProgram_t *program = programGroup + shaderFlags;
-	assert(program->uniformBlocks & (1 << UNIFORM_BLOCK_SURFACESPRITE));
-
-	UniformDataWriter uniformDataWriter;
-	uniformDataWriter.Start(program);
-
-	// FIXME: Use entity block for this
-	uniformDataWriter.SetUniformMatrix4x4(
-		UNIFORM_MODELVIEWPROJECTIONMATRIX, glState.modelviewProjection);
-
 	// A surface sprite must keep the same billboard orientation and distance
 	// fade while rendering the camera and sun-cascade views.  Using the light
 	// Camera UBO here rotates/fades the grass relative to each cascade and is
@@ -2722,6 +2712,79 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		spriteViewLeft = &backEnd.refdef.viewaxis[1];
 		spriteViewUp = &backEnd.refdef.viewaxis[2];
 	}
+
+	// r_autoGrass: vegetation billboards become world stable cross / tri-card
+	// tufts drawn as instances of the same sprite data.  The instance count
+	// only depends on the sprite view origin, so prepass, velocity, cascade and
+	// colour passes draw the same geometry.
+	int numInstances = 1;
+	vec4_t autoGrass = { 0.0f, 0.0f, 0.0f, 1.0f };
+	if (r_autoGrass->integer &&
+		(ss->type == SURFSPRITE_VERTICAL || ss->type == SURFSPRITE_ORIENTED) &&
+		ss->facing != SURFSPRITE_FACING_UP &&
+		!(shaderFlags & SSDEF_ADDITIVE) &&
+		!((firstStage->stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS)) &&
+			surf->alphaTestType == ALPHA_TEST_NONE))
+	{
+		const int debug = r_autoGrassDebug->integer;
+		int mode = r_autoGrass->integer;
+		if (debug >= 3 && debug <= 5)
+			mode = debug - 2;	// force 1 / 2 / 3 cards
+		else if (mode == 1)
+			mode = 2;
+		else if (mode == 2)
+			mode = 3;
+		else
+			mode = 0;	// adaptive
+
+		if (mode)
+		{
+			numInstances = mode;
+			autoGrass[0] = (float)mode;
+		}
+		else
+		{
+			// three cards near, two beyond; the shader fades the third card
+			// per sprite before the whole surface drops it
+			const float lodDist = MAX(r_autoGrassLodDist->value, 1.0f);
+			float dist2 = 0.0f;
+			for (int i = 0; i < 3; ++i)
+			{
+				const float o = (*spriteViewOrigin)[i];
+				const float d = MAX(MAX(surf->spriteMins[i] - o, o - surf->spriteMaxs[i]), 0.0f);
+				dist2 += d * d;
+			}
+			const float lodEnd = lodDist * 1.33f;
+			numInstances = (dist2 < lodEnd * lodEnd) ? 3 : 2;
+			autoGrass[0] = 3.0f;
+			autoGrass[1] = lodDist;
+		}
+
+		if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
+		{
+			if (debug == 1 || debug == 2)
+				autoGrass[2] = (float)debug;
+			else if (debug == 6)
+				autoGrass[2] = (numInstances == 3) ? 6.0f : 7.0f;
+		}
+		autoGrass[3] = r_autoGrassWidth->value;
+
+		shaderFlags = (shaderFlags & ~SSDEF_FACE_CAMERA) | SSDEF_AUTO_GRASS;
+	}
+	backEnd.pc.c_spriteCards += surf->numSprites * numInstances;
+
+	shaderProgram_t *program = programGroup + shaderFlags;
+	assert(program->uniformBlocks & (1 << UNIFORM_BLOCK_SURFACESPRITE));
+
+	UniformDataWriter uniformDataWriter;
+	uniformDataWriter.Start(program);
+
+	// FIXME: Use entity block for this
+	uniformDataWriter.SetUniformMatrix4x4(
+		UNIFORM_MODELVIEWPROJECTIONMATRIX, glState.modelviewProjection);
+
+	if (shaderFlags & SSDEF_AUTO_GRASS)
+		uniformDataWriter.SetUniformVec4(UNIFORM_AUTOGRASS, autoGrass);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWORIGIN, *spriteViewOrigin);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWLEFT, *spriteViewLeft);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWUP, *spriteViewUp);
@@ -2830,7 +2893,7 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 
 		item.draw.type = DRAW_COMMAND_INDEXED;
 		item.draw.primitiveType = GL_TRIANGLES;
-		item.draw.numInstances = 1;
+		item.draw.numInstances = numInstances;
 		item.draw.params.indexed.indexType = GL_UNSIGNED_SHORT;
 		item.draw.params.indexed.firstIndex = 0;
 		item.draw.params.indexed.numIndices = drawIndices;
@@ -2841,6 +2904,7 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		uint32_t RB_CreateSortKey(const DrawItem& item, int stage, int layer);
 		uint32_t key = RB_CreateSortKey(item, 0, surf->shader->sort);
 		RB_AddDrawItem(backEndData->currentPass, key, item);
+		backEnd.pc.c_spriteDraws++;
 
 		numDrawIndicesUndrawn -= drawIndices;
 		baseVertex += ((98298 / 6) * 4);

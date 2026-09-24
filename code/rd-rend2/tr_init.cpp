@@ -270,6 +270,10 @@ cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
 cvar_t  *r_autoFoliage;
 cvar_t  *r_autoFoliageDebug;
+cvar_t  *r_autoGrass;
+cvar_t  *r_autoGrassDebug;
+cvar_t  *r_autoGrassLodDist;
+cvar_t  *r_autoGrassWidth;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 cvar_t  *r_diffuseIBL;
@@ -1922,6 +1926,18 @@ void R_Register( void )
 	r_autoFoliageDebug = ri_Cvar_Get_NoComm( "r_autoFoliageDebug", "0", CVAR_CHEAT,
 		"Auto foliage colors: 1 = classified surfaces, 2 = also uncertain candidates" );
 	ri.Cvar_CheckRange( r_autoFoliageDebug, 0, 2, qtrue );
+	r_autoGrass = ri_Cvar_Get_NoComm( "r_autoGrass", "0", CVAR_ARCHIVE,
+		"Vegetation surface sprites as world stable cards: 0 = legacy billboards, 1 = two card cross, 2 = three card tuft, 3 = adaptive (three near, two far)" );
+	ri.Cvar_CheckRange( r_autoGrass, 0, 3, qtrue );
+	r_autoGrassDebug = ri_Cvar_Get_NoComm( "r_autoGrassDebug", "0", CVAR_CHEAT,
+		"Auto grass debug: 1 = color by card, 2 = color by card direction, 3/4/5 = force 1/2/3 cards, 6 = color by lod (green 3, orange 2 cards)" );
+	ri.Cvar_CheckRange( r_autoGrassDebug, 0, 6, qtrue );
+	r_autoGrassLodDist = ri_Cvar_Get_NoComm( "r_autoGrassLodDist", "600", CVAR_ARCHIVE,
+		"r_autoGrass 3: distance where the third card starts to fade out" );
+	ri.Cvar_CheckRange( r_autoGrassLodDist, 16, 16384, qfalse );
+	r_autoGrassWidth = ri_Cvar_Get_NoComm( "r_autoGrassWidth", "1", CVAR_ARCHIVE,
+		"r_autoGrass: width scale of the cards" );
+	ri.Cvar_CheckRange( r_autoGrassWidth, 0.25f, 2.0f, qfalse );
 	r_autoPBRConvert = ri_Cvar_Get_NoComm( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );

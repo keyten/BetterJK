@@ -44,6 +44,13 @@ uniform vec3 u_SpriteViewOrigin;
 uniform vec3 u_SpriteViewLeft;
 uniform vec3 u_SpriteViewUp;
 
+#if defined(AUTO_GRASS)
+// r_autoGrass: x = angular spacing (180 / x degrees per instance),
+// y = lod distance of the third card (0 = no lod), z = debug mode,
+// w = card width scale
+uniform vec4 u_AutoGrass;
+#endif
+
 #if defined(VELOCITY_PASS)
 layout(std140) uniform TemporalInfo
 {
@@ -66,6 +73,20 @@ out float var_Effectpos;
 
 #if defined(USE_FOG)
 out vec3 var_WSPosition;
+#endif
+
+#if defined(AUTO_GRASS)
+// World stable card direction: the random horizontal direction stored at map
+// load, rotated by 180/n degrees per instance.  Independent of camera and time,
+// so current and previous frame poses match.
+vec2 AutoGrassCardDir()
+{
+	vec2 base = normalize(attr_Normal.xy);
+	float angle = float(gl_InstanceID) * (3.14159265 / max(u_AutoGrass.x, 1.0));
+	float c = cos(angle);
+	float s = sin(angle);
+	return vec2(base.x * c - base.y * s, base.x * s + base.y * c);
+}
 #endif
 
 vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fadeScale)
@@ -115,6 +136,11 @@ vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float fad
 	// Make this sprite face in some direction
 	vec3 fwdVec = cross(attr_Normal, vec3(0.0, 0.0, 1.0));
 	offset.xy = (offset.x * attr_Normal.xy) + (offset.y * width * fwdVec.xy);
+#elif defined(AUTO_GRASS)
+	// Cards share the anchor, so the instances form a cross / tri-card tuft
+	vec2 cardDir = AutoGrassCardDir();
+	vec2 cardFwd = vec2(-cardDir.y, cardDir.x);
+	offset.xy = (offset.x * u_AutoGrass.w * cardDir) + (offset.y * width * cardFwd);
 #elif !defined(FACE_UP)
 	// Make this sprite face in some direction in direction of the camera
 	vec3 lftVec = normalize(u_SpriteViewLeft);
@@ -145,6 +171,21 @@ void main()
 		return;
 	}
 
+#if defined(AUTO_GRASS)
+	// adaptive lod: the third card erodes like the distance fade, then
+	// collapses to a zero area primitive
+	float cardFade = 0.0;
+	if (gl_InstanceID >= 2 && u_AutoGrass.y > 0.0)
+	{
+		cardFade = smoothstep(u_AutoGrass.y, u_AutoGrass.y * 1.33, distanceToCamera);
+		if (cardFade >= 1.0)
+		{
+			gl_Position = vec4(0.0);
+			return;
+		}
+	}
+#endif
+
 	float sprite_time = u_frameTime * 1000.0;
 	int vertex_id = gl_VertexID % 4;
 	vec3 offset = CalculateVertexOffset(vertex_id, sprite_time, fadeScale);
@@ -172,6 +213,30 @@ void main()
 	var_TexCoords = texcoords[vertex_id];
 	var_Color = attr_Color;
 	var_Alpha = 1.0 - fadeScale;
+
+#if defined(AUTO_GRASS)
+	var_Alpha *= 1.0 - cardFade;
+
+	int debugMode = int(u_AutoGrass.z + 0.5);
+	if (debugMode == 1)
+	{
+		// card index
+		const vec3 cardColors[] = vec3[](
+			vec3(1.0, 0.15, 0.1), vec3(0.1, 1.0, 0.15), vec3(0.15, 0.3, 1.0));
+		var_Color = cardColors[min(gl_InstanceID, 2)];
+	}
+	else if (debugMode == 2)
+	{
+		// card orientation, 180 degree symmetric
+		vec2 dir = AutoGrassCardDir();
+		dir *= sign(dir.x + 1e-4);
+		var_Color = vec3(0.5 + 0.5 * dir.x, 0.5 + 0.5 * dir.y, 0.5 - 0.5 * dir.y);
+	}
+	else if (debugMode == 6)
+		var_Color = vec3(0.1, 1.0, 0.2);	// lod: three cards
+	else if (debugMode == 7)
+		var_Color = vec3(1.0, 0.55, 0.05);	// lod: two cards
+#endif
 
 }
 

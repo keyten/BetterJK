@@ -130,6 +130,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_SpecularScale", GLSL_VEC4, 1 },
 	{ "u_MaterialDebug",  GLSL_VEC4, 1 },
 	{ "u_FoliageDebug",   GLSL_VEC4, 1 },
+	{ "u_AutoGrass",      GLSL_VEC4, 1 },
 	{ "u_DiffuseBRDF",    GLSL_INT,  1 },
 	{ "u_ParallaxBias",  GLSL_FLOAT, 1 },
 
@@ -3232,6 +3233,11 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 		if ( (i & SSDEF_FACE_CAMERA) && (i & SSDEF_FACE_UP) )
 			continue;
 
+		// auto grass replaces the vertical/oriented billboard only
+		if ((i & SSDEF_AUTO_GRASS) && (i & (SSDEF_FACE_CAMERA | SSDEF_FACE_UP |
+				SSDEF_FX_SPRITE | SSDEF_FOG_MODULATE | SSDEF_ADDITIVE | SSDEF_FLATTENED)))
+			continue;
+
 		if (i & SSDEF_FACE_CAMERA)
 		{
 			Q_strcat(name, sizeof(name), "_FACE_CAM");
@@ -3280,6 +3286,12 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 			Q_strcat(name, sizeof(name), "_VELOCITY");
 			Q_strcat(extradefines, sizeof(extradefines),
 				"#define VELOCITY_PASS\n");
+		}
+		if (i & SSDEF_AUTO_GRASS)
+		{
+			Q_strcat(name, sizeof(name), "_AUTOGRASS");
+			Q_strcat(extradefines, sizeof(extradefines),
+				"#define AUTO_GRASS\n");
 		}
 		shaderProgram_t *program = tr.spriteShader + i;
 		if (!GLSL_LoadGPUShader(builder, program, name, attribs, NO_XFB_VARS,

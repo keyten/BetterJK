@@ -308,6 +308,10 @@ extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
 extern cvar_t  *r_autoFoliage;
 extern cvar_t  *r_autoFoliageDebug;
+extern cvar_t  *r_autoGrass;
+extern cvar_t  *r_autoGrassDebug;
+extern cvar_t  *r_autoGrassLodDist;
+extern cvar_t  *r_autoGrassWidth;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 extern cvar_t  *r_diffuseIBL;
@@ -1782,8 +1786,9 @@ enum
 	SSDEF_ADDITIVE						= 0x20,
 	SSDEF_FLATTENED						= 0x40,
 	SSDEF_VELOCITY						= 0x80,
+	SSDEF_AUTO_GRASS					= 0x100,	// r_autoGrass: world stable cross/tri cards
 
-	SSDEF_ALL							= 0xFF,
+	SSDEF_ALL							= 0x1FF,
 	SSDEF_COUNT							= SSDEF_ALL + 1
 };
 
@@ -1940,6 +1945,7 @@ typedef enum
 	UNIFORM_SPECULARSCALE,
 	UNIFORM_MATERIALDEBUG,	// r_autoPBRDebug: rgb = color, a = 1 when on (tr_autopbr.cpp)
 	UNIFORM_FOLIAGEDEBUG,
+	UNIFORM_AUTOGRASS,		// r_autoGrass: cards, lod distance, debug mode, width scale
 	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
@@ -2315,6 +2321,10 @@ struct srfSprites_t
 
 	int numAttributes;
 	vertexAttribute_t *attributes;
+
+	// bounds of the sprite anchors, padded by the sprite size (r_autoGrass lod)
+	vec3_t spriteMins;
+	vec3_t spriteMaxs;
 };
 
 struct srfWeather_t
@@ -3034,6 +3044,9 @@ typedef struct {
 
 	int     c_multidraws;
 	int     c_multidrawsMerged;
+
+	int     c_spriteDraws;
+	int     c_spriteCards;
 
 	int		c_dlightVertexes;
 	int		c_dlightIndexes;
