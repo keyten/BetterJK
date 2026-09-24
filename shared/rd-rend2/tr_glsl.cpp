@@ -216,6 +216,11 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PomParams",			GLSL_VEC4, 1 },
 	{ "u_PomParams2",			GLSL_VEC4, 1 },
 	{ "u_PomFade",				GLSL_VEC4, 1 },
+
+	{ "u_WeatherDepthMap",		GLSL_INT, 1 },
+	{ "u_WeatherMvp",			GLSL_MAT4x4, 1 },
+	{ "u_WetnessParams",		GLSL_VEC4, 1 },
+	{ "u_WetnessParams2",		GLSL_VEC4, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -496,6 +501,10 @@ static size_t GLSL_GetShaderHeader(
 	// lightall writes the SSGI source / receiver attachments, tr_ssgi.cpp
 	if (R_SSGIResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSGI\n");
+
+	// lightall wets rain exposed surfaces, tr_weather.cpp
+	if (R_WeatherWetnessEnabled())
+		Q_strcat(dest, size, "#define USE_WETNESS\n");
 
 	if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
 		Q_strcat(dest, size, "#define USE_TONEMAPPING\n");
@@ -2352,6 +2361,7 @@ static int GLSL_LoadGPUProgramLightAll(
 			GLSL_SetUniformInt(program, UNIFORM_FPLUSLIGHTS,  TB_FPLUS_LIGHTS);
 			GLSL_SetUniformInt(program, UNIFORM_FPLUSGRID,    TB_FPLUS_GRID);
 			GLSL_SetUniformInt(program, UNIFORM_FPLUSINDICES, TB_FPLUS_INDICES);
+			GLSL_SetUniformInt(program, UNIFORM_WEATHERDEPTHMAP, TB_WEATHERDEPTH);
 			if ( variant == 1 )
 				GLSL_SetPomSilhouetteUnits(program);
 			qglUseProgram(0);

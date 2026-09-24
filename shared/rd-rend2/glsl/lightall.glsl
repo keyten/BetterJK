@@ -651,6 +651,14 @@ uniform vec4 u_NormalScale;
 uniform vec4 u_SpecularScale;
 // r_autoPBRDebug (tr_autopbr.cpp): rgb = material class / source color, a = 1 when on
 uniform vec4 u_MaterialDebug;
+
+#if defined(USE_WETNESS) && defined(PER_PIXEL_LIGHTING)
+// rain wetness, tr_weather.cpp RB_WeatherWetnessBind
+uniform sampler2D u_WeatherDepthMap; // static top-down rain occlusion depth (D16)
+uniform mat4 u_WeatherMvp;
+uniform vec4 u_WetnessParams;  // strength (< 0: excluded draw), roughness scale, darkening, normal flattening
+uniform vec4 u_WetnessParams2; // depth bias, normal offset (world), debug view, split x
+#endif
 // Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
 uniform int u_DiffuseBRDF;
 uniform float u_ParallaxBias;
@@ -1919,6 +1927,36 @@ vec3 SSRSpecularWeight(in float roughness, in float NE, in vec3 specular)
 }
 #endif
 
+#if defined(USE_WETNESS) && defined(PER_PIXEL_LIGHTING)
+// 0..1 rain exposure of a world position: the particle test of weather.glsl
+// (culled when depth > stored depth) against the same map, with a small depth
+// bias and a bilinear blend of 4 binary tests for a soft, stable 1 texel edge.
+float ComputeRainExposure(in vec3 worldPosition, in vec3 geometricNormal)
+{
+	// half a texel along the normal: walls test the column in front of them
+	// instead of their own top
+	vec4 p = u_WeatherMvp * vec4(worldPosition + geometricNormal * u_WetnessParams2.y, 1.0);
+	vec3 uvz = p.xyz / p.w * 0.5 + 0.5;
+	if (any(lessThan(uvz.xy, vec2(0.0))) || any(greaterThan(uvz.xy, vec2(1.0))))
+		return 0.0;
+
+	// slope scaled: steep faces vary more in depth across one texel
+	float bias = u_WetnessParams2.x * (1.0 + 2.0 * (1.0 - abs(geometricNormal.z)));
+	float z = uvz.z - bias;
+
+	ivec2 size = textureSize(u_WeatherDepthMap, 0);
+	vec2 texel = uvz.xy * vec2(size) - 0.5;
+	ivec2 base = ivec2(floor(texel));
+	vec2 f = texel - vec2(base);
+	ivec2 maxTexel = size - 1;
+	float e00 = step(z, texelFetch(u_WeatherDepthMap, clamp(base,               ivec2(0), maxTexel), 0).r);
+	float e10 = step(z, texelFetch(u_WeatherDepthMap, clamp(base + ivec2(1, 0), ivec2(0), maxTexel), 0).r);
+	float e01 = step(z, texelFetch(u_WeatherDepthMap, clamp(base + ivec2(0, 1), ivec2(0), maxTexel), 0).r);
+	float e11 = step(z, texelFetch(u_WeatherDepthMap, clamp(base + ivec2(1, 1), ivec2(0), maxTexel), 0).r);
+	return mix(mix(e00, e10, f.x), mix(e01, e11, f.x), f.y);
+}
+#endif
+
 #if defined(PER_PIXEL_LIGHTING) && defined(USE_SSAO)
 // Jimenez et al. 2016, "Practical Real-Time Strategies for Accurate Indirect
 // Occlusion": multi-bounce fit, bright albedo loses less light in creases
@@ -2154,6 +2192,26 @@ void main()
 	N = CalcNormal(vertexNormal, var_Tangent, texCoords);
 	L /= sqrt(sqrLightDist);
 
+  #if defined(USE_WETNESS)
+	// Rain wetness: changes only the material inputs (normal here, albedo and
+	// roughness below), before any lighting, so direct light, dynamic lights,
+	// cubemap IBL, SSR and SSGI all see the same wet material.
+	float rainExposure = 0.0;
+	float wetness = 0.0;
+	if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z > 0.0)
+	{
+		vec3 wetGeoNormal = normalize(vertexNormal);
+		if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z == 1.0)
+			rainExposure = ComputeRainExposure(u_ViewOrigin - viewDir, wetGeoNormal);
+		// walls get about half the rain, faces pointing down none
+		float facing = mix(0.5, 1.0, clamp(wetGeoNormal.z, 0.0, 1.0)) * step(-0.2, wetGeoNormal.z);
+		wetness = rainExposure * max(u_WetnessParams.x, 0.0) * facing;
+		if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
+			wetness = 0.0;	// dry / wet split
+		N = normalize(mix(N, wetGeoNormal, wetness * u_WetnessParams.w));
+	}
+  #endif
+
 	// screen-space AO (r) and sun contact shadow (g) of this view
 	float AO = 1.0;
 	float contactShadow = 1.0;
@@ -2236,6 +2294,21 @@ void main()
 	specular.rgb *= u_SpecularScale.xyz;
 	roughness = mix(1.0, 0.01, specular.a * (1.0 - u_SpecularScale.w));
   #endif
+  #endif
+
+  #if defined(USE_WETNESS)
+	if (wetness > 0.0)
+	{
+		// a water film darkens porous (rough, dielectric) albedo and smooths
+		// the surface; F0 is kept: dielectrics stay dielectric, metals metal.
+		// diffuse is already (1 - metal) scaled on the ORMS path.
+		float porosity = roughness;
+    #if defined(USE_SPECULARMAP) && !defined(USE_SPECGLOSS)
+		porosity *= 1.0 - ORMS.z;
+    #endif
+		diffuse.rgb *= 1.0 - wetness * u_WetnessParams.z * porosity;
+		roughness = mix(roughness, max(roughness * u_WetnessParams.y, 0.08), wetness);
+	}
   #endif
 
 	vec3 specularAO = specular.rgb * AO;
@@ -2446,6 +2519,29 @@ void main()
 		else if (u_GridScale.w == 7.0) debugColor = multi;
 		else if (u_GridScale.w == 8.0) debugColor = gpu;
 		else if (u_GridScale.w == 9.0) debugColor = min(abs(gpu - legacy) * 4.0, vec3(1.0));
+		out_Color = vec4(debugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+  #endif
+
+  #if defined(USE_WETNESS)
+	// r_weatherWetnessDebug 1-3, written unlit (tone mapping is bypassed)
+	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 3.0)
+	{
+		float shade = 0.35 + 0.65 * NE;
+		vec3 debugColor;
+		if (u_WetnessParams2.z == 1.0)
+			debugColor = vec3(rainExposure) * shade;
+		else if (u_WetnessParams2.z == 2.0)
+			debugColor = u_WetnessParams.x < 0.0 ? vec3(1.0, 0.0, 1.0) * shade :
+				mix(vec3(0.25), vec3(0.1, 0.35, 1.0), wetness) * shade;
+		else
+			debugColor = vec3(roughness);
 		out_Color = vec4(debugColor, diffuse.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
     #if defined(USE_SSR) && defined(USE_SPECULARMAP)

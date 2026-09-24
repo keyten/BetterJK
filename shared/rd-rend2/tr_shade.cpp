@@ -2237,6 +2237,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				samplerBindingsWriter.AddStaticImage(tr.world->entityGridDirected, TB_ENTITYGRID_DIRECTED);
 				samplerBindingsWriter.AddStaticImage(tr.world->entityGridDirection, TB_ENTITYGRID_DIRECTION);
 			}
+			// rain wetness: set for every lightall draw so no stale strength
+			// carries over to a dry stage
+			if (R_WeatherWetnessEnabled())
+				RB_WeatherWetnessBind(tess.shader, pStage, uniformDataWriter, samplerBindingsWriter);
+
 			int i;
 			vec4_t enableTextures = {};
 			enableTextures[0] = (float)pStage->glow;

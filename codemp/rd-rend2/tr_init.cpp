@@ -213,6 +213,13 @@ cvar_t  *r_motionBlurReset;
 cvar_t  *r_motionBlurDebug;
 
 cvar_t  *r_ssr;
+cvar_t  *r_weatherWetness;
+cvar_t  *r_weatherWetStrength;
+cvar_t  *r_weatherWetRoughness;
+cvar_t  *r_weatherWetDarkening;
+cvar_t  *r_weatherWetNormal;
+cvar_t  *r_weatherWetBias;
+cvar_t  *r_weatherWetnessDebug;
 cvar_t  *r_ssrQuality;
 cvar_t  *r_ssrSteps;
 cvar_t  *r_ssrRefineSteps;
@@ -1773,6 +1780,14 @@ void R_Register( void )
 
 	r_ssr = ri.Cvar_Get( "r_ssr", "0", CVAR_ARCHIVE | CVAR_LATCH, "Screen-space reflections, blended with the cubemap reflections of PBR materials (needs r_specularMapping)" );
 	ri.Cvar_CheckRange( r_ssr, 0, 1, qtrue );
+	r_weatherWetness = ri.Cvar_Get( "r_weatherWetness", "0", CVAR_ARCHIVE | CVAR_LATCH, "Rain exposed surfaces of rain maps are wet (PBR roughness / albedo), uses the weather occlusion map" );
+	ri.Cvar_CheckRange( r_weatherWetness, 0, 1, qtrue );
+	r_weatherWetStrength = ri.Cvar_Get( "r_weatherWetStrength", "1", CVAR_ARCHIVE, "Wetness of fully rain exposed surfaces, 0-1" );
+	r_weatherWetRoughness = ri.Cvar_Get( "r_weatherWetRoughness", "0.5", CVAR_ARCHIVE, "Roughness multiplier of fully wet surfaces" );
+	r_weatherWetDarkening = ri.Cvar_Get( "r_weatherWetDarkening", "0.35", CVAR_ARCHIVE, "Diffuse albedo darkening of fully wet rough dielectrics" );
+	r_weatherWetNormal = ri.Cvar_Get( "r_weatherWetNormal", "0.3", CVAR_ARCHIVE, "Normal map flattening of fully wet surfaces" );
+	r_weatherWetBias = ri.Cvar_Get( "r_weatherWetBias", "2", CVAR_ARCHIVE, "Rain occlusion depth bias in world units" );
+	r_weatherWetnessDebug = ri.Cvar_Get( "r_weatherWetnessDebug", "0", CVAR_CHEAT, "1 rain exposure, 2 wetness mask (magenta: excluded), 3 effective roughness, 4 dry / wet split" );
 	r_ssrQuality = ri.Cvar_Get( "r_ssrQuality", "1", CVAR_ARCHIVE, "SSR quality: 0 = low, 1 = medium, 2 = high, 3 = ultra" );
 	ri.Cvar_CheckRange( r_ssrQuality, 0, 3, qtrue );
 	r_ssrSteps = ri.Cvar_Get( "r_ssrSteps", "0", CVAR_ARCHIVE, "SSR ray march steps, 0 = from r_ssrQuality" );

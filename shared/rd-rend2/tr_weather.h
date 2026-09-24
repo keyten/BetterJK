@@ -115,6 +115,12 @@ struct weatherSystem_t
 	float		windSpeed;
 
 	float		weatherMVP[16];
+
+	// r_weatherWetness: weatherMVP / weatherDepthImage are valid for this map,
+	// world units covered by the depth range and by one depth map texel
+	bool		depthMapValid = false;
+	float		depthRangeWorld = 1.0f;
+	float		texelSizeWorld = 1.0f;
 };
 struct srfWeather_t;
 

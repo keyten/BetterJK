@@ -255,6 +255,13 @@ extern cvar_t  *r_motionBlurReset;
 extern cvar_t  *r_motionBlurDebug;
 
 extern cvar_t  *r_ssr;
+extern cvar_t  *r_weatherWetness;
+extern cvar_t  *r_weatherWetStrength;
+extern cvar_t  *r_weatherWetRoughness;
+extern cvar_t  *r_weatherWetDarkening;
+extern cvar_t  *r_weatherWetNormal;
+extern cvar_t  *r_weatherWetBias;
+extern cvar_t  *r_weatherWetnessDebug;
 extern cvar_t  *r_ssrQuality;
 extern cvar_t  *r_ssrSteps;
 extern cvar_t  *r_ssrRefineSteps;
@@ -1163,6 +1170,10 @@ enum
 	// lit only, the entity grid units (LIGHT_VECTOR) are free there. Needs
 	// GL_MAX_TEXTURE_IMAGE_UNITS > 16, else r_pomSilhouette stays off.
 	TB_POM_GROUPS    = 16,
+
+	// static rain occlusion depth map (tr.weatherDepthImage) of lightall,
+	// r_weatherWetness (tr_weather.cpp). Needs GL_MAX_TEXTURE_IMAGE_UNITS > 19.
+	TB_WEATHERDEPTH  = 19,
 	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
@@ -1972,6 +1983,11 @@ typedef enum
 	UNIFORM_POMPARAMS,		// silhouette POM: min / max linear steps, binary steps, view dependence
 	UNIFORM_POMPARAMS2,		// silhouette POM: draw mode, depth mode, ortho pixel footprint, debug view
 	UNIFORM_POMFADE,		// silhouette POM: crossfade start, 1 / width, debug split x, unused
+
+	UNIFORM_WEATHERDEPTHMAP,	// r_weatherWetness: tr.weatherDepthImage
+	UNIFORM_WEATHERMVP,			// world -> weather depth clip space
+	UNIFORM_WETNESSPARAMS,		// strength, roughness scale, darkening, normal flattening
+	UNIFORM_WETNESSPARAMS2,		// depth bias, normal offset, debug mode, split x
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -4817,6 +4833,11 @@ SCREEN-SPACE REFLECTIONS, tr_ssr.cpp
 */
 
 qboolean R_SSRResourcesEnabled(void);
+
+// rain wetness of lightall (tr_weather.cpp)
+qboolean R_WeatherWetnessEnabled(void);
+void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
+	class UniformDataWriter &uniformDataWriter, class SamplerBindingsWriter &samplerBindingsWriter);
 qboolean R_SSRWantsVelocity(void);
 void R_SSRSelectResources(void);
 void R_CreateSSRImages(int width, int height, int hdrFormat);

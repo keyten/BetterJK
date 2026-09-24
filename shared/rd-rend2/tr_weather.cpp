@@ -413,6 +413,13 @@ namespace
 		RE_EndScene();
 
 		R_NewFrameSync();
+
+		tr.weatherSystem->depthRangeWorld = MAX(
+			tr.world->bmodels[0].bounds[1][2] - tr.world->bmodels[0].bounds[0][2], 1.0f);
+		tr.weatherSystem->texelSizeWorld = MAX(
+			fabsf(mapSize[0]) / tr.weatherDepthFbo->width,
+			fabsf(mapSize[1]) / tr.weatherDepthFbo->height);
+		tr.weatherSystem->depthMapValid = true;
 	}
 
 	void RB_SimulateWeather(weatherObject_t *ws)
@@ -617,6 +624,7 @@ void R_InitWeatherSystem()
 	tr.weatherSystem->constWindDirection[1] = .0f;
 
 	CurrentWeatherBrushIndex = -1;
+	tr.weatherSystem->depthMapValid = false;
 
 	for (int i = 0; i < NUM_WEATHER_TYPES; i++)
 		tr.weatherSystem->weatherSlots[i].active = false;
@@ -1595,4 +1603,98 @@ bool R_IsRaining()
 bool R_IsPuffing()
 {
 	return false;
+}
+
+/*
+==============================================================================
+Rain wetness (r_weatherWetness)
+
+lightall reuses the static rain occlusion map of GenerateDepthMap: a surface
+point is rain exposed where the rain particle test of weather.glsl would keep
+a particle. The wet surface only changes the PBR inputs (roughness, diffuse,
+normal) before any lighting, see ComputeRainExposure in lightall.glsl. Rain
+is static per map, so there is no accumulation or drying over time.
+==============================================================================
+*/
+
+qboolean R_WeatherWetnessEnabled(void)
+{
+	if (!r_weatherWetness || !r_weatherWetness->integer)
+		return qfalse;
+
+	// queried once: called for every lightall draw, the GPU does not change
+	static GLint maxFragmentSamplers = -1;
+	if (maxFragmentSamplers < 0)
+		qglGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxFragmentSamplers);
+	if (maxFragmentSamplers <= TB_WEATHERDEPTH)
+	{
+		static bool warned = false;
+		if (!warned)
+			ri.Printf(PRINT_WARNING, "r_weatherWetness: %d fragment texture units, %d needed, disabled\n",
+				maxFragmentSamplers, TB_WEATHERDEPTH + 1);
+		warned = true;
+		return qfalse;
+	}
+	return qtrue;
+}
+
+// Structural eligibility only: sky, portals, liquids, fog, blended / glow
+// stages and the view weapon stay dry. Returns false for such stages.
+static bool R_WetnessStageEligible(const shader_t *shader, const shaderStage_t *pStage)
+{
+	if (shader->isSky || shader->isPortal || (shader->surfaceFlags & SURF_SKY))
+		return false;
+	if (shader->contentFlags & (CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA | CONTENTS_FOG))
+		return false;
+	if (shader->sort > SS_OPAQUE)
+		return false;
+	const uint32_t dstBlend = pStage->stateBits & GLS_DSTBLEND_BITS;
+	if (dstBlend != 0 && dstBlend != GLS_DSTBLEND_ZERO)
+		return false;
+	if (pStage->glow)
+		return false;
+	if (backEnd.currentEntity && backEnd.currentEntity != &tr.worldEntity &&
+		(backEnd.currentEntity->e.renderfx & RF_FIRST_PERSON))
+		return false;
+	return true;
+}
+
+void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
+	UniformDataWriter &uniformDataWriter, SamplerBindingsWriter &samplerBindingsWriter)
+{
+	const weatherSystem_t *ws = tr.weatherSystem;
+	const bool raining = ws && ws->depthMapValid && tr.weatherDepthImage &&
+		ws->weatherSlots[WEATHER_RAIN].active;
+	if (!raining)
+	{
+		// strength 0: the shader never samples u_WeatherDepthMap
+		const vec4_t off = {};
+		uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS, off);
+		uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS2, off);
+		return;
+	}
+
+	const bool eligible = !backEnd.depthFill &&
+		!(backEnd.viewParms.flags & VPF_DEPTHSHADOW) &&
+		!r_lightmap->integer &&
+		R_WetnessStageEligible(shader, pStage);
+
+	// strength < 0 marks an ineligible draw for r_weatherWetnessDebug 2
+	const float strength = eligible ? Com_Clamp(0.0f, 1.0f, r_weatherWetStrength->value) : -1.0f;
+	const vec4_t params = {
+		strength,
+		Com_Clamp(0.05f, 1.0f, r_weatherWetRoughness->value),
+		Com_Clamp(0.0f, 1.0f, r_weatherWetDarkening->value),
+		Com_Clamp(0.0f, 1.0f, r_weatherWetNormal->value)
+	};
+	const vec4_t params2 = {
+		MAX(r_weatherWetBias->value, 0.0f) / ws->depthRangeWorld,	// world units -> depth
+		0.5f * ws->texelSizeWorld,
+		(float)r_weatherWetnessDebug->integer,
+		0.5f * (float)glConfig.vidWidth
+	};
+	uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS, params);
+	uniformDataWriter.SetUniformVec4(UNIFORM_WETNESSPARAMS2, params2);
+	uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, ws->weatherMVP);
+	samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_WEATHERDEPTH);
 }
