@@ -3406,11 +3406,12 @@ static void R_RenderAllCubemaps()
 	R_IssuePendingRenderCommands();
 	R_InitNextFrame();
 
-	for (int k = 0; k <= r_cubeMappingBounces->integer; k++)
+	const int lastBounce = r_cubeMapping->integer ? r_cubeMappingBounces->integer : 0;
+	for (int k = 0; k <= lastBounce; k++)
 	{
 		bool bounce = k != 0;
 		// Limit number of Cubemaps per map
-		int maxCubemaps = MIN(tr.numCubemaps, 128);
+		int maxCubemaps = MIN(tr.numCubemaps, MAX_RUNTIME_CUBEMAPS);
 		for (int i = 0; i < maxCubemaps; i++)
 		{
 			for (int j = 0; j < 6; j++)
@@ -3418,7 +3419,9 @@ static void R_RenderAllCubemaps()
 				R_RenderCubemapSide(i, j, bounce);
 			}
 
-			R_AddConvolveCubemapCmd(&tr.cubemaps[i], i);
+			R_AddConvolveCubemapCmd(&tr.cubemaps[i], i,
+				r_cubeMapping->integer ? qtrue : qfalse,
+				(r_diffuseIBL->integer && k == lastBounce) ? qtrue : qfalse);
 			R_IssuePendingRenderCommands();
 		}
 	}
@@ -4524,7 +4527,7 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 	}
 
 	// load cubemaps
-	if (r_cubeMapping->integer && bspIndex == nullptr)
+	if ((r_cubeMapping->integer || r_diffuseIBL->integer) && bspIndex == nullptr)
 	{
 		// Try loading an env.json file first
 		R_LoadEnvironmentJson(worldData->baseName);
@@ -4668,7 +4671,7 @@ void RE_LoadWorldMap( const char *name ) {
 	R_InitWeatherForMap();
 
 	// Render all cubemaps
-	if (r_cubeMapping->integer && tr.numCubemaps)
+	if ((r_cubeMapping->integer || r_diffuseIBL->integer) && tr.numCubemaps)
 	{
 		R_RenderAllCubemaps();
 	}

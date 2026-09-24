@@ -2523,6 +2523,7 @@ void R_RenderCubemapSide(int cubemapIndex, int cubemapSide, bool bounce)
 			tr.cachedViewParms[i].targetFbo = tr.renderCubeFbo[cubemapSide];
 			tr.cachedViewParms[i].targetFboLayer = 0;
 			tr.cachedViewParms[i].flags |= VPF_NOVIEWMODEL;
+			tr.cachedViewParms[i].flags |= VPF_NODIFFUSEIBL;
 			if (!bounce)
 				tr.cachedViewParms[i].flags |= VPF_NOCUBEMAPS;
 		}

@@ -3776,7 +3776,7 @@ void R_CreateBuiltinImages( void ) {
 			r_sunShadowMode->integer ? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT16);
 	}
 
-	if (r_cubeMapping->integer)
+	if (r_cubeMapping->integer || r_diffuseIBL->integer)
 	{
 		tr.renderCubeImage = R_CreateImage(
 			"*renderCube", NULL, CUBE_MAP_SIZE, CUBE_MAP_SIZE,
@@ -3793,6 +3793,16 @@ void R_CreateBuiltinImages( void ) {
 			IMGFLAG_NO_COMPRESSION |
 			IMGFLAG_CLAMPTOEDGE,
 			GL_DEPTH24_STENCIL8);
+
+		if (r_diffuseIBL->integer)
+		{
+			// One linear RGB average per rendered probe; sampled with texelFetch.
+			tr.probeAverageImage = R_CreateImage(
+				"*probeAverage", NULL, MAX_RUNTIME_CUBEMAPS, 1,
+				IMGTYPE_COLORALPHA,
+				IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE,
+				GL_RGBA16F);
+		}
 	}
 
 	tr.weatherDepthImage = R_CreateImage(

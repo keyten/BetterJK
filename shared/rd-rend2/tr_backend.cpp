@@ -2128,61 +2128,83 @@ static const void *RB_PrefilterEnvMap(const void *data) {
 
 	RB_SetGL2D();
 
-	qglBindTexture(GL_TEXTURE_CUBE_MAP, tr.renderCubeImage->texnum);
-	qglGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-	qglBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-
-	if (!cmd->cubemap->image)
-	{
-		GLenum cubemapFormat = GL_RGBA8;
-		if (r_hdr->integer)
-		{
-			cubemapFormat = GL_RGBA16F;
-		}
-		// FIX ME: Only allocate needed mip level!
-		cmd->cubemap->image = R_CreateImage(
-			va("*cubeMap%d", cmd->cubemapId),
-			NULL,
-			CUBE_MAP_SIZE,
-			CUBE_MAP_SIZE,
-			IMGTYPE_COLORALPHA,
-			IMGFLAG_NO_COMPRESSION |
-			IMGFLAG_CLAMPTOEDGE |
-			IMGFLAG_MIPMAP |
-			IMGFLAG_CUBEMAP,
-			cubemapFormat);
-	}
-	assert(cmd->cubemap->image);
-
-	int width = cmd->cubemap->image->width;
-	int height = cmd->cubemap->image->height;
-	float roughnessMips = (float)CUBE_MAP_ROUGHNESS_MIPS;
-
 	GL_State(GLS_DEPTHTEST_DISABLE);
 	GL_Cull(CT_TWO_SIDED);
+	GL_BindToTMU(tr.renderCubeImage, TB_CUBEMAP);
 
-	vec3_t directLight, ambientLight, direction;
-	R_LightForPoint(cmd->cubemap->origin, ambientLight, directLight, direction);
-	VectorScale(directLight, 1.0f / 255.0f / r_directedScale->value, directLight);
-	VectorScale(ambientLight, 1.0f / 255.0f / r_ambientScale->value, ambientLight);
-	const vec3_t lumaVec = { 0.2126f, 0.7152f, 0.0722f };
-	float maxLuma = MAX(0.0001f, MAX(DotProduct(directLight, lumaVec), DotProduct(ambientLight, lumaVec)));
-
-	for (int level = 0; level <= CUBE_MAP_ROUGHNESS_MIPS; level++)
+	if (cmd->filterSpecular)
 	{
+		// GL_BindToTMU may leave another unit active when the binding is cached.
+		GL_SelectTexture(TB_CUBEMAP);
+		qglGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+		if (!cmd->cubemap->image)
+		{
+			GLenum cubemapFormat = r_hdr->integer ? GL_RGBA16F : GL_RGBA8;
+			// The specular roughness chain retains its existing format and size.
+			cmd->cubemap->image = R_CreateImage(
+				va("*cubeMap%d", cmd->cubemapId), NULL,
+				CUBE_MAP_SIZE, CUBE_MAP_SIZE, IMGTYPE_COLORALPHA,
+				IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE |
+				IMGFLAG_MIPMAP | IMGFLAG_CUBEMAP, cubemapFormat);
+		}
+		assert(cmd->cubemap->image);
+
+		vec3_t directLight, ambientLight, direction;
+		R_LightForPoint(cmd->cubemap->origin, ambientLight, directLight, direction);
+		VectorScale(directLight, 1.0f / 255.0f / r_directedScale->value, directLight);
+		VectorScale(ambientLight, 1.0f / 255.0f / r_ambientScale->value, ambientLight);
+		const vec3_t lumaVec = { 0.2126f, 0.7152f, 0.0722f };
+		float maxLuma = MAX(0.0001f, MAX(DotProduct(directLight, lumaVec), DotProduct(ambientLight, lumaVec)));
+
+		int width = cmd->cubemap->image->width;
+		int height = cmd->cubemap->image->height;
+		const float roughnessMips = (float)CUBE_MAP_ROUGHNESS_MIPS;
+		for (int level = 0; level <= CUBE_MAP_ROUGHNESS_MIPS; level++)
+		{
+			FBO_Bind(tr.filterCubeFbo);
+			qglFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cmd->cubemap->image->texnum, level);
+			glState.currentFBO->colorImage[0] = cmd->cubemap->image;
+			glState.currentFBO->colorBuffers[0] = cmd->cubemap->image->texnum;
+			GLSL_BindProgram(&tr.prefilterEnvMapShader);
+			GL_SetViewportAndScissor(0, 0, width, height);
+			vec4_t viewInfo;
+			VectorSet4(viewInfo, maxLuma, level, roughnessMips, level / roughnessMips);
+			GLSL_SetUniformVec4(&tr.prefilterEnvMapShader, UNIFORM_VIEWINFO, viewInfo);
+			RB_InstantTriangle();
+			width /= 2;
+			height /= 2;
+		}
+	}
+
+	if (cmd->filterDiffuse)
+	{
+		assert(tr.probeAverageImage);
+		if (!cmd->cubemap->diffuseIrradianceImage)
+		{
+			cmd->cubemap->diffuseIrradianceImage = R_CreateImage(
+				va("*diffuseIrradiance%d", cmd->cubemapId), NULL,
+				DIFFUSE_IRRADIANCE_SIZE, DIFFUSE_IRRADIANCE_SIZE,
+				IMGTYPE_COLORALPHA,
+				IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE | IMGFLAG_CUBEMAP,
+				GL_RGBA16F);
+		}
+
 		FBO_Bind(tr.filterCubeFbo);
-		qglFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, cmd->cubemap->image->texnum, level);
-		GL_BindToTMU(tr.renderCubeImage, TB_CUBEMAP);
-		GLSL_BindProgram(&tr.prefilterEnvMapShader);
-
-		GL_SetViewportAndScissor(0, 0, width, height);
-
-		vec4_t viewInfo;
-		VectorSet4(viewInfo, maxLuma, level, roughnessMips, level / roughnessMips);
-		GLSL_SetUniformVec4(&tr.prefilterEnvMapShader, UNIFORM_VIEWINFO, viewInfo);
+		qglFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+			tr.probeAverageImage->texnum, 0);
+		glState.currentFBO->colorImage[0] = tr.probeAverageImage;
+		glState.currentFBO->colorBuffers[0] = tr.probeAverageImage->texnum;
+		GLSL_BindProgram(&tr.probeAverageShader);
+		GL_SetViewportAndScissor(cmd->cubemapId, 0, 1, 1);
 		RB_InstantTriangle();
-		width = width / 2;
-		height = height / 2;
+
+		qglFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+			cmd->cubemap->diffuseIrradianceImage->texnum, 0);
+		glState.currentFBO->colorImage[0] = cmd->cubemap->diffuseIrradianceImage;
+		glState.currentFBO->colorBuffers[0] = cmd->cubemap->diffuseIrradianceImage->texnum;
+		GLSL_BindProgram(&tr.diffuseIrradianceShader);
+		GL_SetViewportAndScissor(0, 0, DIFFUSE_IRRADIANCE_SIZE, DIFFUSE_IRRADIANCE_SIZE);
+		RB_InstantTriangle();
 	}
 
 	return (const void *)(cmd + 1);

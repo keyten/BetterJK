@@ -64,6 +64,8 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_LevelsMap",  GLSL_INT, 1 },
 	{ "u_CubeMap",    GLSL_INT, 1 },
 	{ "u_EnvBrdfMap", GLSL_INT, 1 },
+	{ "u_DiffuseIrradianceMap", GLSL_INT, 1 },
+	{ "u_ProbeAverageMap", GLSL_INT, 1 },
 
 	{ "u_ScreenImageMap", GLSL_INT, 1 },
 	{ "u_ScreenDepthMap", GLSL_INT, 1 },
@@ -137,6 +139,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_ColorGradingParams",  GLSL_VEC4, 1 },
 
 	{ "u_CubeMapInfo", GLSL_VEC4, 1 },
+	{ "u_DiffuseIBLParams", GLSL_VEC4, 1 },
 
 	{ "u_AlphaTestType",		GLSL_INT, 1 },
 
@@ -2116,6 +2119,11 @@ static int GLSL_LoadGPUProgramLightAll(
 				Q_strcat(name, sizeof(name), "_ENV");
 				Q_strcat(extradefines, sizeof(extradefines), "#define USE_CUBEMAP\n");
 			}
+			if (r_diffuseIBL->integer)
+			{
+				Q_strcat(name, sizeof(name), "_DIBL");
+				Q_strcat(extradefines, sizeof(extradefines), "#define USE_DIFFUSE_IBL\n");
+			}
 		}
 
 		if (r_sunlightMode->integer)
@@ -2196,6 +2204,8 @@ static int GLSL_LoadGPUProgramLightAll(
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP,   TB_SHADOWMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_CUBEMAP,     TB_CUBEMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_ENVBRDFMAP,  TB_ENVBRDFMAP);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_DIFFUSEIRRADIANCEMAP, TB_DIFFUSEIRRADIANCEMAP);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_PROBEAVERAGEMAP, TB_PROBEAVERAGEMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP2,  TB_SHADOWMAPARRAY);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SSAOMAP,     TB_SSAOMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_EMISSIVEMAP, TB_EMISSIVEMAP);
@@ -2815,6 +2825,27 @@ static int GLSL_LoadGPUProgramPrefilterEnvMap(
 	return 1;
 }
 
+static int GLSL_LoadGPUProgramDiffuseIrradiance(
+	ShaderProgramBuilder& builder, Allocator& scratchAlloc)
+{
+	GLSL_LoadGPUProgramBasic(builder, scratchAlloc, &tr.probeAverageShader,
+		"probeAverage", fallback_probeAverageProgram);
+	GLSL_InitUniforms(&tr.probeAverageShader);
+	qglUseProgram(tr.probeAverageShader.program);
+	GLSL_SetUniformInt(&tr.probeAverageShader, UNIFORM_CUBEMAP, TB_CUBEMAP);
+	qglUseProgram(0);
+	GLSL_FinishGPUShader(&tr.probeAverageShader);
+
+	GLSL_LoadGPUProgramBasic(builder, scratchAlloc, &tr.diffuseIrradianceShader,
+		"diffuseIrradiance", fallback_diffuseIrradianceProgram);
+	GLSL_InitUniforms(&tr.diffuseIrradianceShader);
+	qglUseProgram(tr.diffuseIrradianceShader.program);
+	GLSL_SetUniformInt(&tr.diffuseIrradianceShader, UNIFORM_CUBEMAP, TB_CUBEMAP);
+	qglUseProgram(0);
+	GLSL_FinishGPUShader(&tr.diffuseIrradianceShader);
+	return 2;
+}
+
 static int GLSL_LoadGPUProgramDepthBlur(
 	ShaderProgramBuilder& builder,
 	Allocator& scratchAlloc )
@@ -3278,6 +3309,8 @@ void GLSL_LoadGPUShaders()
 	numEtcShaders += GLSL_LoadGPUProgramVolumetric(builder, allocator);
 	if (r_cubeMapping->integer)
 		numEtcShaders += GLSL_LoadGPUProgramPrefilterEnvMap(builder, allocator);
+	if (r_diffuseIBL->integer)
+		numEtcShaders += GLSL_LoadGPUProgramDiffuseIrradiance(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDepthBlur(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramGaussianBlur(builder, allocator);
 	numEtcShaders += GLSL_LoadGPUProgramDynamicGlowUpsample(builder, allocator);
@@ -3373,6 +3406,8 @@ void GLSL_ShutdownGPUShaders(void)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);
 
 	GLSL_DeleteGPUShader(&tr.prefilterEnvMapShader);
+	GLSL_DeleteGPUShader(&tr.probeAverageShader);
+	GLSL_DeleteGPUShader(&tr.diffuseIrradianceShader);
 
 	for (i = 0; i < 2; ++i)
 		GLSL_DeleteGPUShader(&tr.gaussianBlurShader[i]);

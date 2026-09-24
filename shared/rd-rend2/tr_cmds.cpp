@@ -246,7 +246,7 @@ R_AddConvolveCubemapsCmd
 
 =============
 */
-void	R_AddConvolveCubemapCmd( cubemap_t *cubemap , int cubemapId ) {
+void	R_AddConvolveCubemapCmd( cubemap_t *cubemap, int cubemapId, qboolean filterSpecular, qboolean filterDiffuse ) {
 	convolveCubemapCommand_t	*cmd;
 
 	if (!tr.registered) {
@@ -260,6 +260,8 @@ void	R_AddConvolveCubemapCmd( cubemap_t *cubemap , int cubemapId ) {
 
 	cmd->cubemap = cubemap;
 	cmd->cubemapId = cubemapId;
+	cmd->filterSpecular = filterSpecular;
+	cmd->filterDiffuse = filterDiffuse;
 }
 
 /*

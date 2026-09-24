@@ -256,6 +256,9 @@ cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
+cvar_t  *r_diffuseIBL;
+cvar_t  *r_diffuseIBLStrength;
+cvar_t  *r_diffuseIBLDebug;
 
 cvar_t  *r_forwardPlus;
 cvar_t  *r_forwardPlusTileSize;
@@ -1851,6 +1854,12 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );
 	ri.Cvar_CheckRange( r_diffuseBRDF, 0, 1, qtrue );
+	r_diffuseIBL = ri_Cvar_Get_NoComm( "r_diffuseIBL", "0", CVAR_ARCHIVE | CVAR_LATCH, "Directional light-grid ambient from runtime cubemap probes" );
+	ri.Cvar_CheckRange( r_diffuseIBL, 0, 1, qtrue );
+	r_diffuseIBLStrength = ri_Cvar_Get_NoComm( "r_diffuseIBLStrength", "1", CVAR_ARCHIVE, "Strength of probe directional ambient modulation" );
+	ri.Cvar_CheckRange( r_diffuseIBLStrength, 0.0f, 1.0f, qfalse );
+	r_diffuseIBLDebug = ri_Cvar_Get_NoComm( "r_diffuseIBLDebug", "0", CVAR_CHEAT, "Diffuse IBL debug: 1 irradiance, 2 factor, 3 old ambient, 4 new ambient, 5 selected probe" );
+	ri.Cvar_CheckRange( r_diffuseIBLDebug, 0, 5, qtrue );
 
 	// Forward+ / clustered dynamic lights (tr_forwardplus.cpp), off by default
 	r_forwardPlus = ri_Cvar_Get_NoComm( "r_forwardPlus", "0", CVAR_ARCHIVE, "Dynamic lights: 0 = legacy (32 lights, per surface masks), 1 = Forward+ clustered light lists (up to 256 lights)" );

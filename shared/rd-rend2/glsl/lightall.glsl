@@ -488,6 +488,12 @@ uniform sampler2D u_EnvBrdfMap;
 #elif defined(USE_SSR)
 uniform sampler2D u_EnvBrdfMap;
 #endif
+#if defined(USE_DIFFUSE_IBL) && defined(USE_LIGHT_VECTOR)
+uniform samplerCube u_DiffuseIrradianceMap;
+uniform sampler2D u_ProbeAverageMap;
+// x = blend, y = debug mode, z = zero-based probe index, w = valid probe
+uniform vec4 u_DiffuseIBLParams;
+#endif
 #endif
 
 // x = glow out, y = deluxe, z = screen shadow, w = cube
@@ -1976,6 +1982,31 @@ void main()
 #endif
 	ambientColor *= AO;
 
+	// The cubemap provides only an angular distribution. Keep the light-grid
+	// ambient as the energy source; never add the captured world's full light.
+	vec3 diffuseAmbientColor = ambientColor;
+#if defined(USE_DIFFUSE_IBL) && defined(USE_LIGHT_VECTOR)
+	vec3 probeIrradiance = vec3(0.0);
+	vec3 directionalFactor = vec3(1.0);
+	if (u_DiffuseIBLParams.w > 0.5)
+	{
+		probeIrradiance = max(texture(u_DiffuseIrradianceMap, N).rgb, vec3(0.0));
+		vec3 averageIrradiance = max(texelFetch(u_ProbeAverageMap,
+			ivec2(int(u_DiffuseIBLParams.z), 0), 0).rgb, vec3(0.0));
+		float averageLuma = dot(averageIrradiance, vec3(0.2126, 0.7152, 0.0722));
+		if (averageLuma > 1e-4)
+		{
+			// The sphere average of cosine-convolved radiance equals the
+			// sphere average of radiance, so both textures have matching units.
+			vec3 safeAverage = max(averageIrradiance, vec3(averageLuma * 0.05));
+			directionalFactor = clamp(probeIrradiance / safeAverage,
+				vec3(0.25), vec3(4.0));
+		}
+		diffuseAmbientColor *= mix(vec3(1.0), directionalFactor,
+			clamp(u_DiffuseIBLParams.x, 0.0, 1.0));
+	}
+#endif
+
 	vec3  H  = normalize(L + E);
 	float NE = abs(dot(N, E)) + 1e-5;
 	float NL = clamp(dot(N, L), 0.0, 1.0);
@@ -2001,7 +2032,7 @@ void main()
 	vec3 reflectance = Fd + Fs;
 
 	out_Color.rgb  = lightColor * reflectance * (attenuation * NL);
-	out_Color.rgb += ambientColor * diffuse.rgb;
+	out_Color.rgb += diffuseAmbientColor * diffuse.rgb;
 
 	// kept separately: r_forwardPlusDebug, later SSGI style consumers
 	vec3 dynamicLight = CalcDynamicLightContribution(roughness, N, E, u_ViewOrigin, viewDir, NE, diffuse.rgb, specular.rgb, vertexNormal);
@@ -2075,6 +2106,35 @@ void main()
 		return;
 	}
   #endif
+
+#if defined(USE_DIFFUSE_IBL) && defined(USE_LIGHT_VECTOR)
+	if (u_DiffuseIBLParams.y >= 1.0 && u_DiffuseIBLParams.y <= 5.0)
+	{
+		vec3 debugColor;
+		if (u_DiffuseIBLParams.y == 1.0)
+			debugColor = probeIrradiance;
+		else if (u_DiffuseIBLParams.y == 2.0)
+			debugColor = directionalFactor * 0.5; // neutral response = middle gray
+		else if (u_DiffuseIBLParams.y == 3.0)
+			debugColor = ambientColor * diffuse.rgb;
+		else if (u_DiffuseIBLParams.y == 4.0)
+			debugColor = diffuseAmbientColor * diffuse.rgb;
+		else if (u_DiffuseIBLParams.w > 0.5)
+		{
+			float id = u_DiffuseIBLParams.z + 1.0;
+			debugColor = fract(sin(id * vec3(12.9898, 78.233, 39.3467)) * 43758.5453);
+		}
+		else
+			debugColor = vec3(1.0, 0.0, 1.0); // legacy fallback: no probe
+		out_Color = vec4(debugColor, diffuse.a);
+		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
+    #if defined(USE_SSR) && defined(USE_SPECULARMAP)
+		out_SSRSpecular = vec4(0.0);
+		out_SSRCubemap.rgb = vec3(0.0);
+    #endif
+		return;
+	}
+#endif
 
 	// r_forwardPlusDebug 1-9, written unlit (tone mapping is bypassed)
 	vec3 fplusDebugColor;

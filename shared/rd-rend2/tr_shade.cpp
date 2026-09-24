@@ -2079,6 +2079,19 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				&& !(tr.viewParms.flags & VPF_NOCUBEMAPS)
 				&& input->cubemapIndex > 0
 				&& pStage->rgbGen != CGEN_LIGHTMAPSTYLE);
+			bool enableDiffuseIBL = (r_diffuseIBL->integer
+				&& !(tr.viewParms.flags & (VPF_NOCUBEMAPS | VPF_NODIFFUSEIBL))
+				&& input->cubemapIndex > 0
+				&& input->cubemapIndex <= tr.numCubemaps
+				&& input->cubemapIndex <= MAX_RUNTIME_CUBEMAPS
+				&& backEnd.currentEntity != &tr.worldEntity
+				&& (pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK) == LIGHTDEF_USE_LIGHT_VECTOR
+				&& pStage->rgbGen != CGEN_LIGHTMAPSTYLE
+				&& tr.probeAverageImage
+				&& tr.cubemaps[input->cubemapIndex - 1].diffuseIrradianceImage);
+			vec4_t diffuseIBLParams = { r_diffuseIBLStrength->value, (float)r_diffuseIBLDebug->integer,
+				(float)(input->cubemapIndex - 1), enableDiffuseIBL ? 1.0f : 0.0f };
+			uniformDataWriter.SetUniformVec4(UNIFORM_DIFFUSEIBLPARAMS, diffuseIBLParams);
 			bool enableDLights = (tess.dlightBits
 				&& (pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK)
 				&& !(tess.shader->surfaceFlags & (SURF_NODLIGHT | SURF_SKY))
@@ -2158,6 +2171,11 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 				//
 				if (light && !allowVertexLighting)
 				{
+					if (enableDiffuseIBL)
+					{
+						samplerBindingsWriter.AddStaticImage(tr.cubemaps[input->cubemapIndex - 1].diffuseIrradianceImage, TB_DIFFUSEIRRADIANCEMAP);
+						samplerBindingsWriter.AddStaticImage(tr.probeAverageImage, TB_PROBEAVERAGEMAP);
+					}
 					if (pStage->bundle[TB_NORMALMAP].image[0])
 					{
 						samplerBindingsWriter.AddAnimatedImage(&pStage->bundle[TB_NORMALMAP], TB_NORMALMAP);

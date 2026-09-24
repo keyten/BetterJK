@@ -521,12 +521,12 @@ int R_CubemapForPoint( const vec3_t point )
 {
 	int cubemapIndex = -1;
 
-	if (r_cubeMapping->integer && tr.numCubemaps)
+	if ((r_cubeMapping->integer || r_diffuseIBL->integer) && tr.numCubemaps)
 	{
 		int i;
 		float shortest = (float)WORLD_SIZE * (float)WORLD_SIZE;
 
-		for (i = 0; i < tr.numCubemaps; i++)
+		for (i = 0; i < MIN(tr.numCubemaps, MAX_RUNTIME_CUBEMAPS); i++)
 		{
 			vec3_t diff;
 			float length;

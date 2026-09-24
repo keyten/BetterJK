@@ -90,6 +90,8 @@ typedef unsigned int glIndex_t;
 #define CUBE_MAP_MIPS      8
 #define CUBE_MAP_ROUGHNESS_MIPS CUBE_MAP_MIPS - 2
 #define CUBE_MAP_SIZE      (1 << CUBE_MAP_MIPS)
+#define MAX_RUNTIME_CUBEMAPS 128
+#define DIFFUSE_IRRADIANCE_SIZE 16
 
 /*
 =====================================================
@@ -292,6 +294,9 @@ extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
+extern cvar_t  *r_diffuseIBL;
+extern cvar_t  *r_diffuseIBLStrength;
+extern cvar_t  *r_diffuseIBLDebug;
 
 extern cvar_t  *r_forwardPlus;
 extern cvar_t  *r_forwardPlusTileSize;
@@ -563,6 +568,7 @@ typedef struct cubemap_s {
 	vec3_t origin;
 	float parallaxRadius;
 	image_t *image;
+	image_t *diffuseIrradianceImage;
 } cubemap_t;
 
 typedef struct dlight_s {
@@ -1115,6 +1121,8 @@ enum
 	TB_FPLUS_LIGHTS  = 11,
 	TB_FPLUS_GRID    = 12,
 	TB_FPLUS_INDICES = 13,
+	TB_DIFFUSEIRRADIANCEMAP = 14,
+	TB_PROBEAVERAGEMAP = 15,
 
 	// screen-space GI inputs of the ssgi_*.glsl programs (tr_ssgi.cpp)
 	TB_SSGI_ALBEDO   = 14,
@@ -1751,6 +1759,8 @@ typedef enum
 	UNIFORM_LEVELSMAP,
 	UNIFORM_CUBEMAP,
 	UNIFORM_ENVBRDFMAP,
+	UNIFORM_DIFFUSEIRRADIANCEMAP,
+	UNIFORM_PROBEAVERAGEMAP,
 
 	UNIFORM_SCREENIMAGEMAP,
 	UNIFORM_SCREENDEPTHMAP,
@@ -1824,6 +1834,7 @@ typedef enum
 	UNIFORM_COLORGRADINGPARAMS, // mode, intensity, LUT size
 
 	UNIFORM_CUBEMAPINFO,
+	UNIFORM_DIFFUSEIBLPARAMS,
 
 	UNIFORM_ALPHA_TEST_TYPE,
 
@@ -2020,6 +2031,7 @@ enum viewParmFlag_t {
 	VPF_POINTSHADOW		= 0x80,// Rendering pointlight shadow
 	VPF_SHADOWCASCADES	= 0x100,// Rendering sun shadow cascades
 	VPF_NOCLEAR			= 0x200,
+	VPF_NODIFFUSEIBL	= 0x400, // Probe captures must not sample partially generated irradiance
 };
 using viewParmFlags_t = uint32_t;
 
@@ -2964,6 +2976,7 @@ typedef struct trGlobals_s {
 	image_t                 *renderCubeImage;
 	image_t                 *renderCubeDepthImage;
 	image_t					*envBrdfImage;
+	image_t					*probeAverageImage;
 	image_t					*textureDepthImage;
 	image_t					*weatherDepthImage;
 	image_t					*smaaSearchImage;
@@ -3095,6 +3108,8 @@ typedef struct trGlobals_s {
 	shaderProgram_t highpassShader;
 	shaderProgram_t depthBlurShader[2];
 	shaderProgram_t prefilterEnvMapShader;
+	shaderProgram_t probeAverageShader;
+	shaderProgram_t diffuseIrradianceShader;
 	shaderProgram_t gaussianBlurShader[2];
 	shaderProgram_t dglowDownsample;
 	shaderProgram_t dglowUpsample;
@@ -4218,6 +4233,8 @@ typedef struct convolveCubemapCommand_s {
 	int			commandId;
 	cubemap_t	*cubemap;
 	int			cubemapId;
+	qboolean	filterSpecular;
+	qboolean	filterDiffuse;
 } convolveCubemapCommand_t;
 
 typedef struct postProcessCommand_s {
@@ -4395,7 +4412,7 @@ void RB_ExecuteRenderCommands( const void *data );
 void R_IssuePendingRenderCommands( void );
 
 void R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs );
-void R_AddConvolveCubemapCmd(cubemap_t *cubemap, int cubemapId);
+void R_AddConvolveCubemapCmd(cubemap_t *cubemap, int cubemapId, qboolean filterSpecular, qboolean filterDiffuse);
 void R_AddPostProcessCmd (void);
 qhandle_t R_BeginTimedBlockCmd( const char *name );
 void R_EndTimedBlockCmd( qhandle_t timerHandle );
