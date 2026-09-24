@@ -180,6 +180,38 @@ textures/test/rock_edge
 }
 ```
 
+### Automatic mode: materials that already have ordinary POM
+
+Silhouette POM needs a height field. In the installed packs it exists as **`_nh` images** (normal in RGB, height in
+alpha; 467 of them in `assets8_pbr1/2`), which rend2 already finds next to the diffuse image and uses for ordinary POM
+(`CollapseStagesToLightall`, `parallaxDepth = r_baseParallax`). The 792 `_n` images are normal maps without height:
+no silhouette can come from them. Two `_h` files exist, rend2 does not read that suffix.
+
+```
+r_autoPomSilhouette 1|0                    every material with ordinary POM (default 0)
+r_autoPomSilhouette <shader> 1|0|default   one shader; a trailing * is a prefix: textures/bespin/*
+r_autoPomSilhouette <shader>               state of the matching shaders of the current map
+r_autoPomSilhouette list                   shaders with a shell on this map + POM materials that kept ordinary POM (reason)
+r_autoPomSilhouette clear                  remove all per-shader switches
+```
+
+- Precedence per shader: switch `0` → off (also for `silhouettePOM` shaders), switch `1` → on, keyword → on, else
+  `r_autoPomSilhouette`. Among switches an exact name beats a prefix, a longer prefix a shorter one.
+- The global state is the archived cvar `r_autoPomSilhouetteMode` (set by the command). The per-shader switches are
+  written to `pomsilhouette.cfg` in the mod folder by the command and read on first use.
+- Everything switches live: with `r_pomSilhouette 1` the shells are built at map load for **every** eligible POM
+  surface (keyword or `_nh`), and the front end decides per frame. The price: shell memory for all of them (printed at
+  load, `r_pomSilhouetteInfo`), and these surfaces are not leaf-merged even while unused (their ordinary draws still
+  merge into multi-draws of the same VBO).
+- Needs `r_pomSilhouette 1` (latched): otherwise `r_autoPomSilhouette requires r_pomSilhouette 1` is printed once,
+  nothing is enabled on the user's behalf. `r_parallaxMapping 1` as for every POM.
+- Automatic materials use the existing POM data: `parallaxDepth` of the stage (`r_baseParallax` for discovered `_nh`)
+  and its `parallaxBias`, which is 0 unless the shader sets it: the volume lies below the base plane, so the contour
+  is carved (eroded edges, notches), it does not grow outwards. A shader with an explicit `parallaxBias` (or the
+  keyword path) is needed for protruding displacement.
+- Fallback reasons of automatic candidates (more than one stage after collapsing, curved, tcMod, …) are only counted
+  (`list`, `r_pomSilhouetteInfo`); they are printed for keyword shaders and for shaders switched on by the command.
+
 There is no separate depth scale: `parallaxDepth` / `parallaxBias` define the displaced volume for both modes. The
 height range is the known `[0, 1]` of the map (no offline analysis): the volume is `D` thick, `bias * D` above the base
 plane.
@@ -202,6 +234,7 @@ costs a trace per shell pixel (walls included) and there is no automatic enablin
 | `r_pomSilhouetteShadows` | 1 | shells in the sun cascades |
 | `r_pomSilhouetteDebug` | 0 | cheat, see below |
 | `r_pomSilhouetteInfo` | command | shells, groups, walls, memory, fallbacks, last frame counters |
+| `r_autoPomSilhouette` | command | automatic mode and per-shader switches, see "Automatic mode" (`r_autoPomSilhouetteMode`, archive, 0) |
 
 `r_speeds 7` adds a line: shells drawn (all passes), shell triangles, crossfade base surfaces.
 
@@ -280,4 +313,7 @@ vid_restart`, `developer 1` for fallback reasons, `r_pomSilhouetteInfo`.
 6. Crossfade: walk towards / away from the surface (`r_pomSilhouetteFade`, `r_pomSilhouetteDistance`).
 7. Movers with a shelled texture (brush models), motion blur / SMAA T2x on the displaced edge.
 8. `r_pomSilhouette 0` equals the `*-prespom.dll` build.
-9. Timings: `r_speeds 7` / `r_speeds 100`, with and without the material, debug 8 for the step count.
+9. Automatic mode: `r_autoPomSilhouette 1`, `r_autoPomSilhouette list`; switch one shader off and on
+   (`r_autoPomSilhouette textures/... 0`), a prefix (`textures/bespin/* 0`), restart the game and check that
+   `pomsilhouette.cfg` kept the switches.
+10. Timings: `r_speeds 7` / `r_speeds 100`, with and without the material, debug 8 for the step count.

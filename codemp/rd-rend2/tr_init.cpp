@@ -288,6 +288,7 @@ cvar_t  *r_pomSilhouetteBinarySteps;
 cvar_t  *r_pomSilhouetteViewDependence;
 cvar_t  *r_pomSilhouetteShadows;
 cvar_t  *r_pomSilhouetteDebug;
+cvar_t  *r_autoPomSilhouetteMode;
 cvar_t	*r_forceParallaxBias;
 cvar_t  *r_cubeMapping;
 cvar_t	*r_cubeMappingBounces;
@@ -1584,6 +1585,7 @@ static consoleCommand_t	commands[] = {
 	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
 	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
 	{ "r_pomSilhouetteInfo",	R_PomSilhouetteInfo_f },
+	{ "r_autoPomSilhouette",	R_AutoPomSilhouette_f },
 	{ "r_spawnTestLights",	R_SpawnTestLights_f },
 	{ "r_forwardPlusBenchmark",	R_ForwardPlusBenchmark_f },
 	{ "skinlist",			R_SkinList_f },
@@ -2062,6 +2064,8 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_pomSilhouetteShadows, 0, 1, qtrue );
 	r_pomSilhouetteDebug = ri.Cvar_Get( "r_pomSilhouetteDebug", "0", CVAR_CHEAT, "Silhouette POM debug view: 1 translucent shell, 2 shell wireframe, 3 original mesh wireframe, 4 top cap / walls, 5 boundary walls, 6 discarded shell pixels, 7 virtual hit depth, 8 ray steps, 9 split ordinary POM | silhouette POM, 10 linear depth, 11 material normal" );
 	ri.Cvar_CheckRange( r_pomSilhouetteDebug, 0, 11, qtrue );
+	r_autoPomSilhouetteMode = ri.Cvar_Get( "r_autoPomSilhouetteMode", "0", CVAR_ARCHIVE, "Silhouette POM for every material with an ordinary POM height map (set with the r_autoPomSilhouette command, needs r_pomSilhouette 1)" );
+	ri.Cvar_CheckRange( r_autoPomSilhouetteMode, 0, 1, qtrue );
 
 	r_ambientScale = ri.Cvar_Get( "r_ambientScale", "0.6", CVAR_CHEAT, "" );
 	r_directedScale = ri.Cvar_Get( "r_directedScale", "1", CVAR_CHEAT, "" );

@@ -330,6 +330,7 @@ extern cvar_t  *r_pomSilhouetteBinarySteps;
 extern cvar_t  *r_pomSilhouetteViewDependence;
 extern cvar_t  *r_pomSilhouetteShadows;
 extern cvar_t  *r_pomSilhouetteDebug;
+extern cvar_t  *r_autoPomSilhouetteMode;
 extern cvar_t  *r_normalAmbient;
 extern cvar_t  *r_dlightMode;
 extern cvar_t  *r_pshadowDist;
@@ -1369,6 +1370,9 @@ typedef struct shader_s {
 	qboolean	silhouettePOM;			// silhouettePOM: displaced silhouette shell (tr_pom_silhouette.cpp)
 	float		silhouetteDistance;		// silhouetteDistance: shell range limit, 0 = r_pomSilhouetteDistance
 	int			silhouetteSteps;		// silhouetteSteps: max linear ray steps, 0 = r_pomSilhouetteMaxSteps
+	int			pomSilhouetteSource;	// POM_SOURCE_*: why its surfaces got a shell (set at map load)
+	int			pomOverride;			// r_autoPomSilhouette <shader>: -1 none, 0 off, 1 on (cached)
+	int			pomOverrideGeneration;	// generation of the override list pomOverride was looked up in
 
 	int			surfaceFlags;			// if explicitlyDefined, this will have SURF_* flags
 	int			contentFlags;
@@ -4704,6 +4708,14 @@ SILHOUETTE PARALLAX OCCLUSION MAPPING, tr_pom_silhouette.cpp
 
 struct packedVertex_t;
 void R_PomSilhouetteBeginWorld(world_t *world);
+// shader_t::pomSilhouetteSource
+enum
+{
+	POM_SOURCE_NONE		= 0,
+	POM_SOURCE_KEYWORD	= 1,	// silhouettePOM keyword
+	POM_SOURCE_AUTO		= 2,	// ordinary POM height map, r_autoPomSilhouette
+};
+
 // R_PomSilhouetteSurfaceMode: what R_AddWorldSurface adds for a surface
 enum
 {
@@ -4732,6 +4744,7 @@ int RB_PomSilhouetteDebugBases(const srfBspSurface_t * const **bases);
 void RB_PomSilhouetteClearDebugBases(void);
 qboolean RB_PomSilhouetteDebugBypassesToneMap(void);
 void R_PomSilhouetteInfo_f(void);
+void R_AutoPomSilhouette_f(void);
 void R_ShutdownPomSilhouette(void);
 
 /*
