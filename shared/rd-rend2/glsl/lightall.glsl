@@ -667,6 +667,7 @@ uniform vec4 u_WetnessParams3; // facing floor, physical porosity (0/1), materia
 uniform vec4 u_PuddleParams;   // coverage (0: off, < 0: excluded draw), roughness, slope min, slope max
 uniform vec4 u_PuddleParams2;  // 1 / pattern scale (world)
 uniform vec4 u_PuddleHeight;   // relief depth low, 1 / (high - low) (0: no usable height), softness, fill bias
+uniform vec4 u_PuddleRipple;   // slope strength (0: off), 1 / cell size (world), ring clock (cycles, mod 256), density
 #endif
 // Runtime A/B for the standard PBR diffuse model: 0 = Lambert, 1 = Burley/Disney
 uniform int u_DiffuseBRDF;
@@ -2561,6 +2562,81 @@ float PuddleField(vec2 p)
 	return 0.65 * PuddleValueNoise(q) + 0.35 * PuddleValueNoise(q * 2.3 + 5.1);
 }
 
+// Rain ripples on standing water (r_puddleRipples): expanding rings that only
+// tilt the water normal, so direct light, IBL, SSR and SSGI all show them.
+// 3 hashes of the PuddleHash family, 0..1.
+vec3 RippleHash3(vec2 p)
+{
+	vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yxz + 33.33);
+	return fract((p3.xxy + p3.yzz) * p3.zyx);
+}
+
+// One expanding ring. p, center, maxRadius and width share one unit (world
+// or cell); phase 0..1 is its life. The wave packet x (1 - x^2)^2 (leading
+// crest, trailing trough, no trig) is 2 x width wide around the front at
+// phase x maxRadius and fades while the ring grows. Returns (height, dh/dp),
+// the height scaled so the slope peaks at amp in any unit. Future splash
+// impacts (world center, spawn time) can call this next to the procedural
+// rings.
+vec3 RippleRing(vec2 p, vec2 center, float phase, float amp, float maxRadius, float width)
+{
+	vec2 v = p - center;
+	float invD = inversesqrt(max(dot(v, v), 1e-8));
+	float x = (dot(v, v) * invD - phase * maxRadius) / width;
+	float w = max(1.0 - x * x, 0.0);
+	float a = amp * min(phase * 16.0, 1.0) * (1.0 - phase) * (1.0 - phase);
+	float height = a * width * x * w * w;
+	float slope = a * w * (1.0 - 5.0 * x * x);	// d height / d distance
+	return vec3(height, v * (slope * invD));
+}
+
+// One jittered, rotated cell grid in world XY. Every cell hosts one ring at a
+// time that stays inside it (center jitter 0.18 + radius 0.3 + half packet
+// 0.07: the last 17 % of its life, at < 3 % amplitude, may touch the edge), so
+// one ring per layer is enough. Each ring cycle takes the next point of a per
+// cell R2 sequence: a new center, strength and whether the cell rings at all
+// (density). The small jitter box would make rings start from the same spots
+// in a long static shot, so the whole grid moves every 4 clock cycles (an
+// epoch); a ring that would live across an epoch change is skipped (1 of 4
+// per cell), so no ring is ever cut. A layer is empty at its epoch change,
+// so the layers' clocks are staggered (clockOffset) to keep the rain steady.
+// Returns (height, dh/dxy) in world units.
+vec3 RippleLayer(vec2 worldXY, mat2 rot, float scale, float seed, float clockOffset, float footprint)
+{
+	const float radius = 0.3;
+	const float width = 0.07;
+	float toCell = u_PuddleRipple.y * scale;
+	float clock = u_PuddleRipple.z + clockOffset;
+	float epoch = floor(clock * 0.25);
+	// mod 64: the clock wraps at 256 cycles = 64 epochs
+	vec2 q = rot * (worldXY * toCell) + seed + fract(mod(epoch, 64.0) * vec2(0.7548777, 0.5698403));
+	vec2 cell = floor(q);
+	vec3 h = RippleHash3(cell + seed);
+	float cycle = clock + h.z;
+	float ringIndex = mod(floor(cycle), 256.0);	// same wrap as the clock
+	vec3 r = fract(h + ringIndex * vec3(0.7548777, 0.5698403, 0.6180340));
+	float birth = floor(cycle) - h.z;	// clock time the ring started
+	float amp = step(r.z, u_PuddleRipple.w) * (0.6 + 0.4 * r.x) *
+		step(4.0 * epoch, birth) * step(birth, 4.0 * epoch + 3.0);
+	// rings narrower than about a pixel (2 x width) would alias: fade them
+	// out to the flat surface
+	amp *= clamp(1.43 - footprint * toCell * (0.7 / width), 0.0, 1.0);
+	vec3 ring = RippleRing(q, cell + 0.5 + (r.xy - 0.5) * 0.36, fract(cycle), amp, radius, width);
+	// cell -> world: height / toCell, gradient (row vector) x rot
+	return vec3(ring.x / toCell, ring.yz * rot);
+}
+
+// Procedural rings: 3 layers at different angles and scales hide the grids.
+// Real impact events could later add their rings here or replace these.
+vec3 PuddleRipples(vec2 worldXY, float footprint)
+{
+	vec3 sum = RippleLayer(worldXY, mat2(1.0, 0.0, 0.0, 1.0), 1.0, 0.0, 0.0, footprint);
+	sum += RippleLayer(worldXY, mat2(0.7986, 0.6018, -0.6018, 0.7986), 0.79, 3.3, 4.0 / 3.0, footprint);
+	sum += RippleLayer(worldXY, mat2(0.3256, -0.9455, 0.9455, 0.3256), 1.27, 7.7, 8.0 / 3.0, footprint);
+	return sum;
+}
+
 #if defined(USE_PARALLAXMAP)
 // Height aware puddles (r_puddleHeight): the macro basin (0 where the macro
 // puddle fringe starts, 1 in its core) sets a static water level inside the
@@ -2862,6 +2938,11 @@ void main()
 	float puddleMacro = 0.0;
 	float puddleMacroEdge = 0.0;
 	float puddleDepth = -1.0;	// material depth of the height aware path, < 0: none
+	vec3 ripple = vec3(0.0);	// ungated rings: height, world slope
+	float rippleMask = 0.0;
+	vec2 rippleSlope = vec2(0.0);	// the slope applied to N
+	// pixel footprint of the undisplaced surface, taken in uniform control flow
+	float rippleFootprint = length(fwidth((u_ViewOrigin - var_ViewDir.xyz).xy));
 	if (u_WetnessParams.x > 0.0 || u_WetnessParams2.z > 0.0)
 	{
 		vec3 wetGeoNormal = normalize(vertexNormal);
@@ -2879,7 +2960,7 @@ void main()
 		// world-only eligibility. The normal map is not used for the slope.
 		puddleSlope = smoothstep(u_PuddleParams.z, u_PuddleParams.w, wetGeoNormal.z);
 		float exposureP = smoothstep(0.5, 1.0, rainExposure);
-		bool puddleDebug = u_WetnessParams2.z >= 5.0 && u_WetnessParams2.z <= 15.0;
+		bool puddleDebug = u_WetnessParams2.z >= 5.0 && u_WetnessParams2.z <= 20.0;
 		if (u_PuddleParams.x > 0.0 && ((wetness > 0.0 && puddleSlope * exposureP > 0.0) || puddleDebug))
 		{
 			puddleField = PuddleField((u_ViewOrigin - viewDir).xy * u_PuddleParams2.x);
@@ -2907,6 +2988,18 @@ void main()
 			if (u_WetnessParams2.z == 4.0 && gl_FragCoord.x < u_WetnessParams2.w)
 				puddle = puddleEdge = flatten = 0.0;
 			N = normalize(mix(N, wetGeoNormal, flatten));
+
+			// rain ripples: only on the submerged core, fading out before its
+			// edge, so no ring reaches the fringe film or dry stone
+			if (u_PuddleRipple.x > 0.0 && (puddle > 0.35 || u_WetnessParams2.z >= 17.0))
+			{
+				ripple = PuddleRipples((u_ViewOrigin - viewDir).xy, rippleFootprint);
+				rippleMask = smoothstep(0.35, 0.9, puddle);
+				rippleSlope = ripple.yz * (u_PuddleRipple.x * rippleMask);
+				// height field normal (-dh/dx, -dh/dy, 1), kept in the water plane
+				vec3 tilt = vec3(-rippleSlope, 0.0);
+				N = normalize(N + tilt - wetGeoNormal * dot(wetGeoNormal, tilt));
+			}
 		}
 	}
   #endif
@@ -3288,7 +3381,7 @@ void main()
 
   #if defined(USE_WETNESS)
 	// r_weatherWetnessDebug 1-16 (not 4), written unlit (tone mapping is bypassed)
-	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 16.0 && u_WetnessParams2.z != 4.0)
+	if (u_WetnessParams2.z >= 1.0 && u_WetnessParams2.z <= 20.0 && u_WetnessParams2.z != 4.0)
 	{
 		float shade = 0.35 + 0.65 * NE;
 		vec3 debugColor;
@@ -3326,6 +3419,20 @@ void main()
 		else if (u_WetnessParams2.z == 15.0)	// combined puddle over the relief
 			debugColor = mix(mix(vec3(0.15 + 0.5 * (1.0 - max(puddleDepth, 0.0))), vec3(0.2, 0.9, 0.9), puddleEdge),
 				vec3(0.05, 0.2, 1.0), puddle);
+		else if (u_WetnessParams2.z == 17.0)	// ripple height, ungated (+-0.5 = peak), bluish on puddles
+			debugColor = mix(vec3(0.5 + ripple.x * u_PuddleRipple.y * 22.4),
+				vec3(0.1, 0.35, 1.0), 0.3 * puddle);
+		else if (u_WetnessParams2.z == 18.0)	// slope applied to N: red = x, green = y
+			debugColor = vec3(clamp(0.5 + 1.5 * rippleSlope, 0.0, 1.0), 0.5);
+		else if (u_WetnessParams2.z == 19.0)	// masking: puddle blue, applied rings yellow, suppressed rings red
+		{
+			debugColor = mix(vec3(0.25), vec3(0.05, 0.2, 1.0), puddle) * shade;
+			debugColor = mix(debugColor, vec3(0.7, 0.1, 0.1),
+				0.7 * clamp(4.0 * u_PuddleRipple.x * length(ripple.yz) * (1.0 - rippleMask), 0.0, 1.0));
+			debugColor = mix(debugColor, vec3(1.0, 0.9, 0.1), clamp(4.0 * length(rippleSlope), 0.0, 1.0));
+		}
+		else if (u_WetnessParams2.z == 20.0)	// final effective normal
+			debugColor = N * 0.5 + 0.5;
 		else if (u_WetnessParams2.z == 1.0)
 			debugColor = vec3(rainExposure) * shade;
 		else if (u_WetnessParams2.z == 2.0)

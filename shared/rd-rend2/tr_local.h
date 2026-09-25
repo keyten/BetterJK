@@ -271,6 +271,10 @@ extern cvar_t  *r_puddleScale;
 extern cvar_t  *r_puddleHeight;
 extern cvar_t  *r_puddleHeightSoftness;
 extern cvar_t  *r_puddleHeightFill;
+extern cvar_t  *r_puddleRipples;
+extern cvar_t  *r_puddleRippleStrength;
+extern cvar_t  *r_puddleRippleScale;
+extern cvar_t  *r_puddleRippleRate;
 extern cvar_t  *r_ssrQuality;
 extern cvar_t  *r_ssrSteps;
 extern cvar_t  *r_ssrRefineSteps;
@@ -2158,6 +2162,7 @@ typedef enum
 	UNIFORM_PUDDLEPARAMS,		// coverage (<= 0 off, < 0 ineligible), roughness, slope min, slope max
 	UNIFORM_PUDDLEPARAMS2,		// 1 / scale
 	UNIFORM_PUDDLEHEIGHT,		// relief depth low, 1 / (high - low) (0: no height), softness, fill bias
+	UNIFORM_PUDDLERIPPLE,		// slope strength (0 off), 1 / cell size, ring clock (cycles mod 256), density
 
 	UNIFORM_SKINPARAMS,		// skin SSS of this draw: scatter (0 = not skin), has mask, compare split x (< 0 off), unused
 	UNIFORM_SKINWRAP,		// skin SSS: rgb = wrap widths (r_skinSSS 1), w = transmission strength

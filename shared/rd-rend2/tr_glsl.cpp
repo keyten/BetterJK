@@ -237,6 +237,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PuddleParams",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams2",		GLSL_VEC4, 1 },
 	{ "u_PuddleHeight",		GLSL_VEC4, 1 },
+	{ "u_PuddleRipple",		GLSL_VEC4, 1 },
 
 	{ "u_SkinParams",			GLSL_VEC4, 1 },
 	{ "u_SkinWrap",				GLSL_VEC4, 1 },
@@ -987,7 +988,8 @@ void ShaderProgramBuilder::ReleaseShaders()
 
 // fragmentLibrary: optional block of shared GLSL functions (e.g. the fragment
 // block of output_transform.glsl) inserted into the fragment shader after the
-// defines, so several programs can use the same code.
+// defines, so several programs can use the same code. vertexLibrary does the
+// same for the vertex shader (e.g. the vertex block of leaf_flutter.glsl).
 static bool GLSL_LoadGPUShader(
 	ShaderProgramBuilder& builder,
 	shaderProgram_t *program,
@@ -996,14 +998,18 @@ static bool GLSL_LoadGPUShader(
 	const uint32_t xfbVariables,
 	const GLcharARB *extra,
 	const GPUProgramDesc& programDesc,
-	const GPUShaderDesc *fragmentLibrary = nullptr)
+	const GPUShaderDesc *fragmentLibrary = nullptr,
+	const GPUShaderDesc *vertexLibrary = nullptr)
 {
 	builder.Start(name, attribs, xfbVariables);
 	for ( size_t i = 0; i < programDesc.numShaders; ++i )
 	{
 		const GPUShaderDesc& shaderDesc = programDesc.shaders[i];
-		const GPUShaderDesc *library =
-			(shaderDesc.type == GPUSHADER_FRAGMENT) ? fragmentLibrary : nullptr;
+		const GPUShaderDesc *library = nullptr;
+		if ( shaderDesc.type == GPUSHADER_FRAGMENT )
+			library = fragmentLibrary;
+		else if ( shaderDesc.type == GPUSHADER_VERTEX )
+			library = vertexLibrary;
 		if ( !builder.AddShader(shaderDesc, extra, library) )
 		{
 			return false;
@@ -1690,6 +1696,25 @@ static const GPUShaderDesc *LoadVolumetricLibrary( Allocator& allocator )
 	}
 
 	ri.Error(ERR_FATAL, "Could not load volumetric_common shader library!");
+	return nullptr;
+}
+
+// MD3 leaf flutter (glsl/leaf_flutter.glsl, tr_leafflutter.cpp): vertex
+// functions shared by every program that draws a FOLIAGE_LEAF surface
+// (lightall, generic, fogpass, velocity), so all passes move it the same way.
+static const GPUShaderDesc *LoadLeafFlutterLibrary( Allocator& allocator )
+{
+	const GPUProgramDesc *programDesc =
+		LoadProgramSource("leaf_flutter", allocator, fallback_leaf_flutterProgram);
+	for ( size_t i = 0; i < programDesc->numShaders; ++i )
+	{
+		if ( programDesc->shaders[i].type == GPUSHADER_VERTEX )
+		{
+			return &programDesc->shaders[i];
+		}
+	}
+
+	ri.Error(ERR_FATAL, "Could not load leaf_flutter shader library!");
 	return nullptr;
 }
 

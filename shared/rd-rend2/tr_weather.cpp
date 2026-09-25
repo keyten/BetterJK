@@ -1746,6 +1746,32 @@ void RB_WeatherWetnessBind(const shader_t *shader, const shaderStage_t *pStage,
 	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS, puddle);
 	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEPARAMS2, puddle2);
 	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLEHEIGHT, puddleHeight);
+
+	// rain ripples on the puddles (lightall PuddleRipples): the ring clock is
+	// integrated here once per frame, so r_puddleRippleRate changes never
+	// jump the phase, and wrapped at 256 cycles for float precision (the
+	// shader wraps its ring index the same way, so the wrap is seamless)
+	static double rippleClock = 0.0;
+	static int rippleFrame = -1;
+	static float rippleTime = 0.0f;
+	if (rippleFrame != tr.frameCount)
+	{
+		const float dt = backEnd.refdef.floatTime - rippleTime;
+		if (rippleFrame >= 0 && dt > 0.0f)
+			rippleClock = fmod(rippleClock + MIN(dt, 0.1f) * Com_Clamp(0.0f, 8.0f, r_puddleRippleRate->value), 256.0);
+		rippleFrame = tr.frameCount;
+		rippleTime = backEnd.refdef.floatTime;
+	}
+	// share of the cells that ring each cycle: light rain fewer than a
+	// downpour (1000 / 2000 particles); the shader skips 1 cycle in 4 more
+	const float rainAmount = Com_Clamp(0.3f, 1.0f, (float)ws->weatherSlots[WEATHER_RAIN].particleCount / 2000.0f);
+	const vec4_t ripple = {
+		(r_puddleRipples->integer && coverage > 0.0f) ? Com_Clamp(0.0f, 2.0f, r_puddleRippleStrength->value) : 0.0f,
+		1.0f / Com_Clamp(4.0f, 256.0f, r_puddleRippleScale->value),
+		(float)rippleClock,
+		rainAmount
+	};
+	uniformDataWriter.SetUniformVec4(UNIFORM_PUDDLERIPPLE, ripple);
 	uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, ws->weatherMVP);
 	samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_WEATHERDEPTH);
 }
