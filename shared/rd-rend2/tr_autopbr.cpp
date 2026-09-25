@@ -410,11 +410,11 @@ static qboolean SplitPath( const char *name, namePath_t *out )
 	return qtrue;
 }
 
-static void SetClass( shaderStage_t *stage, materialClass_t cls, const char *reason, const char *token )
+static void SetClass( materialMatch_t *stage, materialClass_t cls, const char *reason, const char *token )
 {
-	stage->materialClass = cls;
-	stage->materialReason = reason;
-	stage->materialToken = token;
+	stage->cls = cls;
+	stage->reason = reason;
+	stage->token = token;
 }
 
 /*
@@ -437,6 +437,17 @@ Brightness or color of the diffuse texture is deliberately not used.
 ===============
 */
 void R_ClassifyMaterial( shaderStage_t *stage, const char *shaderName, const char *diffuseName )
+{
+	materialMatch_t match;
+	R_ClassifyMaterialName( &match, shaderName, diffuseName );
+	stage->materialClass = match.cls;
+	stage->materialReason = match.reason;
+	stage->materialToken = match.token;
+}
+
+// the rules of R_ClassifyMaterial without a stage (tr_skinsss.cpp classifies
+// stages the auto PBR path leaves alone)
+void R_ClassifyMaterialName( materialMatch_t *stage, const char *shaderName, const char *diffuseName )
 {
 	namePath_t paths[2];
 	nameTokens_t tokens;

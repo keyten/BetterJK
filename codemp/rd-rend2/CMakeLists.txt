@@ -35,6 +35,7 @@ set(MPRend2Files
 	"${SharedDir}/rd-rend2/tr_ltc_data.h"
 	"${SharedDir}/rd-rend2/tr_screenspace.cpp"
 	"${SharedDir}/rd-rend2/tr_ssgi.cpp"
+	"${SharedDir}/rd-rend2/tr_skinsss.cpp"
 	"${SharedDir}/rd-rend2/tr_pom_silhouette.cpp"
 	"${SharedDir}/rd-rend2/tr_pom.cpp"
 	"${SharedDir}/rd-rend2/tr_ssr.cpp"

@@ -270,6 +270,17 @@ cvar_t  *r_ssgiCompare;
 cvar_t  *r_ssgiDebug;
 cvar_t  *r_ssgiFreezeHistory;
 
+cvar_t  *r_skinSSS;
+cvar_t  *r_skinSSSMixed;
+cvar_t  *r_skinSSSStrength;
+cvar_t  *r_skinSSSWidth;
+cvar_t  *r_skinSSSQuality;
+cvar_t  *r_skinSSSWrap;
+cvar_t  *r_skinSSSFollowSurface;
+cvar_t  *r_skinSSSTransmission;
+cvar_t  *r_skinSSSCompare;
+cvar_t  *r_skinSSSDebug;
+
 cvar_t  *r_autoPBR;
 cvar_t  *r_autoPBRDebug;
 cvar_t  *r_autoFoliage;
@@ -303,6 +314,7 @@ cvar_t  *r_ltcDebugLight;
 cvar_t  *r_ltcIntensityScale;
 cvar_t  *r_ltcStaticDiffuse;
 cvar_t  *r_ltcMaxLights;
+cvar_t  *r_ltcAutoAreaLights;
 cvar_t  *r_saberAreaLights;
 
 cvar_t  *r_normalMapping;
@@ -1662,6 +1674,8 @@ static consoleCommand_t	commands[] = {
 	{ "imagelist",			R_ImageList_f },
 	{ "shaderlist",			R_ShaderList_f },
 	{ "pbr_dumpMaterials",	R_PBRDumpMaterials_f },
+	{ "skinsss_kernel",	R_SkinSSSKernel_f },
+	{ "skinsss_list",	R_SkinSSSList_f },
 	{ "r_printAutoFoliage", R_PrintAutoFoliage_f },
 	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
 	{ "r_pomSilhouetteInfo",	R_PomSilhouetteInfo_f },
@@ -1955,6 +1969,27 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_ssgiDebug, 0, 10, qtrue );
 	r_ssgiFreezeHistory = ri_Cvar_Get_NoComm( "r_ssgiFreezeHistory", "0", CVAR_CHEAT, "SSGI debug: stop updating the temporal history" );
 	ri.Cvar_CheckRange( r_ssgiFreezeHistory, 0, 1, qtrue );
+
+	r_skinSSS = ri_Cvar_Get_NoComm( "r_skinSSS", "0", CVAR_ARCHIVE | CVAR_LATCH, "Skin scattering of surfaces classified as skin: 0 = off, 1 = cheap wrapped diffuse (an approximation, not SSS), 2 = screen-space diffusion of the skin diffuse light (needs r_hdr, vid_restart)" );
+	ri.Cvar_CheckRange( r_skinSSS, 0, 2, qtrue );
+	r_skinSSSMixed = ri_Cvar_Get_NoComm( "r_skinSSSMixed", "0", CVAR_ARCHIVE | CVAR_LATCH, "Skin scattering also on *_head textures, which mix hair, ears and neck in one texture (vid_restart)" );
+	ri.Cvar_CheckRange( r_skinSSSMixed, 0, 1, qtrue );
+	r_skinSSSStrength = ri_Cvar_Get_NoComm( "r_skinSSSStrength", "1", CVAR_ARCHIVE, "Skin scattering: share of the skin diffuse light replaced by its diffused copy (r_skinSSS 2)" );
+	ri.Cvar_CheckRange( r_skinSSSStrength, 0.0f, 1.0f, qfalse );
+	r_skinSSSWidth = ri_Cvar_Get_NoComm( "r_skinSSSWidth", "8", CVAR_ARCHIVE, "Skin scattering: diffusion radius in millimeters, 8 = the physical skin profile, larger values widen the whole profile (1 map unit = 28 mm), r_skinSSS 2" );
+	ri.Cvar_CheckRange( r_skinSSSWidth, 0.0f, 40.0f, qfalse );
+	r_skinSSSQuality = ri_Cvar_Get_NoComm( "r_skinSSSQuality", "1", CVAR_ARCHIVE, "Skin scattering: diffusion taps per pass, 0 = 11, 1 = 17, 2 = 25" );
+	ri.Cvar_CheckRange( r_skinSSSQuality, 0, 2, qtrue );
+	r_skinSSSWrap = ri_Cvar_Get_NoComm( "r_skinSSSWrap", "0.3", CVAR_ARCHIVE, "Skin scattering, r_skinSSS 1: red wrap width of the wrapped diffuse (green 0.45x, blue 0.25x)" );
+	ri.Cvar_CheckRange( r_skinSSSWrap, 0.0f, 1.0f, qfalse );
+	r_skinSSSFollowSurface = ri_Cvar_Get_NoComm( "r_skinSSSFollowSurface", "1", CVAR_ARCHIVE, "Skin scattering: how strongly depth and normal differences stop the diffusion (0 = plain profile blur inside the skin mask)" );
+	ri.Cvar_CheckRange( r_skinSSSFollowSurface, 0.0f, 4.0f, qfalse );
+	r_skinSSSTransmission = ri_Cvar_Get_NoComm( "r_skinSSSTransmission", "0", CVAR_ARCHIVE, "Skin scattering: optional cheap back light transmission (ears, fingers) of the directed and dynamic lights, 0 = off" );
+	ri.Cvar_CheckRange( r_skinSSSTransmission, 0.0f, 2.0f, qfalse );
+	r_skinSSSCompare = ri_Cvar_Get_NoComm( "r_skinSSSCompare", "0", CVAR_ARCHIVE, "Skin scattering split screen: left half without, right half with" );
+	ri.Cvar_CheckRange( r_skinSSSCompare, 0, 1, qtrue );
+	r_skinSSSDebug = ri_Cvar_Get_NoComm( "r_skinSSSDebug", "0", CVAR_CHEAT, "Skin scattering debug view: 1 = classification, 2 = skin mask, 3 = raw skin diffuse, 4 = horizontal blur, 5 = vertical blur, 6 = final delta, 7 = all but the skin diffuse, 8 = kernel radius (pixels)" );
+	ri.Cvar_CheckRange( r_skinSSSDebug, 0, 8, qtrue );
 	r_autoPBR = ri_Cvar_Get_NoComm( "r_autoPBR", "0", CVAR_ARCHIVE, "PBR parameters of legacy materials without authored specular / packed maps: 0 = current rend2 fallback, 1 = generic dielectric, 2 = heuristic material classes" );
 	ri.Cvar_CheckRange( r_autoPBR, 0, 2, qtrue );
 	r_autoPBRDebug = ri_Cvar_Get_NoComm( "r_autoPBRDebug", "0", CVAR_CHEAT, "Auto PBR debug view: 1 = material class, 2 = parameter source (authored / auto)" );

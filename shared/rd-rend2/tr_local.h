@@ -308,6 +308,17 @@ extern cvar_t  *r_ssgiCompare;
 extern cvar_t  *r_ssgiDebug;
 extern cvar_t  *r_ssgiFreezeHistory;
 
+extern cvar_t  *r_skinSSS;
+extern cvar_t  *r_skinSSSMixed;
+extern cvar_t  *r_skinSSSStrength;
+extern cvar_t  *r_skinSSSWidth;
+extern cvar_t  *r_skinSSSQuality;
+extern cvar_t  *r_skinSSSWrap;
+extern cvar_t  *r_skinSSSFollowSurface;
+extern cvar_t  *r_skinSSSTransmission;
+extern cvar_t  *r_skinSSSCompare;
+extern cvar_t  *r_skinSSSDebug;
+
 extern cvar_t  *r_autoPBR;
 extern cvar_t  *r_autoPBRDebug;
 extern cvar_t  *r_autoFoliage;
@@ -342,6 +353,7 @@ extern cvar_t  *r_ltcDebugLight;
 extern cvar_t  *r_ltcIntensityScale;
 extern cvar_t  *r_ltcStaticDiffuse;
 extern cvar_t  *r_ltcMaxLights;
+extern cvar_t  *r_ltcAutoAreaLights;
 extern cvar_t  *r_saberAreaLights;
 
 extern cvar_t  *r_normalMapping;
@@ -1255,6 +1267,10 @@ enum
 	// Needs GL_MAX_TEXTURE_IMAGE_UNITS > 21, else r_ltcAreaLights stays off.
 	TB_LTC_MATRIX    = 20,
 	TB_LTC_AMPLITUDE = 21,
+
+	// per stage skin scatter mask of lightall (tr_skinsss.cpp, skinMask keyword).
+	// Needs GL_MAX_TEXTURE_IMAGE_UNITS > 22, else masks are ignored.
+	TB_SKINMASK      = 22,
 	MAX_TEXTURE_UNITS = 32	// glstate_t bookkeeping, GL_SelectTexture limit
 };
 
@@ -1277,8 +1293,9 @@ enum
 	SCREEN_ATTACHMENT_SSR_CUBEMAP	= 4,
 	SCREEN_ATTACHMENT_SSGI_ALBEDO	= 5,
 	SCREEN_ATTACHMENT_SSGI_RADIANCE	= 6,
+	SCREEN_ATTACHMENT_SKIN			= 7,	// skin SSS: scattering diffuse, view depth
 	SCREEN_ATTACHMENT_FIRST			= SCREEN_ATTACHMENT_NORMAL,
-	SCREEN_ATTACHMENT_LAST			= SCREEN_ATTACHMENT_SSGI_RADIANCE,
+	SCREEN_ATTACHMENT_LAST			= SCREEN_ATTACHMENT_SKIN,
 };
 
 // screen-space GI (tr_ssgi.cpp): mip levels of the half resolution source
@@ -1397,6 +1414,12 @@ typedef struct {
 	// pomSelfShadow <0..1> keyword (tr_pom.cpp), 1 when not given
 	float  pomSelfShadowStrength;
 	qboolean pomSelfShadowSet;
+	// skin scattering (tr_skinsss.cpp): 0 = not skin, else the share of the
+	// diffuse light that scatters; decided once by R_SkinSSSClassifyShader
+	float    skinScatter;
+	qboolean skinScatterSet;		// skinScatter <0..1> keyword
+	const char *skinReason;			// static string: why skinScatter is what it is
+	image_t *skinMaskImage;			// skinMask keyword: R = scatter per texel
 
 	surfaceSprite_t	*ss;
 
@@ -1782,6 +1805,15 @@ enum
 	SSGIDEF_COUNT
 };
 
+// skin SSS programs (skin_sss.glsl)
+enum
+{
+	SKINSSSDEF_BLUR_H		= 0,
+	SKINSSSDEF_BLUR_V		= 1,
+	SKINSSSDEF_COMPOSITE	= 2,
+	SKINSSSDEF_COUNT
+};
+
 enum
 {
 	REFRACTIONDEF_USE_DEFORM_VERTEXES		= 0x0001,
@@ -2126,6 +2158,13 @@ typedef enum
 	UNIFORM_PUDDLEPARAMS,		// coverage (<= 0 off, < 0 ineligible), roughness, slope min, slope max
 	UNIFORM_PUDDLEPARAMS2,		// 1 / scale
 	UNIFORM_PUDDLEHEIGHT,		// relief depth low, 1 / (high - low) (0: no height), softness, fill bias
+
+	UNIFORM_SKINPARAMS,		// skin SSS of this draw: scatter (0 = not skin), has mask, compare split x (< 0 off), unused
+	UNIFORM_SKINWRAP,		// skin SSS: rgb = wrap widths (r_skinSSS 1), w = transmission strength
+	UNIFORM_SKINMASKMAP,	// skin SSS: skinMask image (TB_SKINMASK)
+	UNIFORM_SKINKERNEL,		// skin SSS blur: SKIN_SSS_MAX_TAPS vec4 (rgb weight, offset)
+	UNIFORM_SKINSETTINGS,	// skin SSS blur / composite, pass specific
+	UNIFORM_SKINSETTINGS2,	// skin SSS blur / composite, pass specific
 
 	UNIFORM_COUNT
 } uniform_t;
@@ -3178,6 +3217,8 @@ typedef struct {
 	image_t    *screenAoImage;	// AO / contact shadow map lightall samples in this view (TB_SSAOMAP)
 	qboolean    ssrView;		// this view gets SSR, see RB_ScreenSpaceBeginView
 	qboolean    ssgiView;		// this view gets SSGI, see RB_ScreenSpaceBeginView
+	qboolean    skinSSSView;	// this view gets the skin diffusion, see RB_ScreenSpaceBeginView
+	int         skinSSSDraws;	// skin stages queued in this view (screenAux draws with skinScatter > 0)
 	qboolean    screenAuxView;	// opaque lightall stages write the screen-space attachments
 	qboolean    volumetricView;	// this view uses the froxel volume, see RB_VolumetricBeginView
 	qboolean    volumetricComposited;	// the froxel fog composite of this view ran
@@ -3299,6 +3340,9 @@ typedef struct trGlobals_s {
 	image_t					*ssgiHistoryImage[2];
 	image_t					*ssgiHistoryGeomImage[2];	// x = view depth, yz = octahedral normal, w = accumulated length
 	image_t					*ssgiDenoiseImage[2];
+	// skin SSS (tr_skinsss.cpp)
+	image_t					*skinDiffuseImage;	// rgb = scattering skin diffuse (scene space), a = view depth (0 = not skin)
+	image_t					*skinBlurImage[2];	// horizontal, vertical blur of skinDiffuseImage
 
 	FBO_t					*renderFbo;
 	FBO_t					*depthVelocityFbo;
@@ -3342,6 +3386,8 @@ typedef struct trGlobals_s {
 	FBO_t					*ssgiTraceFbo;		// trace + hit
 	FBO_t					*ssgiHistoryFbo[2];	// history + geometry
 	FBO_t					*ssgiDenoiseFbo[2];
+	// skin SSS (tr_skinsss.cpp)
+	FBO_t					*skinBlurFbo[2];	// 0 = horizontal, 1 = vertical
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -3435,6 +3481,7 @@ typedef struct trGlobals_s {
 	shaderProgram_t ssgiDenoiseShader;
 	shaderProgram_t ssgiCompositeShader;
 	shaderProgram_t ssgiDebugShader;
+	shaderProgram_t skinSSSShader[SKINSSSDEF_COUNT];	// tr_skinsss.cpp
 	// Make sure staticUbo is right behind all shaderProgram_t or edit 
 	// R_ClearTr to make sure shaderPrograms are cached correctly
 
@@ -4809,6 +4856,8 @@ AUTO PBR, tr_autopbr.cpp
 ============================================================
 */
 void R_ClassifyMaterial(shaderStage_t *stage, const char *shaderName, const char *diffuseName);
+typedef struct { materialClass_t cls; const char *reason; const char *token; } materialMatch_t;
+void R_ClassifyMaterialName(materialMatch_t *match, const char *shaderName, const char *diffuseName);
 qboolean R_AutoPBRSpecularScale(const shaderStage_t *stage, vec4_t out);
 qboolean R_AutoPBRDebugColor(const shaderStage_t *stage, vec4_t out);
 const char *R_MaterialClassName(materialClass_t cls);
@@ -5075,6 +5124,31 @@ int RB_SSGIDepthLevels(void);
 void RB_RenderSSGI(const screenViewInfo_t& info);
 void RB_SSGIDebugOverlay(void);
 void RB_SSGISceneParams(vec4_t ssgiParams);
+
+/*
+============================================================
+
+SKIN SUBSURFACE SCATTERING, tr_skinsss.cpp
+
+============================================================
+*/
+
+#define SKIN_SSS_MAX_TAPS 25
+
+int R_SkinSSSMode(void);				// 0 off, 1 wrap, 2 screen-space diffusion (as built)
+qboolean R_SkinSSSResourcesEnabled(void);	// mode 2: attachment + passes
+void R_SkinSSSSelectResources(void);
+void R_CreateSkinSSSImages(int width, int height);
+void R_CreateSkinSSSFBOs(void);
+void R_SkinSSSClassifyShader(const shader_t *sh, shaderStage_t *stages, int numStages);
+void R_SkinSSSSetupDraw(const shaderStage_t *stage, UniformDataWriter& uniforms, SamplerBindingsWriter& samplers);
+qboolean R_SkinSSSDebugColor(const shaderStage_t *stage, vec4_t out);
+const char *R_SkinSSSStageInfo(const shaderStage_t *stage);
+qboolean RB_SkinSSSWantsView(void);
+void RB_RenderSkinSSS(const screenViewInfo_t& info);
+void R_SkinSSSKernel_f(void);
+void R_SkinSSSList_f(void);
+qboolean RB_SkinSSSDebugBypassesToneMap(void);
 void R_SetMapColorGrading(const char *worldName);
 void R_UpdateColorGrading(void);
 

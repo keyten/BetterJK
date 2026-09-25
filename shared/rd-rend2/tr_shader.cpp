@@ -1838,6 +1838,46 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 			stage->pomSelfShadowSet = qtrue;
 		}
 		//
+		// skinScatter <0..1>: skin scattering of this stage (r_skinSSS),
+		// overrides the name based classification; 0 turns it off
+		//
+		else if (!Q_stricmp(token, "skinScatter"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for skinScatter in shader '%s'\n", shader.name);
+				continue;
+			}
+			stage->skinScatter = Com_Clamp(0.0f, 1.0f, atof(token));
+			stage->skinScatterSet = qtrue;
+		}
+		//
+		// skinMask <image>: R channel = skin scattering per texel (faces with
+		// painted eyes, head textures with hair); implies skinScatter 1
+		//
+		else if (!Q_stricmp(token, "skinMask"))
+		{
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0])
+			{
+				ri.Printf(PRINT_WARNING, "WARNING: missing parameter for skinMask in shader '%s'\n", shader.name);
+				continue;
+			}
+
+			int flags = IMGFLAG_NOLIGHTSCALE;
+			if (!shader.noMipMaps)
+				flags |= IMGFLAG_MIPMAP;
+			if (!shader.noPicMip)
+				flags |= IMGFLAG_PICMIP;
+			if (shader.noTC)
+				flags |= IMGFLAG_NO_COMPRESSION;
+
+			stage->skinMaskImage = R_FindImageFile(token, IMGTYPE_COLORALPHA, flags);
+			if (!stage->skinMaskImage)
+				ri.Printf(PRINT_WARNING, "WARNING: R_FindImageFile could not find skinMask '%s' in shader '%s'\n", token, shader.name);
+		}
+		//
 		// normalScale <xy>
 		// or normalScale <x> <y>
 		// or normalScale <x> <y> <height>
@@ -4677,6 +4717,7 @@ static shader_t *FinishShader( void ) {
 	//
 	R_ClassifyFoliageShader(&shader, stages);
 	stage = CollapseStagesToGLSL();
+	R_SkinSSSClassifyShader(&shader, stages, MAX_SHADER_STAGES);
 
 	if ( shader.lightmapIndex[0] >= 0 && !hasLightmapStage ) {
 		ri.Printf( PRINT_DEVELOPER, "WARNING: shader '%s' has lightmap but no lightmap stage!\n", shader.name );

@@ -593,6 +593,7 @@ qboolean RB_AODebugBypassesToneMap( void )
 		(r_weatherWetness->integer && r_weatherWetnessDebug->integer >= 1 && r_weatherWetnessDebug->integer <= 16 && r_weatherWetnessDebug->integer != 4) ||
 		(r_diffuseIBL->integer && r_diffuseIBLDebug->integer >= 1 && r_diffuseIBLDebug->integer <= 5) ||
 		RB_ForwardPlusDebugBypassesToneMap() ||
+		RB_SkinSSSDebugBypassesToneMap() ||
 		RB_PomSilhouetteDebugBypassesToneMap());
 }
 

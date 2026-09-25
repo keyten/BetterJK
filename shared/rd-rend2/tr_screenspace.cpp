@@ -20,9 +20,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // Shared screen-space infrastructure of the passes that run between the
 // opaque surfaces of a view and the rest of its main pass: screen-space
-// reflections (r_ssr, tr_ssr.cpp) and screen-space diffuse GI (r_ssgi,
-// tr_ssgi.cpp). Created when at least one consumer is enabled; neither
-// consumer requires the other.
+// reflections (r_ssr, tr_ssr.cpp), screen-space diffuse GI (r_ssgi,
+// tr_ssgi.cpp) and the skin diffusion (r_skinSSS 2, tr_skinsss.cpp). Created
+// when at least one consumer is enabled; no consumer requires another.
 //
 // Attachments of renderFbo written by the opaque lightall stages (only in
 // views that use them, see RB_WritesScreenMaterial and GL_SetScreenAuxWrite):
@@ -33,6 +33,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   4 ssrCubemapImage    RGBA16F   SSR only
 //   5 ssgiAlbedoImage    RGBA8     SSGI only
 //   6 ssgiRadianceImage  RGBA16F   SSGI only
+//   7 skinDiffuseImage   RGBA16F   skin SSS only
 //
 // Absent attachments leave a GL_NONE gap in the draw buffers (the fragment
 // outputs are bound to fixed locations, see GLSL_BindAttributeLocations).
@@ -41,6 +42,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   resolve   MSAA: depth and the screen attachments
 //   depth     hardware depth -> screenHiZ mip 0 (linear view depth), mips 1..
 //             (closest depth), built once for all consumers
+//   skin SSS  tr_skinsss.cpp (skin diffuse replaced by its diffused copy,
+//             before the SSGI / SSR composites and the SSR color pyramid)
 //   SSGI      tr_ssgi.cpp (its composite goes into the scene color first, so
 //             the SSR color pyramid sees the indirect light)
 //   SSR       tr_ssr.cpp
@@ -123,7 +126,9 @@ void R_CreateScreenSpaceImages( int width, int height, int hdrFormat )
 	{
 		R_SSRSelectResources();
 		R_SSGISelectResources();
-		s_screenResources = (qboolean)(R_SSRResourcesEnabled() || R_SSGIResourcesEnabled());
+		R_SkinSSSSelectResources();
+		s_screenResources = (qboolean)(R_SSRResourcesEnabled() || R_SSGIResourcesEnabled() ||
+			R_SkinSSSResourcesEnabled());
 	}
 
 	tr.screenNormalImage = NULL;
@@ -141,6 +146,7 @@ void R_CreateScreenSpaceImages( int width, int height, int hdrFormat )
 
 	R_CreateSSRImages(width, height, hdrFormat);
 	R_CreateSSGIImages(width, height, hdrFormat);
+	R_CreateSkinSSSImages(width, height);
 
 	GL_SelectTexture(0);
 }
@@ -160,6 +166,7 @@ void R_AttachScreenSpaceRenderTargets( FBO_t *fbo, int multisample )
 
 	const bool ssr = R_SSRResourcesEnabled() != qfalse;
 	const bool ssgi = R_SSGIResourcesEnabled() != qfalse;
+	const bool skin = R_SkinSSSResourcesEnabled() != qfalse;
 
 	if ( multisample )
 	{
@@ -174,6 +181,8 @@ void R_AttachScreenSpaceRenderTargets( FBO_t *fbo, int multisample )
 			FBO_CreateBuffer(fbo, GL_RGBA8, SCREEN_ATTACHMENT_SSGI_ALBEDO, multisample);
 			FBO_CreateBuffer(fbo, GL_RGBA16F, SCREEN_ATTACHMENT_SSGI_RADIANCE, multisample);
 		}
+		if ( skin )
+			FBO_CreateBuffer(fbo, GL_RGBA16F, SCREEN_ATTACHMENT_SKIN, multisample);
 	}
 	else
 	{
@@ -188,6 +197,8 @@ void R_AttachScreenSpaceRenderTargets( FBO_t *fbo, int multisample )
 			FBO_AttachTextureImage(tr.ssgiAlbedoImage, SCREEN_ATTACHMENT_SSGI_ALBEDO);
 			FBO_AttachTextureImage(tr.ssgiRadianceImage, SCREEN_ATTACHMENT_SSGI_RADIANCE);
 		}
+		if ( skin )
+			FBO_AttachTextureImage(tr.skinDiffuseImage, SCREEN_ATTACHMENT_SKIN);
 	}
 }
 
@@ -251,6 +262,7 @@ void R_CreateScreenSpaceFBOs( void )
 
 	R_CreateSSRFBOs();
 	R_CreateSSGIFBOs();
+	R_CreateSkinSSSFBOs();
 
 	if ( s_screenResources )
 	{
@@ -348,6 +360,8 @@ void RB_ScreenSpaceBeginView( void )
 {
 	backEnd.ssrView = qfalse;
 	backEnd.ssgiView = qfalse;
+	backEnd.skinSSSView = qfalse;
+	backEnd.skinSSSDraws = 0;
 	backEnd.screenAuxView = qfalse;
 
 	if ( !s_screenResources )
@@ -373,7 +387,8 @@ void RB_ScreenSpaceBeginView( void )
 
 	backEnd.ssrView = RB_SSRWantsView();
 	backEnd.ssgiView = RB_SSGIWantsView();
-	if ( !backEnd.ssrView && !backEnd.ssgiView )
+	backEnd.skinSSSView = RB_SkinSSSWantsView();
+	if ( !backEnd.ssrView && !backEnd.ssgiView && !backEnd.skinSSSView )
 		return;
 
 	backEnd.screenAuxView = qtrue;
@@ -393,12 +408,15 @@ void RB_ScreenSpaceBeginView( void )
 		qglClearBufferfv(GL_COLOR, SCREEN_ATTACHMENT_SSGI_ALBEDO, clearZero);
 		qglClearBufferfv(GL_COLOR, SCREEN_ATTACHMENT_SSGI_RADIANCE, clearZero);
 	}
+	if ( R_SkinSSSResourcesEnabled() )
+		qglClearBufferfv(GL_COLOR, SCREEN_ATTACHMENT_SKIN, clearZero);
 	GL_SetScreenAuxWrite(false);
 }
 
 qboolean RB_ScreenSpaceActive( void )
 {
-	return (qboolean)((backEnd.ssrView || backEnd.ssgiView) && !backEnd.depthFill && !backEnd.refractionFill);
+	return (qboolean)((backEnd.ssrView || backEnd.ssgiView || backEnd.skinSSSView) &&
+		!backEnd.depthFill && !backEnd.refractionFill);
 }
 
 /*
@@ -571,6 +589,10 @@ void RB_RenderScreenSpaceOpaque( void )
 	RB_ScreenBuildDepth(info, Q_max(1, Q_max(ssrLevels, ssgiLevels)));
 	RB_ScreenEndTimer(timer);
 
+	// skin first: the SSGI and SSR composites (and the SSR color pyramid)
+	// see the diffused skin. Nothing to do without skin stages in the view.
+	if ( backEnd.skinSSSView && backEnd.skinSSSDraws > 0 )
+		RB_RenderSkinSSS(info);
 	if ( backEnd.ssgiView )
 		RB_RenderSSGI(info);
 	if ( backEnd.ssrView )
@@ -580,6 +602,7 @@ void RB_RenderScreenSpaceOpaque( void )
 	// does not write the screen attachments
 	backEnd.ssrView = qfalse;
 	backEnd.ssgiView = qfalse;
+	backEnd.skinSSSView = qfalse;
 	backEnd.screenAuxView = qfalse;
 
 	R_PushDebugGroup(AL_STAGE, "Mainpass");

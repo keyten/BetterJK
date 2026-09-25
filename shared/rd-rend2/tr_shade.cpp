@@ -2166,14 +2166,18 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		vec4_t materialDebug = {};
 		if (r_autoFoliageDebug->integer && r_autoFoliage->integer)
 			R_FoliageDebugColor(tess.foliageDebugClass, materialDebug);
-		else
+		else if (!R_SkinSSSDebugColor(pStage, materialDebug))
 			R_AutoPBRDebugColor(pStage, materialDebug);
 		uniformDataWriter.SetUniformVec4(UNIFORM_MATERIALDEBUG, materialDebug);
 		if (!backEnd.depthFill && !(backEnd.viewParms.flags & VPF_DEPTHSHADOW))
 			pStage->pbrDrawn = qtrue;
 
 		if (pStage->glslShaderGroup == tr.lightallShader)
+		{
 			uniformDataWriter.SetUniformInt(UNIFORM_DIFFUSEBRDF, r_diffuseBRDF->integer);
+			// skin scattering (tr_skinsss.cpp): scatter, mask, wrap
+			R_SkinSSSSetupDraw(pStage, uniformDataWriter, samplerBindingsWriter);
+		}
 
 		const float parallaxBias = r_forceParallaxBias->value > 0.0f ? r_forceParallaxBias->value : pStage->parallaxBias;
 		uniformDataWriter.SetUniformFloat(UNIFORM_PARALLAXBIAS, parallaxBias);
@@ -2469,6 +2473,9 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		item.renderState.stateBits = stateBits;
 		item.renderState.cullType = forceRefraction ? CT_TWO_SIDED : cullType;
 		item.renderState.screenAux = RB_WritesScreenMaterial(sp, stateBits, forceRefraction);
+		// the skin diffusion of this view has work to do
+		if (item.renderState.screenAux && pStage->skinScatter > 0.0f)
+			backEnd.skinSSSDraws++;
 		item.renderState.depthRange = RB_GetDepthRange(backEnd.currentEntity, input->shader);
 		item.program = sp;
 		item.ibo = input->externalIBO ? input->externalIBO : backEndData->currentFrame->dynamicIbo;

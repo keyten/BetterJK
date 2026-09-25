@@ -727,10 +727,11 @@ vec3 EmissiveLegacySceneToLinear(in vec3 color)
 	return mix(lo, hi, greaterThan(color, vec3(0.04045)));
 }
 
-#if defined(USE_SSR) || defined(USE_SSGI)
+#if defined(USE_SSR) || defined(USE_SSGI) || defined(USE_SKIN_SSS_BUFFER)
 // Screen-space attachments of renderFbo (tr_screenspace.cpp): reflections
-// (tr_ssr.cpp, ssr_*.glsl) and diffuse GI (tr_ssgi.cpp, ssgi_*.glsl). Only
-// written by opaque stages, the others have them masked.
+// (tr_ssr.cpp, ssr_*.glsl), diffuse GI (tr_ssgi.cpp, ssgi_*.glsl) and skin
+// scattering (tr_skinsss.cpp, skin_sss.glsl). Only written by opaque stages,
+// the others have them masked.
 out vec4 out_SSRNormal;   // rg = octahedral world normal, b = roughness, a = SSR receiver
 #if defined(USE_SSR)
 out vec4 out_SSRSpecular; // rgb = sqrt(specular IBL weight)
@@ -743,6 +744,9 @@ out vec4 out_SSGIRadiance; // rgb = linear GI source radiance, a = view depth
 // diffuse lobe of the dynamic lights of this fragment (scene space), the
 // view independent part of their outgoing radiance: bounced by the SSGI
 vec3 g_ssgiDynamicDiffuse = vec3(0.0);
+#endif
+#if defined(USE_SKIN_SSS_BUFFER)
+out vec4 out_SkinDiffuse; // rgb = scattering skin diffuse (scene space), a = view depth (0 = not skin)
 #endif
 
 vec2 SSREncodeNormal(in vec3 n)
@@ -766,6 +770,47 @@ void SSRWriteNone(in vec3 worldPosition)
 	out_SSGIAlbedo = vec4(0.0);
 	out_SSGIRadiance = vec4(0.0, 0.0, 0.0, viewDepth);
 #endif
+#if defined(USE_SKIN_SSS_BUFFER)
+	out_SkinDiffuse = vec4(0.0);
+#endif
+}
+#endif
+
+#if defined(USE_SKIN_SSS) && defined(PER_PIXEL_LIGHTING)
+// Skin scattering of the stages classified as skin (tr_skinsss.cpp).
+// r_skinSSS 1: per channel wrapped diffuse lobe, red widest. A cheap
+// approximation of the soft terminator, not subsurface scattering.
+// r_skinSSS 2: Lambert here; the diffuse light of skin (direct, sun, dynamic
+// and area lights, ambient / diffuse IBL; never specular or emission) also
+// goes to out_SkinDiffuse and is diffused in screen space (skin_sss.glsl).
+uniform vec4 u_SkinParams; // x = scatter of this stage (0 = not skin), y = has skin mask, z = compare split x (< 0 off)
+uniform vec4 u_SkinWrap;   // rgb = wrap widths (r_skinSSS 1, else 0), w = transmission strength
+uniform sampler2D u_SkinMaskMap;
+
+float g_skinScatter = 0.0;			// scatter of this fragment (stage x mask)
+vec3  g_skinWrap = vec3(0.0);		// wrap widths of this fragment, 0 = Lambert
+float g_skinTransmission = 0.0;
+vec3  g_skinDiffuse = vec3(0.0);	// diffuse light of this fragment, scene space
+
+// NL of the diffuse lobe; skin in r_skinSSS 1: (NdotL + w) / (1 + w) per channel
+// (not energy normalized: lit side unchanged, the terminator gains red)
+vec3 SkinDiffuseNL(in float NdotL, in float NL)
+{
+	if (g_skinWrap.r <= 0.0)
+		return vec3(NL);
+	return clamp((vec3(NdotL) + g_skinWrap) / (1.0 + g_skinWrap), 0.0, 1.0);
+}
+
+// optional back light transmission (ears, fingers, r_skinSSSTransmission):
+// light from behind the surface seen through it. No thickness data, so it is
+// a view / light alignment and back facing falloff only.
+vec3 SkinTransmission(in vec3 N, in vec3 E, in vec3 L, in vec3 light, in vec3 albedo)
+{
+	if (g_skinTransmission <= 0.0)
+		return vec3(0.0);
+	float through = pow(clamp(dot(-E, L), 0.0, 1.0), 4.0);
+	float back = clamp(0.3 - dot(N, L), 0.0, 1.0);
+	return light * albedo * vec3(1.0, 0.35, 0.2) * (g_skinTransmission * through * back);
 }
 #endif
 
@@ -1956,12 +2001,25 @@ vec3 EvaluateDynamicLight(
 	// visibility: the source of the screen-space GI
 	g_ssgiDynamicDiffuse += lightColor * reflectance * attenuation * NL;
 	#endif
+	#if defined(USE_SKIN_SSS)
+	// skin: wrapped diffuse lobe (r_skinSSS 1), kept apart for the diffusion
+	vec3 lit = lightColor * reflectance * attenuation * SkinDiffuseNL(dot(s.N, L), NL) +
+		SkinTransmission(s.N, s.E, L, lightColor * attenuation, s.diffuse);
+	g_skinDiffuse += lit;
+	  #if defined(USE_SPECULARMAP)
+	float NH = clamp(dot(s.N, H), 0.0, 1.0);
+	float VH = clamp(dot(s.E, H), 0.0, 1.0);
+	lit += lightColor * CalcSpecular(s.specular, NH, NL, s.NE, LH, VH, s.roughness) * attenuation * NL;
+	  #endif
+	return lit;
+	#else
 	#if defined(USE_SPECULARMAP)
 	float NH = clamp(dot(s.N, H), 0.0, 1.0);
 	float VH = clamp(dot(s.E, H), 0.0, 1.0);
 	reflectance += CalcSpecular(s.specular, NH, NL, s.NE, LH, VH, s.roughness);
 	#endif
 	return lightColor * reflectance * attenuation * NL;
+	#endif
 }
 
 #if defined(USE_LTC)
@@ -2096,6 +2154,9 @@ vec3 EvaluateAreaLight(in DLightSurface s, in FPlusLight light, in int lightInde
 		formFactor = LtcQuadFormFactor(mat3(1.0), q0, q1, q2, q3, twoSided);
 		#endif
 		diffuseOut = radiance * s.diffuse * formFactor;
+		#if defined(USE_SKIN_SSS)
+		g_skinDiffuse += diffuseOut;
+		#endif
 		#if defined(USE_SSGI)
 		// view independent diffuse only: the screen-space GI source
 		g_ssgiDynamicDiffuse += diffuseOut;
@@ -2657,7 +2718,7 @@ void main()
 	bool pomShell;
 	PomSilhouetteFragment(texCoords, lmCoords, pomViewDir, pomHit, pomShell);
 #endif
-#if defined(USE_SSR) || defined(USE_SSGI)
+#if defined(USE_SSR) || defined(USE_SSGI) || defined(USE_SKIN_SSS_BUFFER)
   #if defined(USE_SILHOUETTE_POM)
 	SSRWriteNone(u_ViewOrigin - pomViewDir);
   #elif defined(PER_PIXEL_LIGHTING)
@@ -2774,6 +2835,19 @@ void main()
   #endif
 	N = CalcNormal(vertexNormal, var_Tangent, texCoords);
 	L /= sqrt(sqrLightDist);
+
+  #if defined(USE_SKIN_SSS)
+	g_skinScatter = u_SkinParams.x;
+	if (g_skinScatter > 0.0)
+	{
+		if (u_SkinParams.y > 0.5)
+			g_skinScatter *= texture(u_SkinMaskMap, texCoords).r;
+		// r_skinSSSCompare: left half without the wrap / transmission
+		bool skinLeft = gl_FragCoord.x < u_SkinParams.z;
+		g_skinWrap = skinLeft ? vec3(0.0) : u_SkinWrap.rgb * g_skinScatter;
+		g_skinTransmission = skinLeft ? 0.0 : u_SkinWrap.w * g_skinScatter;
+	}
+  #endif
 
   #if defined(USE_WETNESS)
 	// Rain wetness: changes only the material inputs (normal here, albedo and
@@ -3033,7 +3107,14 @@ void main()
 
 	vec3 reflectance = Fd + Fs;
 
+#if defined(USE_SKIN_SSS)
+	vec3 skinDirect = lightColor * Fd * (attenuation * SkinDiffuseNL(dot(N, L), NL)) +
+		SkinTransmission(N, E, L, lightColor * attenuation, diffuse.rgb);
+	g_skinDiffuse += skinDirect + diffuseAmbientColor * diffuse.rgb;
+	out_Color.rgb  = skinDirect + lightColor * Fs * (attenuation * NL);
+#else
 	out_Color.rgb  = lightColor * reflectance * (attenuation * NL);
+#endif
 	out_Color.rgb += diffuseAmbientColor * diffuse.rgb;
 
 	// kept separately: r_forwardPlusDebug, later SSGI style consumers
@@ -3061,15 +3142,26 @@ void main()
 	float L2H2 = clamp(dot(L2, H2), 0.0, 1.0);
 	float NH2  = clamp(dot(N,  H2), 0.0, 1.0);
 	float VH2  = clamp(dot(E, H), 0.0, 1.0);
+    #if defined(USE_SKIN_SSS)
+	vec3 sunDiffuse = CalcDiffuse(diffuse.rgb, NE, NL2, L2H2, roughness);
+	reflectance = CalcSpecular(specular.rgb, NH2, NL2, NE, L2H2, VH2, roughness);
+    #else
 	reflectance  = CalcDiffuse(diffuse.rgb, NE, NL2, L2H2, roughness);
 	reflectance += CalcSpecular(specular.rgb, NH2, NL2, NE, L2H2, VH2, roughness);
+    #endif
 
 	lightColor = u_PrimaryLightColor;
     #if defined(USE_SHADOWMAP)
 	lightColor *= shadowValue;
     #endif
 
+    #if defined(USE_SKIN_SSS)
+	vec3 skinSun = lightColor * sunDiffuse * SkinDiffuseNL(dot(N, L2), NL2);
+	g_skinDiffuse += skinSun;
+	out_Color.rgb += skinSun + lightColor * reflectance * NL2;
+    #else
 	out_Color.rgb += lightColor * reflectance * NL2;
+    #endif
   #endif
 
   #if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
@@ -3419,5 +3511,17 @@ void main()
 	out_Glow = mix(vec4(emissive, out_Color.a), out_Color, u_EnableTextures.x);
 #if defined(USE_SSGI)
 	SSGIWriteRadiance(ssgiLitColor, ssgiEmissive, out_Color.rgb);
+#endif
+#if defined(USE_SKIN_SSS_BUFFER) && defined(PER_PIXEL_LIGHTING)
+	// skin diffuse for the screen-space diffusion (tr_skinsss.cpp); the
+	// visible (sharp) color keeps it too, the composite swaps it
+	if (g_skinScatter > 0.0)
+	{
+		out_SkinDiffuse = vec4(g_skinDiffuse * g_skinScatter, max(dot(-viewDir, normalize(u_ViewForward)), 1e-3));
+  #if !defined(USE_SSGI) && !(defined(USE_SSR) && defined(USE_SPECULARMAP))
+		// normal aware diffusion: nobody else wrote the normal (receiver 0)
+		out_SSRNormal = vec4(SSREncodeNormal(N), roughness, 0.0);
+  #endif
+	}
 #endif
 }

@@ -237,6 +237,13 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PuddleParams",		GLSL_VEC4, 1 },
 	{ "u_PuddleParams2",		GLSL_VEC4, 1 },
 	{ "u_PuddleHeight",		GLSL_VEC4, 1 },
+
+	{ "u_SkinParams",			GLSL_VEC4, 1 },
+	{ "u_SkinWrap",				GLSL_VEC4, 1 },
+	{ "u_SkinMaskMap",			GLSL_INT, 1 },
+	{ "u_SkinKernel",			GLSL_VEC4, SKIN_SSS_MAX_TAPS },
+	{ "u_SkinSettings",			GLSL_VEC4, 1 },
+	{ "u_SkinSettings2",		GLSL_VEC4, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -518,6 +525,13 @@ static size_t GLSL_GetShaderHeader(
 	if (R_SSGIResourcesEnabled())
 		Q_strcat(dest, size, "#define USE_SSGI\n");
 
+	// skin scattering, tr_skinsss.cpp: wrap / split of the skin diffuse light
+	// (r_skinSSS >= 1), and the skin diffuse attachment of renderFbo (2)
+	if (R_SkinSSSMode() >= 1)
+		Q_strcat(dest, size, "#define USE_SKIN_SSS\n");
+	if (R_SkinSSSResourcesEnabled())
+		Q_strcat(dest, size, "#define USE_SKIN_SSS_BUFFER\n");
+
 	// lightall wets rain exposed surfaces, tr_weather.cpp
 	if (R_WeatherWetnessEnabled())
 		Q_strcat(dest, size, "#define USE_WETNESS\n");
@@ -741,6 +755,7 @@ static void GLSL_BindShaderInterface( shaderProgram_t *program )
 		"out_SSRCubemap",
 		"out_SSGIAlbedo",  // SSGI, tr_ssgi.cpp
 		"out_SSGIRadiance",
+		"out_SkinDiffuse",  // skin SSS, tr_skinsss.cpp
 	};
 
 	const uint32_t attribs = program->attribs;
@@ -2399,6 +2414,7 @@ static int GLSL_LoadGPUProgramLightAll(
 			GLSL_SetUniformInt(program, UNIFORM_WEATHERDEPTHMAP, TB_WEATHERDEPTH);
 			GLSL_SetUniformInt(program, UNIFORM_LTCMATRIXMAP, TB_LTC_MATRIX);
 			GLSL_SetUniformInt(program, UNIFORM_LTCAMPLITUDEMAP, TB_LTC_AMPLITUDE);
+			GLSL_SetUniformInt(program, UNIFORM_SKINMASKMAP, TB_SKINMASK);
 			if ( variant == 1 )
 				GLSL_SetPomSilhouetteUnits(program);
 			qglUseProgram(0);
@@ -3015,6 +3031,13 @@ static int GLSL_LoadGPUProgramScreenSpace(
 		load(&tr.ssgiDenoiseShader, "ssgi_denoise", "ssgi_denoise", fallback_ssgi_denoiseProgram, nullptr);
 		load(&tr.ssgiCompositeShader, "ssgi_composite", "ssgi_composite", fallback_ssgi_compositeProgram, nullptr);
 		load(&tr.ssgiDebugShader, "ssgi_debug", "ssgi_debug", fallback_ssgi_debugProgram, nullptr);
+	}
+
+	if (R_SkinSSSResourcesEnabled())
+	{
+		load(&tr.skinSSSShader[SKINSSSDEF_BLUR_H], "skin_sss_h", "skin_sss", fallback_skin_sssProgram, "#define USE_HORIZONTAL\n");
+		load(&tr.skinSSSShader[SKINSSSDEF_BLUR_V], "skin_sss_v", "skin_sss", fallback_skin_sssProgram, "#define USE_VERTICAL\n");
+		load(&tr.skinSSSShader[SKINSSSDEF_COMPOSITE], "skin_sss_composite", "skin_sss", fallback_skin_sssProgram, "#define USE_COMPOSITE\n");
 	}
 
 	return numPrograms;
@@ -3706,6 +3729,8 @@ void GLSL_ShutdownGPUShaders(void)
 	GLSL_DeleteGPUShader(&tr.ssgiDenoiseShader);
 	GLSL_DeleteGPUShader(&tr.ssgiCompositeShader);
 	GLSL_DeleteGPUShader(&tr.ssgiDebugShader);
+	for ( int i = 0; i < SKINSSSDEF_COUNT; i++ )
+		GLSL_DeleteGPUShader(&tr.skinSSSShader[i]);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.depthBlurShader[i]);

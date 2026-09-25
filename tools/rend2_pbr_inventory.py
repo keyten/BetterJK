@@ -11,9 +11,11 @@ R_ClassifyMaterial on the legacy (diffuse-only) ones.
 
 KEEP THE DICTIONARIES AND RULE ORDER IN SYNC WITH tr_autopbr.cpp.
 
-usage: rend2_pbr_inventory.py <base dir with *.pk3> [--selftest] [--list CLASS] [--pairs]
+usage: rend2_pbr_inventory.py <base dir with *.pk3> [--selftest] [--list CLASS] [--pairs] [--skin [--mixed]]
   --pairs  prints shader<TAB>diffuse<TAB>class<TAB>reason for every material,
            to diff against the C++ classifier
+  --skin   skin scattering eligibility (r_skinSSS, port of R_SkinSSSClassifyShader
+           in tr_skinsss.cpp) of every skin class material; --mixed = r_skinSSSMixed 1
 Nothing is written; the report goes to stdout (markdown).
 """
 
@@ -269,6 +271,7 @@ def parse_shader_body(body):
             cur.append(line.lower().split())
     info = {'diffuse': None, 'explicit': None, 'scalar': False, 'shiny': False, 'stages': len(stages)}
     info['convert'] = lightall_status(stages)
+    info['skinlayer'] = skin_layering(stages)
     for st in stages:
         kw = {l[0]: l[1:] for l in st if l}
         m = kw.get('map') or kw.get('clampmap') or kw.get('animmap')
@@ -283,6 +286,52 @@ def parse_shader_body(body):
                 and 'glow' not in kw and not m[0].startswith('*'):
             info['diffuse'] = strip_ext(m[-1] if kw.get('animmap') else m[0])
     return info
+
+
+# --------------------------------------------------------------------------
+# skin scattering eligibility (port of R_SkinSSSClassifyShader, tr_skinsss.cpp)
+# --------------------------------------------------------------------------
+
+SKIN_EXCLUDED_TOKENS = {'eyes', 'eye', 'eyesmouth', 'moutheyes', 'teeth', 'mouth', 'cap', 'caps'}
+
+
+def skin_layering(stages):
+    """'blended' when the lit base stage blends, 'layered' when a later lit stage
+    is alpha blended on top of it (jedi_tf), else ''"""
+    lit = []
+    for st in stages:
+        kw = {}
+        for l in st:
+            if l:
+                kw.setdefault(l[0], l[1:])
+        if (kw.get('rgbgen') or [''])[0] in ('lightingdiffuse', 'lightingdiffuseentity') and 'glow' not in kw:
+            lit.append(kw)
+    if not lit:
+        return ''
+    blend = lambda kw: tuple(kw.get('blendfunc') or [])
+    b = blend(lit[0])
+    if b and b not in (('gl_one', 'gl_zero'),):
+        return 'blended'
+    for kw in lit[1:]:
+        if blend(kw) in (('blend',), ('gl_src_alpha', 'gl_one_minus_src_alpha')):
+            return 'layered'
+    return ''
+
+
+def skin_eligibility(cls, reason, info, mixed):
+    """(scatter, reason) as R_SkinSSSClassifyShader decides it"""
+    if info and info.get('skinlayer') == 'blended':
+        return 0.0, 'blended'
+    if cls != 'skin':
+        return 0.0, 'not skin'
+    token = reason.split(':', 1)[1] if ':' in reason else None
+    if token in SKIN_EXCLUDED_TOKENS:
+        return 0.0, 'excluded part'
+    if token == 'head' and not mixed:
+        return 0.0, 'mixed head'
+    if info and info.get('skinlayer') == 'layered':
+        return 0.0, 'layered'
+    return 1.0, 'skin'
 
 
 def lightall_status(stages):
@@ -403,6 +452,32 @@ def main():
         area = '/'.join(name.split('/')[:2])
         rows.append(dict(name=name, diffuse=diffuse, src=src, cls=cls, reason=reason, normal=normal,
                          area=area, surfs=sorted(surfs), shiny=bool(info and info['shiny'])))
+
+    if '--skin' in args:
+        mixed = '--mixed' in args
+        by_reason = collections.defaultdict(list)
+        for r in rows:
+            if r['cls'] != 'skin' or not r['name'].startswith('models/'):
+                continue
+            scatter, why = skin_eligibility(r['cls'], r['reason'], idx.shaders.get(r['name']), mixed)
+            by_reason[why].append(r)
+        print('# skin scattering eligibility (r_skinSSSMixed %d)\n' % mixed)
+        for why in ('skin', 'excluded part', 'mixed head', 'layered', 'blended'):
+            rs = by_reason.get(why, [])
+            used = [r for r in rs if r['surfs']]
+            print('## %s: %d materials (%d used by a model skin)\n' % (why, len(rs), len(used)))
+            for r in sorted(used, key=lambda r: r['name']):
+                print('- %s (%s; %s)' % (r['name'], r['reason'], ', '.join(r['surfs'][:4])))
+            print()
+        # characters (skin files) without any scattering surface
+        chars = collections.defaultdict(set)
+        for skin, surf, sh in idx.skins:
+            chars[skin.split('/')[2]].add(sh)
+        scatter_mats = {r['name'] for r in by_reason.get('skin', [])}
+        none = sorted(c for c, shs in chars.items() if not (shs & scatter_mats))
+        print('## characters without a scattering surface: %d of %d\n' % (len(none), len(chars)))
+        print(', '.join(none))
+        return
 
     if '--pairs' in args:
         for r in sorted(rows, key=lambda r: r['name']):
