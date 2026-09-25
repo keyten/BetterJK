@@ -382,10 +382,29 @@ void main()
 #endif
 
 	vec4 wsPosition = u_ModelMatrix * vec4(position, 1.0);
+
+	// r_leafFlutter: same displacement as lightall, evaluated again at the
+	// previous frame time for the motion vector (leaf_flutter.glsl). One seed
+	// for both frames, a moving entity must not jump to another phase.
+	if (LeafFlutterEnabled())
+	{
+		vec2 leafBands;
+		float leafSeed = LeafFlutterSeed(u_ModelMatrix[3].xyz);
+		vec4 prevWsPosition = u_PreviousModelMatrix * vec4(prevPosition, 1.0);
+		wsPosition.xyz += LeafFlutterOffset(wsPosition.xyz, leafSeed,
+			u_LeafFlutterParams.x, LeafFlutterWeight(position), leafBands);
+		prevWsPosition.xyz += LeafFlutterOffset(prevWsPosition.xyz, leafSeed,
+			u_LeafFlutterParams.y, LeafFlutterWeight(prevPosition), leafBands);
+		var_prevPosition = u_previousViewProjectionMatrix * prevWsPosition;
+	}
+	else
+	{
+		var_prevPosition = u_previousViewProjectionMatrix * u_PreviousModelMatrix * vec4(prevPosition, 1.0);
+	}
+
 	gl_Position = u_viewProjectionMatrix * wsPosition;
 
 	var_Position = gl_Position;
-	var_prevPosition = u_previousViewProjectionMatrix * u_PreviousModelMatrix * vec4(prevPosition, 1.0);
 
 #if defined(USE_ALPHA_TEST)
 #if defined(USE_TCGEN)

@@ -298,6 +298,11 @@ cvar_t  *r_foliageWindStrength;
 cvar_t  *r_foliageWindSpeed;
 cvar_t  *r_foliageWindDirection;
 cvar_t  *r_foliageWindDebug;
+cvar_t  *r_leafFlutter;
+cvar_t  *r_leafFlutterStrength;
+cvar_t  *r_leafFlutterSpeed;
+cvar_t  *r_leafFlutterNormal;
+cvar_t  *r_leafFlutterDebug;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 cvar_t  *r_diffuseIBL;
@@ -2035,6 +2040,21 @@ void R_Register( void )
 	r_foliageWindDebug = ri_Cvar_Get_NoComm( "r_foliageWindDebug", "0", CVAR_CHEAT,
 		"Foliage wind debug: 1 = exaggerated strength, 2 = color by displacement, 3 = freeze time, 4 = color by large gust wave" );
 	ri.Cvar_CheckRange( r_foliageWindDebug, 0, 4, qtrue );
+	r_leafFlutter = ri_Cvar_Get_NoComm( "r_leafFlutter", "0", CVAR_ARCHIVE,
+		"Leaf flutter: small coherent motion of MD3 leaf / vine cards classified by r_autoFoliage (needs r_autoFoliage >= 1); trunks and branches never move" );
+	ri.Cvar_CheckRange( r_leafFlutter, 0, 1, qtrue );
+	r_leafFlutterStrength = ri_Cvar_Get_NoComm( "r_leafFlutterStrength", "1", CVAR_ARCHIVE,
+		"r_leafFlutter: amplitude, 1 = 1.5 units" );
+	ri.Cvar_CheckRange( r_leafFlutterStrength, 0.0f, 4.0f, qfalse );
+	r_leafFlutterSpeed = ri_Cvar_Get_NoComm( "r_leafFlutterSpeed", "1", CVAR_ARCHIVE,
+		"r_leafFlutter: time scale" );
+	ri.Cvar_CheckRange( r_leafFlutterSpeed, 0.0f, 4.0f, qfalse );
+	r_leafFlutterNormal = ri_Cvar_Get_NoComm( "r_leafFlutterNormal", "0.25", CVAR_ARCHIVE,
+		"r_leafFlutter: normal wobble in step with the motion (per pixel lit leaves), 0 = position only" );
+	ri.Cvar_CheckRange( r_leafFlutterNormal, 0.0f, 1.0f, qfalse );
+	r_leafFlutterDebug = ri_Cvar_Get_NoComm( "r_leafFlutterDebug", "0", CVAR_CHEAT,
+		"Leaf flutter debug bits: 1 = x8 amplitude, 2 = freeze time, 4 = highlight fluttering surfaces, 8 = color by displacement" );
+	ri.Cvar_CheckRange( r_leafFlutterDebug, 0, 15, qtrue );
 	r_autoPBRConvert = ri_Cvar_Get_NoComm( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );

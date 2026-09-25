@@ -84,12 +84,16 @@ static int R_CullModel( mdvModel_t *model, trRefEntity_t *ent ) {
 	newFrame = model->frames + ent->e.frame;
 	oldFrame = model->frames + ent->e.oldframe;
 
+	// r_leafFlutter moves leaf vertices a little past the static bounds: grow
+	// them by the largest offset (world units) instead of recomputing them
+	const float flutterMargin = R_LeafFlutterCullMargin( model );
+
 	// cull bounding sphere ONLY if this is not an upscaled entity
 	if ( !ent->e.nonNormalizedAxes )
 	{
 		if ( ent->e.frame == ent->e.oldframe )
 		{
-			switch ( R_CullLocalPointAndRadius( newFrame->localOrigin, newFrame->radius ) )
+			switch ( R_CullLocalPointAndRadius( newFrame->localOrigin, newFrame->radius + flutterMargin ) )
 			{
 			case CULL_OUT:
 				tr.pc.c_sphere_cull_md3_out++;
@@ -108,11 +112,11 @@ static int R_CullModel( mdvModel_t *model, trRefEntity_t *ent ) {
 		{
 			int sphereCull, sphereCullB;
 
-			sphereCull  = R_CullLocalPointAndRadius( newFrame->localOrigin, newFrame->radius );
+			sphereCull  = R_CullLocalPointAndRadius( newFrame->localOrigin, newFrame->radius + flutterMargin );
 			if ( newFrame == oldFrame ) {
 				sphereCullB = sphereCull;
 			} else {
-				sphereCullB = R_CullLocalPointAndRadius( oldFrame->localOrigin, oldFrame->radius );
+				sphereCullB = R_CullLocalPointAndRadius( oldFrame->localOrigin, oldFrame->radius + flutterMargin );
 			}
 
 			if ( sphereCull == sphereCullB )
@@ -139,6 +143,22 @@ static int R_CullModel( mdvModel_t *model, trRefEntity_t *ent ) {
 	for (i = 0 ; i < 3 ; i++) {
 		bounds[0][i] = oldFrame->bounds[0][i] < newFrame->bounds[0][i] ? oldFrame->bounds[0][i] : newFrame->bounds[0][i];
 		bounds[1][i] = oldFrame->bounds[1][i] > newFrame->bounds[1][i] ? oldFrame->bounds[1][i] : newFrame->bounds[1][i];
+	}
+	if ( flutterMargin > 0.0f )
+	{
+		// the box is in model units: undo the smallest entity scale
+		float minScale = 1.0f;
+		if ( ent->e.nonNormalizedAxes )
+		{
+			minScale = MIN( VectorLength( ent->e.axis[0] ), VectorLength( ent->e.axis[1] ) );
+			minScale = MIN( minScale, VectorLength( ent->e.axis[2] ) );
+		}
+		const float boxMargin = flutterMargin / MAX( minScale, 0.01f );
+		for ( i = 0; i < 3; i++ )
+		{
+			bounds[0][i] -= boxMargin;
+			bounds[1][i] += boxMargin;
+		}
 	}
 
 	switch ( R_CullLocalBox( bounds ) )

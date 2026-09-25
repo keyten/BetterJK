@@ -443,6 +443,7 @@ static void DrawSkySide( struct image_s *image, const int mins[2], const int max
 	shaderProgram_t *sp = &tr.lightallShader[0];
 	float colorScale = backEnd.refdef.colorScale * tr.identityLight;
 	uniformDataWriter.Start(sp);
+	RB_SetLeafFlutterUniforms(uniformDataWriter, false);
 	uniformDataWriter.SetUniformVec4(
 		UNIFORM_BASECOLOR, colorScale, colorScale, colorScale, 1.0f);
 	uniformDataWriter.SetUniformVec4(

@@ -54,6 +54,7 @@ void RB_CheckOverflow( int verts, int indexes ) {
 	}
 
 	const uint8_t foliageDebugClass = tess.foliageDebugClass;
+	const uint8_t leafFlutter = tess.leafFlutter;
 	RB_EndSurface();
 
 	if ( verts >= SHADER_MAX_VERTEXES ) {
@@ -65,6 +66,7 @@ void RB_CheckOverflow( int verts, int indexes ) {
 
 	RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 	tess.foliageDebugClass = foliageDebugClass;
+	tess.leafFlutter = leafFlutter;
 }
 
 void RB_CheckVBOandIBO(VBO_t *vbo, IBO_t *ibo)
@@ -75,10 +77,12 @@ void RB_CheckVBOandIBO(VBO_t *vbo, IBO_t *ibo)
 	{
 		int dlightBits = tess.dlightBits;
 		const uint8_t foliageDebugClass = tess.foliageDebugClass;
+		const uint8_t leafFlutter = tess.leafFlutter;
 		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 		tess.dlightBits = dlightBits;
 		tess.foliageDebugClass = foliageDebugClass;
+		tess.leafFlutter = leafFlutter;
 		R_BindVBO(vbo);
 		R_BindIBO(ibo);
 	}
@@ -630,10 +634,12 @@ void RB_SetPomMode( int mode )
 	{
 		const int dlightBits = tess.dlightBits;
 		const uint8_t foliageDebugClass = tess.foliageDebugClass;
+		const uint8_t leafFlutter = tess.leafFlutter;
 		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex);
 		tess.dlightBits = dlightBits;
 		tess.foliageDebugClass = foliageDebugClass;
+		tess.leafFlutter = leafFlutter;
 	}
 	tess.pomMode = mode;
 }
@@ -1963,9 +1969,11 @@ static void RB_SurfaceBSPGrid( srfBspSurface_t *srf ) {
 			// if we don't have enough space for at least one strip, flush the buffer
 			if ( vrows < 2 || irows < 1 ) {
 				const uint8_t foliageDebugClass = tess.foliageDebugClass;
+				const uint8_t leafFlutter = tess.leafFlutter;
 				RB_EndSurface();
 				RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 				tess.foliageDebugClass = foliageDebugClass;
+				tess.leafFlutter = leafFlutter;
 			} else {
 				break;
 			}

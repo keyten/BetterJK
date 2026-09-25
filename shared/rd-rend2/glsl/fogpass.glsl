@@ -259,6 +259,16 @@ void main()
 #endif
 
 	vec4 wsPosition = u_ModelMatrix * vec4(position, 1.0);
+
+	// r_leafFlutter: same displacement as lightall, the fog is drawn with
+	// depth func EQUAL (leaf_flutter.glsl)
+	if (LeafFlutterEnabled())
+	{
+		vec2 leafBands;
+		wsPosition.xyz += LeafFlutterOffset(wsPosition.xyz, LeafFlutterSeed(u_ModelMatrix[3].xyz),
+			u_LeafFlutterParams.x, LeafFlutterWeight(position), leafBands);
+	}
+
 	gl_Position = u_viewProjectionMatrix * wsPosition;
 
 	var_WSPosition = wsPosition.xyz;

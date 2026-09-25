@@ -1268,6 +1268,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 {
 	shader_t *oldShader = nullptr;
 	int oldEntityNum = -1;
+	bool oldLeafFlutter = false;
 	CBoneCache *oldBoneCache = nullptr;
 
 	drawSurf_t *drawSurf = drawSurfs;
@@ -1280,6 +1281,8 @@ static void RB_SubmitDrawSurfsForDepthFill(
 
 		R_DecomposeSort(drawSurf->sort, &entityNum, &shader, &cubemapIndex, &postRender);
 		assert(shader != nullptr);
+		// r_leafFlutter: depth and shadows move with the lit surface
+		const bool leafFlutter = R_LeafFlutterSurface(drawSurf);
 
 		const bool alphaShadowDepth =
 			r_sunShadowMode->integer &&
@@ -1314,7 +1317,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 			}
 		}
 
-		if ( shader == oldShader &&	entityNum == oldEntityNum )
+		if ( shader == oldShader &&	entityNum == oldEntityNum && leafFlutter == oldLeafFlutter )
 		{
 			// fast path, same as previous sort
 			rb_surfaceTable[*drawSurf->surface](drawSurf->surface);
@@ -1326,6 +1329,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 		// seperate entities merged into a single batch, like smoke and blood
 		// puff sprites
 		if ( shader != oldShader ||
+				leafFlutter != oldLeafFlutter ||
 				(entityNum != oldEntityNum && !tess.entityMergable) )
 		{
 			if ( oldShader != nullptr )
@@ -1336,6 +1340,8 @@ static void RB_SubmitDrawSurfsForDepthFill(
 			RB_BeginSurface(shader, 0, 0);
 			backEnd.pc.c_surfBatches++;
 			oldShader = shader;
+			oldLeafFlutter = leafFlutter;
+			tess.leafFlutter = leafFlutter;
 		}
 
 		// change the modelview matrix if needed
@@ -1369,6 +1375,7 @@ static void RB_SubmitDrawSurfs(
 	int oldPostRender = 0;
 	int oldCubemapIndex = -1;
 	int oldFoliageDebugClass = -1;
+	bool oldLeafFlutter = false;
 	CBoneCache *oldBoneCache = nullptr;
 
 	drawSurf_t *drawSurf = drawSurfs;
@@ -1393,6 +1400,7 @@ static void RB_SubmitDrawSurfs(
 				drawSurf->foliage.score >= 6 && (drawSurf->foliage.reasons & FOLIAGE_ALPHA_TEST))
 				foliageDebugClass = 4;
 		}
+		const bool leafFlutter = R_LeafFlutterSurface(drawSurf);
 
 		if (*drawSurf->surface == SF_MDX)
 		{
@@ -1414,6 +1422,7 @@ static void RB_SubmitDrawSurfs(
 				entityNum == oldEntityNum &&
 				dlighted == oldDlighted &&
 				foliageDebugClass == oldFoliageDebugClass &&
+				leafFlutter == oldLeafFlutter &&
 				backEnd.refractionFill == shader->useDistortion )
 		{
 			// fast path, same as previous sort
@@ -1431,6 +1440,7 @@ static void RB_SubmitDrawSurfs(
 				postRender != oldPostRender ||
 				cubemapIndex != oldCubemapIndex ||
 				foliageDebugClass != oldFoliageDebugClass ||
+				leafFlutter != oldLeafFlutter ||
 				(entityNum != oldEntityNum && !tess.entityMergable)) )
 		{
 			if ( oldShader != nullptr )
@@ -1446,7 +1456,9 @@ static void RB_SubmitDrawSurfs(
 			oldPostRender = postRender;
 			oldCubemapIndex = cubemapIndex;
 			oldFoliageDebugClass = foliageDebugClass;
+			oldLeafFlutter = leafFlutter;
 			tess.foliageDebugClass = foliageDebugClass;
+			tess.leafFlutter = leafFlutter;
 			tess.dlightBits = dlighted;
 		}
 
@@ -3054,6 +3066,8 @@ void RB_UpdateConstants(const trRefdef_t *refdef)
 	RB_UpdateCameraConstants(frame);
 	RB_UpdateSceneConstants(frame, refdef);
 	RB_UpdateTemporalConstants(frame, backEndData->previousFrame, refdef);
+	RB_LeafFlutterBeginFrame(refdef->floatTime, backEndData->previousFrame ?
+		backEndData->previousFrame->time : refdef->floatTime);
 	RB_UpdateLightsConstants(frame, refdef);
 	RB_UpdateFogsConstants(frame);
 	RB_UpdateVolumetricConstants(frame, refdef);

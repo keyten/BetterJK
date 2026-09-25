@@ -133,6 +133,9 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_AutoGrass",      GLSL_VEC4, 1 },
 	{ "u_FoliageWind",    GLSL_VEC4, 1 },
 	{ "u_FoliageWindParams", GLSL_VEC4, 1 },
+	{ "u_LeafFlutter",       GLSL_VEC4, 1 },
+	{ "u_LeafFlutterParams", GLSL_VEC4, 1 },
+	{ "u_LeafFlutterDebug",  GLSL_FLOAT, 1 },
 	{ "u_DiffuseBRDF",    GLSL_INT,  1 },
 	{ "u_ParallaxBias",  GLSL_FLOAT, 1 },
 
@@ -1739,6 +1742,7 @@ static int GLSL_LoadGPUProgramGeneric(
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("generic", allocator, fallback_genericProgram);
 	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
+	const GPUShaderDesc *leafFlutterLibrary = LoadLeafFlutterLibrary(allocator);
 	for ( int i = 0; i < GENERICDEF_COUNT; i++ )
 	{
 		if (!GLSL_IsValidPermutationForGeneric(i))
@@ -1802,7 +1806,7 @@ static int GLSL_LoadGPUProgramGeneric(
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_ALPHA_TEST\n");*/
 
 		if (!GLSL_LoadGPUShader(builder, &tr.genericShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc, volumetricLibrary))
+				extradefines, *programDesc, volumetricLibrary, leafFlutterLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load generic shader!");
 		}
@@ -1840,6 +1844,7 @@ static int GLSL_LoadGPUProgramFogPass(
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("fogpass", allocator, fallback_fogpassProgram);
 	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
+	const GPUShaderDesc *leafFlutterLibrary = LoadLeafFlutterLibrary(allocator);
 	for (int i = 0; i < FOGDEF_COUNT; i++)
 	{
 		if (!GLSL_IsValidPermutationForFog(i))
@@ -1887,7 +1892,7 @@ static int GLSL_LoadGPUProgramFogPass(
 		}
 
 		if (!GLSL_LoadGPUShader(builder, &tr.fogShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc, volumetricLibrary))
+				extradefines, *programDesc, volumetricLibrary, leafFlutterLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load fogpass shader!");
 		}
@@ -1923,6 +1928,7 @@ static int GLSL_LoadGPUProgramVelocityPass(
 	char extradefines[1200];
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("velocity", allocator, fallback_velocityProgram);
+	const GPUShaderDesc *leafFlutterLibrary = LoadLeafFlutterLibrary(allocator);
 	for (int i = 0; i < VELOCITYDEF_COUNT; i++)
 	{
 		if (!GLSL_IsValidPermutationForFog(i))
@@ -1977,7 +1983,7 @@ static int GLSL_LoadGPUProgramVelocityPass(
 		}
 
 		if (!GLSL_LoadGPUShader(builder, &tr.velocityShader[i], name, attribs, NO_XFB_VARS,
-			extradefines, *programDesc))
+			extradefines, *programDesc, nullptr, leafFlutterLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load velocity shader!");
 		}
@@ -2188,6 +2194,7 @@ static int GLSL_LoadGPUProgramLightAll(
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("lightall", allocator, fallback_lightallProgram);
 	const GPUShaderDesc *pomLibrary = nullptr;
+	const GPUShaderDesc *leafFlutterLibrary = LoadLeafFlutterLibrary(allocator);
 	const bool useFastLight =
 		(!r_normalMapping->integer && !r_specularMapping->integer);
 	GLint maxFragmentSamplers = 0;
@@ -2386,7 +2393,7 @@ static int GLSL_LoadGPUProgramLightAll(
 			Q_strcat(extradefines, sizeof(extradefines), "#define USE_GLOW_BUFFER\n");*/
 
 		if (!GLSL_LoadGPUShader(builder, &tr.lightallShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc))
+				extradefines, *programDesc, nullptr, leafFlutterLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load lightall shader!");
 		}
@@ -2407,7 +2414,7 @@ static int GLSL_LoadGPUProgramLightAll(
 				Q_strcat(name, sizeof(name), "_SPOM");
 				Q_strcat(extradefines, sizeof(extradefines), "#define USE_SILHOUETTE_POM\n");
 				if (!GLSL_LoadGPUShader(builder, program, name, attribs | ATTR_POSITION2 | ATTR_TANGENT,
-						NO_XFB_VARS, extradefines, *programDesc, pomLibrary))
+						NO_XFB_VARS, extradefines, *programDesc, pomLibrary, leafFlutterLibrary))
 				{
 					ri.Error(ERR_FATAL, "Could not load lightall silhouette POM shader!");
 				}
@@ -2514,7 +2521,7 @@ static int GLSL_LoadGPUProgramPomSilhouette(
 		}
 
 		if (!GLSL_LoadGPUShader(builder, &tr.fogSilhouetteShader[i], name, attribs, NO_XFB_VARS,
-				extradefines, *fogDesc, fogLibrary))
+				extradefines, *fogDesc, fogLibrary, LoadLeafFlutterLibrary(allocator)))
 		{
 			ri.Error(ERR_FATAL, "Could not load fogpass silhouette POM shader!");
 		}

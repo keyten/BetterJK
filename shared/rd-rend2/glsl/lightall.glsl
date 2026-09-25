@@ -101,6 +101,7 @@ uniform sampler2D u_NormalMap;
 
 out vec4 var_TexCoords;
 out vec4 var_Color;
+out float var_LeafFlutter;	// r_leafFlutterDebug 8: displacement magnitude
 
 #if defined(PER_PIXEL_LIGHTING)
 out vec4 var_Normal;
@@ -283,6 +284,20 @@ void main()
 
 	vec4 wsPosition = u_ModelMatrix * vec4(position, 1.0);
 
+	// r_leafFlutter: FOLIAGE_LEAF surfaces only (leaf_flutter.glsl). The
+	// object space position stays at rest for tcGen and disintegration.
+	vec2 leafBands = vec2(0.0);
+	float leafWeight = 0.0;
+	var_LeafFlutter = 0.0;
+	if (LeafFlutterEnabled())
+	{
+		leafWeight = LeafFlutterWeight(position);
+		vec3 leafOffset = LeafFlutterOffset(wsPosition.xyz, LeafFlutterSeed(u_ModelMatrix[3].xyz),
+			u_LeafFlutterParams.x, leafWeight, leafBands);
+		wsPosition.xyz += leafOffset;
+		var_LeafFlutter = LeafFlutterMagnitude(leafOffset);
+	}
+
 #if defined(USE_TCGEN)
 	vec2 texCoords = GenTexCoords(u_TCGen0, position.xyz, normal, u_TCGen0Vector0, u_TCGen0Vector1);
 #else
@@ -304,6 +319,8 @@ void main()
   #if defined(PER_PIXEL_LIGHTING)
 	tangent   = normalize(mat3(u_ModelMatrix) * tangent);
   #endif
+	if (LeafFlutterEnabled())
+		normal = LeafFlutterNormal(normal, leafBands, leafWeight);
 
 #if defined(USE_LIGHT_VECTOR)
 	vec3 L = u_LocalLightOrigin.xyz;
@@ -656,6 +673,7 @@ uniform vec4 u_NormalScale;
 uniform vec4 u_SpecularScale;
 // r_autoPBRDebug (tr_autopbr.cpp): rgb = material class / source color, a = 1 when on
 uniform vec4 u_MaterialDebug;
+uniform float u_LeafFlutterDebug;	// r_leafFlutterDebug 8: color by var_LeafFlutter
 
 #if defined(USE_WETNESS) && defined(PER_PIXEL_LIGHTING)
 // rain wetness, tr_weather.cpp RB_WeatherWetnessBind
@@ -690,6 +708,7 @@ uniform int u_AlphaTestType;
 
 in vec4 var_TexCoords;
 in vec4 var_Color;
+in float var_LeafFlutter;
 
 #if defined(PER_PIXEL_LIGHTING)
 in vec4 var_Normal;
@@ -3472,9 +3491,13 @@ void main()
 
 	// r_autoPBRDebug 1-2, flat color with a little view facing shading so the
 	// shape stays readable; written unlit (tone mapping is bypassed)
+	// r_leafFlutterDebug 4 / 8 use the same view (tr_leafflutter.cpp)
 	if (u_MaterialDebug.a > 0.0)
 	{
-		out_Color = vec4(u_MaterialDebug.rgb * (0.35 + 0.65 * NE), diffuse.a);
+		vec3 debugColor = u_MaterialDebug.rgb;
+		if (u_LeafFlutterDebug == 8.0)
+			debugColor = mix(vec3(0.05, 0.1, 0.8), vec3(1.0, 0.85, 0.1), var_LeafFlutter);
+		out_Color = vec4(debugColor * (0.35 + 0.65 * NE), diffuse.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, diffuse.a);
     #if defined(USE_SSR) && defined(USE_SPECULARMAP)
 		out_SSRSpecular = vec4(0.0);

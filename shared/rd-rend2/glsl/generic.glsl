@@ -100,6 +100,7 @@ uniform vec4 u_LightOrigin;
 
 out vec2 var_DiffuseTex;
 out vec4 var_Color;
+out float var_LeafFlutter;	// r_leafFlutterDebug 8: displacement magnitude
 #if defined(USE_FOG)
 out vec3 var_WSPosition;
 #endif
@@ -453,6 +454,19 @@ void main()
 #endif
 
 	vec4 wsPosition = u_ModelMatrix * vec4(position, 1.0);
+
+	// r_leafFlutter: FOLIAGE_LEAF surfaces only (leaf_flutter.glsl). Vertex
+	// lit, so only the position moves.
+	var_LeafFlutter = 0.0;
+	if (LeafFlutterEnabled())
+	{
+		vec2 leafBands;
+		vec3 leafOffset = LeafFlutterOffset(wsPosition.xyz, LeafFlutterSeed(u_ModelMatrix[3].xyz),
+			u_LeafFlutterParams.x, LeafFlutterWeight(position), leafBands);
+		wsPosition.xyz += leafOffset;
+		var_LeafFlutter = LeafFlutterMagnitude(leafOffset);
+	}
+
 	gl_Position = u_viewProjectionMatrix * wsPosition;
 
 #if defined(USE_TCGEN)
@@ -560,9 +574,11 @@ uniform vec4 u_EmissiveParams;
 // r_autoPBRDebug (tr_autopbr.cpp): a = 1 marks a lit stage that is still
 // vertex lit here instead of lightall, drawn as a flat rgb color
 uniform vec4 u_MaterialDebug;
+uniform float u_LeafFlutterDebug;	// r_leafFlutterDebug 8: color by var_LeafFlutter
 
 in vec2 var_DiffuseTex;
 in vec4 var_Color;
+in float var_LeafFlutter;
 #if defined(USE_FOG)
 in vec3 var_WSPosition;
 #endif
@@ -741,7 +757,10 @@ void main()
 	{
 		// keep the vertex lighting as shading so the shape stays readable
 		float shade = clamp(dot(var_Color.rgb, vec3(0.3333)), 0.0, 1.0);
-		out_Color = vec4(u_MaterialDebug.rgb * (0.35 + 0.65 * shade), color.a);
+		vec3 debugColor = u_MaterialDebug.rgb;
+		if (u_LeafFlutterDebug == 8.0)
+			debugColor = mix(vec3(0.05, 0.1, 0.8), vec3(1.0, 0.85, 0.1), var_LeafFlutter);
+		out_Color = vec4(debugColor * (0.35 + 0.65 * shade), color.a);
 		out_Glow = vec4(0.0, 0.0, 0.0, color.a);
 		return;
 	}

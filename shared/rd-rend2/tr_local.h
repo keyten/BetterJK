@@ -336,6 +336,11 @@ extern cvar_t  *r_foliageWindStrength;
 extern cvar_t  *r_foliageWindSpeed;
 extern cvar_t  *r_foliageWindDirection;
 extern cvar_t  *r_foliageWindDebug;
+extern cvar_t  *r_leafFlutter;
+extern cvar_t  *r_leafFlutterStrength;
+extern cvar_t  *r_leafFlutterSpeed;
+extern cvar_t  *r_leafFlutterNormal;
+extern cvar_t  *r_leafFlutterDebug;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 extern cvar_t  *r_diffuseIBL;
@@ -2057,6 +2062,9 @@ typedef enum
 	UNIFORM_AUTOGRASS,		// r_autoGrass: cards, lod distance, debug mode, width scale
 	UNIFORM_FOLIAGEWIND,	// r_foliageWind: wind dir x, y, amplitude, speed
 	UNIFORM_FOLIAGEWINDPARAMS,	// r_foliageWind: mode, debug, frozen time, frozen flag
+	UNIFORM_LEAFFLUTTER,		// r_leafFlutter: wind dir x, y, amplitude (0 = off), speed
+	UNIFORM_LEAFFLUTTERPARAMS,	// r_leafFlutter: time, previous time, 1 / model xy radius, normal amount
+	UNIFORM_LEAFFLUTTERDEBUG,	// r_leafFlutterDebug: 0, 4 = highlight, 8 = magnitude colour
 	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
@@ -4043,6 +4051,7 @@ struct shaderCommands_s
 
 	shader_t	*shader;
 	uint8_t foliageDebugClass; // color only when r_autoFoliageDebug is enabled
+	uint8_t leafFlutter;       // r_leafFlutter: this batch is a FOLIAGE_LEAF surface
 	float		shaderTime;
 	int			fogNum;
 	int         cubemapIndex;
@@ -4879,6 +4888,15 @@ foliageResult_t R_ResolveAutoFoliage(const mdvModel_t *model,
 const char *R_FoliageClassName(int cls);
 void R_FoliageDebugColor(int cls, vec4_t out);
 void R_PrintAutoFoliage_f(void);
+
+// tr_leafflutter.cpp
+class UniformDataWriter;
+bool R_LeafFlutterActive(void);
+bool R_LeafFlutterSurface(const drawSurf_t *drawSurf);
+float R_LeafFlutterCullMargin(const mdvModel_t *model);
+void RB_LeafFlutterBeginFrame(float currentTime, float previousTime);
+void RB_SetLeafFlutterUniforms(UniformDataWriter& writer, bool active);
+bool RB_LeafFlutterDebugColor(vec4_t color);
 void RB_AODebugOverlay(void);
 
 qboolean R_MotionBlurEnabled(void);
