@@ -242,6 +242,9 @@ PFNGLGETDEBUGMESSAGELOGARBPROC qglGetDebugMessageLogARB;
 
 // GL_ARB_timer_query
 PFNGLQUERYCOUNTERPROC qglQueryCounter;
+PFNGLGETPROGRAMBINARYPROC qglGetProgramBinary;
+PFNGLPROGRAMBINARYPROC qglProgramBinary;
+PFNGLPROGRAMPARAMETERIPROC qglProgramParameteri;
 PFNGLGETQUERYOBJECTI64VPROC qglGetQueryObjecti64v;
 PFNGLGETQUERYOBJECTUI64VPROC qglGetQueryObjectui64v;
 
@@ -696,6 +699,32 @@ void GLimp_InitExtensions()
 		glRefConfig.timerQuery = loaded;
 
 		ri.Printf(PRINT_ALL, result[loaded], extension);
+	}
+
+	// GL_ARB_get_program_binary (core in 4.1): r_glslCache, tr_glsl.cpp
+	extension = "GL_ARB_get_program_binary";
+	glRefConfig.programBinary = qfalse;
+	if ( GLimp_HaveExtension( extension ) )
+	{
+		qboolean loaded = qtrue;
+
+		loaded = (qboolean)(loaded && GetGLFunction(qglGetProgramBinary, "glGetProgramBinary", qfalse));
+		loaded = (qboolean)(loaded && GetGLFunction(qglProgramBinary, "glProgramBinary", qfalse));
+		loaded = (qboolean)(loaded && GetGLFunction(qglProgramParameteri, "glProgramParameteri", qfalse));
+
+		// a driver may expose the entry points without any binary format
+		GLint numFormats = 0;
+		if ( loaded )
+			qglGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &numFormats);
+		loaded = (qboolean)(loaded && numFormats > 0);
+
+		glRefConfig.programBinary = loaded;
+
+		ri.Printf(PRINT_ALL, result[loaded], extension);
+	}
+	else
+	{
+		ri.Printf(PRINT_ALL, result[2], extension);
 	}
 
 	extension = "GL_KHR_debug";

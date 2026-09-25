@@ -24,6 +24,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_allocator.h"
 #include "glsl_shaders.h"
 
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
+
 void GLSL_BindNullProgram(void);
 
 const uniformBlockInfo_t uniformBlocksInfo[UNIFORM_BLOCK_COUNT] = {
@@ -832,6 +836,276 @@ GLenum ToGLShaderType( GPUShaderType type )
 	return 0;
 }
 
+/*
+=============================================================
+
+GLSL PROGRAM CACHE (r_glslCache), see docs/rend2-shader-cache.md
+
+Linked program binaries (GL_ARB_get_program_binary), one file per renderer
+in the home path. The key is a hash of the complete stage sources, which
+already contain every #define derived from latched cvars: each cvar
+combination gets its own entries, and the programs of the other combinations
+stay in the file. The whole file is ignored after a driver change (vendor /
+renderer / version string), a rejected binary is compiled again.
+
+=============================================================
+*/
+
+#define GLSL_CACHE_MAGIC	0x43473252u	// "R2GC"
+#define GLSL_CACHE_VERSION	1u
+#define GLSL_CACHE_MAX_AGE	16u			// rewrites an unused entry survives
+
+#ifdef REND2_SP
+#define GLSL_CACHE_FILE		"glslcache/rend2_sp.bin"
+#else
+#define GLSL_CACHE_FILE		"glslcache/rend2_mp.bin"
+#endif
+
+struct glslCacheFileHeader_t
+{
+	uint32_t magic;
+	uint32_t version;
+	uint64_t driverHash;
+	uint32_t generation;	// incremented by every rewrite
+	uint32_t numEntries;
+};
+
+struct glslCacheFileEntry_t
+{
+	uint64_t key;
+	uint32_t format;
+	uint32_t length;
+	uint32_t lastUsed;		// generation of the last rewrite that saw it used
+	uint32_t pad;
+};
+
+struct glslCacheEntry_t
+{
+	GLenum format;
+	uint32_t lastUsed;
+	std::vector<uint8_t> data;
+};
+
+static struct
+{
+	bool enabled;
+	bool dirty;				// rewrite the file at the end of GLSL_LoadGPUShaders
+	uint64_t driverHash;
+	uint32_t generation;	// generation written by this run
+	std::unordered_map<uint64_t, glslCacheEntry_t> entries;
+	int hits;
+	int stored;
+	int rejected;
+	size_t fileSize;
+} s_glslCache;
+
+static const uint64_t GLSL_HASH_SEED = 14695981039346656037ull;	// FNV-1a 64
+
+static uint64_t GLSL_HashBytes( uint64_t hash, const void *data, size_t length )
+{
+	const uint8_t *bytes = (const uint8_t *)data;
+	for ( size_t i = 0; i < length; ++i )
+	{
+		hash ^= bytes[i];
+		hash *= 1099511628211ull;
+	}
+	return hash;
+}
+
+static uint64_t GLSL_HashString( uint64_t hash, const char *text )
+{
+	if ( !text )
+		text = "";
+	return GLSL_HashBytes(hash, text, strlen(text) + 1);
+}
+
+static void GLSL_CacheBegin( void )
+{
+	s_glslCache.entries.clear();
+	s_glslCache.dirty = false;
+	s_glslCache.hits = 0;
+	s_glslCache.stored = 0;
+	s_glslCache.rejected = 0;
+	s_glslCache.fileSize = 0;
+	s_glslCache.generation = 1;
+	s_glslCache.enabled = r_glslCache->integer && glRefConfig.programBinary;
+	if ( !s_glslCache.enabled )
+		return;
+
+	uint64_t driverHash = GLSL_HashString(GLSL_HASH_SEED, glConfig.vendor_string);
+	driverHash = GLSL_HashString(driverHash, glConfig.renderer_string);
+	driverHash = GLSL_HashString(driverHash, glConfig.version_string);
+	s_glslCache.driverHash = driverHash;
+
+	void *buffer = nullptr;
+	const long fileLength = ri.FS_ReadFile(GLSL_CACHE_FILE, &buffer);
+	if ( fileLength <= 0 || !buffer )
+		return;
+
+	// never trust the file: every size is checked against what is left
+	const uint8_t *data = (const uint8_t *)buffer;
+	size_t offset = 0;
+	glslCacheFileHeader_t header;
+	bool valid = (size_t)fileLength >= sizeof(header);
+	if ( valid )
+	{
+		memcpy(&header, data, sizeof(header));
+		offset = sizeof(header);
+		valid = header.magic == GLSL_CACHE_MAGIC && header.version == GLSL_CACHE_VERSION;
+	}
+
+	if ( !valid )
+		ri.Printf(PRINT_WARNING, "GLSL cache: %s is not a cache file of this renderer, rebuilding it\n", GLSL_CACHE_FILE);
+	else if ( header.driverHash != driverHash )
+	{
+		ri.Printf(PRINT_ALL, "GLSL cache: graphics driver changed, rebuilding %s\n", GLSL_CACHE_FILE);
+		valid = false;
+	}
+
+	if ( valid )
+	{
+		s_glslCache.generation = header.generation + 1;
+		for ( uint32_t i = 0; i < header.numEntries; ++i )
+		{
+			glslCacheFileEntry_t fileEntry;
+			if ( (size_t)fileLength - offset < sizeof(fileEntry) )
+				break;
+			memcpy(&fileEntry, data + offset, sizeof(fileEntry));
+			offset += sizeof(fileEntry);
+			if ( fileEntry.length == 0 || (size_t)fileLength - offset < fileEntry.length )
+				break;
+
+			glslCacheEntry_t& entry = s_glslCache.entries[fileEntry.key];
+			entry.format = fileEntry.format;
+			entry.lastUsed = fileEntry.lastUsed;
+			entry.data.assign(data + offset, data + offset + fileEntry.length);
+			offset += fileEntry.length;
+		}
+
+		if ( s_glslCache.entries.size() != header.numEntries )
+		{
+			ri.Printf(PRINT_WARNING, "GLSL cache: %s is truncated, keeping %d of %u programs\n",
+				GLSL_CACHE_FILE, (int)s_glslCache.entries.size(), header.numEntries);
+			s_glslCache.dirty = true;
+		}
+		s_glslCache.fileSize = (size_t)fileLength;
+	}
+	else
+	{
+		s_glslCache.dirty = true;
+	}
+
+	ri.FS_FreeFile(buffer);
+}
+
+static glslCacheEntry_t *GLSL_CacheFind( uint64_t key )
+{
+	if ( !s_glslCache.enabled )
+		return nullptr;
+	auto it = s_glslCache.entries.find(key);
+	return it != s_glslCache.entries.end() ? &it->second : nullptr;
+}
+
+static void GLSL_CacheMarkUsed( glslCacheEntry_t *entry )
+{
+	// refresh entries before they age out, even when nothing else changed
+	if ( s_glslCache.generation - entry->lastUsed > GLSL_CACHE_MAX_AGE / 2 )
+		s_glslCache.dirty = true;
+	entry->lastUsed = s_glslCache.generation;
+}
+
+static void GLSL_CacheStore( uint64_t key, GLuint program )
+{
+	GLint length = 0;
+	qglGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &length);
+	if ( length <= 0 )
+		return;
+
+	std::vector<uint8_t> data((size_t)length);
+	GLsizei written = 0;
+	GLenum format = 0;
+	qglGetProgramBinary(program, length, &written, &format, data.data());
+	if ( written <= 0 )
+		return;
+	data.resize((size_t)written);
+
+	glslCacheEntry_t& entry = s_glslCache.entries[key];
+	entry.format = format;
+	entry.lastUsed = s_glslCache.generation;
+	entry.data.swap(data);
+	s_glslCache.stored++;
+	s_glslCache.dirty = true;
+}
+
+static void GLSL_CacheEnd( void )
+{
+	if ( !s_glslCache.enabled )
+		return;
+
+	// drop programs of cvar combinations / sources not used for a while
+	for ( auto it = s_glslCache.entries.begin(); it != s_glslCache.entries.end(); )
+	{
+		if ( s_glslCache.generation - it->second.lastUsed > GLSL_CACHE_MAX_AGE )
+		{
+			it = s_glslCache.entries.erase(it);
+			s_glslCache.dirty = true;
+		}
+		else
+			++it;
+	}
+
+	// size limit: least recently used first
+	size_t total = sizeof(glslCacheFileHeader_t);
+	for ( const auto& it : s_glslCache.entries )
+		total += sizeof(glslCacheFileEntry_t) + it.second.data.size();
+	const size_t maxBytes = (size_t)Com_Clampi(16, 4096, r_glslCacheMaxMB->integer) * 1024 * 1024;
+	if ( total > maxBytes )
+	{
+		std::vector<std::pair<uint32_t, uint64_t>> byAge;
+		for ( const auto& it : s_glslCache.entries )
+			byAge.emplace_back(it.second.lastUsed, it.first);
+		std::sort(byAge.begin(), byAge.end());
+		for ( size_t i = 0; i < byAge.size() && total > maxBytes; ++i )
+		{
+			const glslCacheEntry_t& entry = s_glslCache.entries[byAge[i].second];
+			total -= sizeof(glslCacheFileEntry_t) + entry.data.size();
+			s_glslCache.entries.erase(byAge[i].second);
+		}
+		s_glslCache.dirty = true;
+	}
+
+	if ( s_glslCache.dirty )
+	{
+		std::vector<uint8_t> file;
+		file.reserve(total);
+
+		glslCacheFileHeader_t header = {};
+		header.magic = GLSL_CACHE_MAGIC;
+		header.version = GLSL_CACHE_VERSION;
+		header.driverHash = s_glslCache.driverHash;
+		header.generation = s_glslCache.generation;
+		header.numEntries = (uint32_t)s_glslCache.entries.size();
+		file.insert(file.end(), (const uint8_t *)&header, (const uint8_t *)(&header + 1));
+
+		for ( const auto& it : s_glslCache.entries )
+		{
+			glslCacheFileEntry_t fileEntry = {};
+			fileEntry.key = it.first;
+			fileEntry.format = it.second.format;
+			fileEntry.length = (uint32_t)it.second.data.size();
+			fileEntry.lastUsed = it.second.lastUsed;
+			file.insert(file.end(), (const uint8_t *)&fileEntry, (const uint8_t *)(&fileEntry + 1));
+			file.insert(file.end(), it.second.data.begin(), it.second.data.end());
+		}
+
+		ri.FS_WriteFile(GLSL_CACHE_FILE, file.data(), (int)file.size());
+		s_glslCache.fileSize = file.size();
+	}
+
+	// the binaries are not needed after loading
+	std::unordered_map<uint64_t, glslCacheEntry_t>().swap(s_glslCache.entries);
+}
+
 class ShaderProgramBuilder
 {
 	public:
@@ -851,6 +1125,14 @@ class ShaderProgramBuilder
 	private:
 		static const size_t MAX_SHADER_SOURCE_LEN = 16384;
 
+		// stage sources are compiled in Build, unless the program cache has them
+		struct PendingShader
+		{
+			GLenum apiShader;
+			GPUShaderType type;
+			std::string source;
+		};
+
 		void ReleaseShaders();
 
 		const char *name;
@@ -860,6 +1142,8 @@ class ShaderProgramBuilder
 		GLuint shaderNames[GPUSHADER_TYPE_COUNT];
 		size_t numShaderNames;
 		std::string shaderSource;
+		std::vector<PendingShader> pendingShaders;
+		uint64_t cacheKey;
 };
 
 ShaderProgramBuilder::ShaderProgramBuilder()
@@ -869,6 +1153,7 @@ ShaderProgramBuilder::ShaderProgramBuilder()
 	, shaderNames()
 	, numShaderNames(0)
 	, shaderSource(MAX_SHADER_SOURCE_LEN, '\0')
+	, cacheKey(GLSL_HASH_SEED)
 {
 }
 
@@ -890,6 +1175,11 @@ void ShaderProgramBuilder::Start(
 	this->name = name;
 	this->attribs = attribs;
 	this->xfbVariables = xfbVariables;
+
+	pendingShaders.clear();
+	uint32_t keyData[3] = { GLSL_CACHE_VERSION, attribs, xfbVariables };
+	cacheKey = GLSL_HashString(GLSL_HASH_SEED, name);
+	cacheKey = GLSL_HashBytes(cacheKey, keyData, sizeof(keyData));
 }
 
 bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const char *extra, const GPUShaderDesc *library )
@@ -947,25 +1237,13 @@ bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const cha
 		return false;
 	}
 
-	const GLuint shader = GLSL_CompileGPUShader(
-		program,
-		shaderSource.c_str(),
-		sourceLen + headerLen,
-		apiShader);
-	if ( shader == 0 )
-	{
-		ri.Printf(
-			PRINT_ALL,
-			"ShaderProgramBuilder::AddShader: Unable to load \"%s\"\n",
-			name);
-		return false;
-	}
-
-	if (glRefConfig.annotateResources) qglObjectLabel(GL_SHADER, shader, -1, va("%s_%i", name, shaderDesc.type));
-	if (glRefConfig.annotateResources) qglObjectLabel(GL_PROGRAM, program, -1, name);
-
-	qglAttachShader(program, shader);
-	shaderNames[numShaderNames++] = shader;
+	PendingShader pending;
+	pending.apiShader = apiShader;
+	pending.type = shaderDesc.type;
+	pending.source.assign(shaderSource.c_str(), sourceLen + headerLen);
+	cacheKey = GLSL_HashBytes(cacheKey, &apiShader, sizeof(apiShader));
+	cacheKey = GLSL_HashBytes(cacheKey, pending.source.data(), pending.source.size());
+	pendingShaders.push_back(std::move(pending));
 
 	return true;
 }
@@ -976,14 +1254,76 @@ bool ShaderProgramBuilder::Build( shaderProgram_t *shaderProgram )
 	shaderProgram->name = (char *)R_Malloc(nameBufferSize, TAG_GENERAL);
 	Q_strncpyz(shaderProgram->name, name, nameBufferSize);
 
-	shaderProgram->program = program;
 	shaderProgram->attribs = attribs;
 	shaderProgram->xfbVariables = xfbVariables;
 
-	GLSL_BindShaderInterface(shaderProgram);
-	GLSL_LinkProgram(shaderProgram->program);
+	// linked binary from the disk cache (attribute, output and transform
+	// feedback locations are part of it; block bindings and sampler units are
+	// set after loading, as for a compiled program)
+	bool loaded = false;
+	if ( glslCacheEntry_t *entry = GLSL_CacheFind(cacheKey) )
+	{
+		qglProgramBinary(program, entry->format, entry->data.data(), (GLsizei)entry->data.size());
+		GLint linked = GL_FALSE;
+		qglGetProgramiv(program, GL_LINK_STATUS, &linked);
+		if ( linked == GL_TRUE )
+		{
+			GLSL_CacheMarkUsed(entry);
+			s_glslCache.hits++;
+			loaded = true;
+		}
+		else
+		{
+			// e.g. a driver that rejects its own old binaries: compile it
+			while ( qglGetError() != GL_NO_ERROR )
+				;
+			s_glslCache.entries.erase(cacheKey);
+			s_glslCache.rejected++;
+			s_glslCache.dirty = true;
+			qglDeleteProgram(program);
+			program = qglCreateProgram();
+		}
+	}
+
+	if ( !loaded )
+	{
+		for ( const PendingShader& pending : pendingShaders )
+		{
+			const GLuint shader = GLSL_CompileGPUShader(
+				program,
+				pending.source.c_str(),
+				(int)pending.source.size(),
+				pending.apiShader);
+			if ( shader == 0 )
+			{
+				ri.Printf(
+					PRINT_ALL,
+					"ShaderProgramBuilder::Build: Unable to load \"%s\"\n",
+					name);
+				return false;
+			}
+
+			if (glRefConfig.annotateResources) qglObjectLabel(GL_SHADER, shader, -1, va("%s_%i", name, pending.type));
+
+			qglAttachShader(program, shader);
+			shaderNames[numShaderNames++] = shader;
+		}
+
+		shaderProgram->program = program;
+		GLSL_BindShaderInterface(shaderProgram);
+		if ( s_glslCache.enabled )
+			qglProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+		GLSL_LinkProgram(program);
+
+		if ( s_glslCache.enabled )
+			GLSL_CacheStore(cacheKey, program);
+	}
+
+	shaderProgram->program = program;
+	if (glRefConfig.annotateResources) qglObjectLabel(GL_PROGRAM, program, -1, name);
 
 	ReleaseShaders();
+	pendingShaders.clear();
 	program = 0;
 
 	return true;
@@ -3648,6 +3988,7 @@ void GLSL_LoadGPUShaders()
 
 	Allocator allocator(512 * 1024);
 	ShaderProgramBuilder builder;
+	GLSL_CacheBegin();
 
 	int numGenShaders = 0;
 	int numLightShaders = 0;
@@ -3685,9 +4026,18 @@ void GLSL_LoadGPUShaders()
 	if (r_smaa->integer)
 		numEtcShaders += GLSL_LoadGPUProgramSMAA(builder, allocator);
 
+	GLSL_CacheEnd();
+
 	ri.Printf(PRINT_ALL, "loaded %i GLSL shaders (%i gen %i light %i etc) in %5.2f seconds\n",
 		numGenShaders + numLightShaders + numEtcShaders, numGenShaders, numLightShaders,
 		numEtcShaders, (ri.Milliseconds() - startTime) / 1000.0);
+	if ( s_glslCache.enabled )
+		ri.Printf(PRINT_ALL, "GLSL cache: %i from %s, %i compiled and stored, %i rejected, %.1f MB\n",
+			s_glslCache.hits, GLSL_CACHE_FILE, s_glslCache.stored, s_glslCache.rejected,
+			s_glslCache.fileSize / (1024.0 * 1024.0));
+	else
+		ri.Printf(PRINT_ALL, "GLSL cache: off (%s)\n",
+			r_glslCache->integer ? "no GL_ARB_get_program_binary" : "r_glslCache 0");
 }
 
 void GLSL_ShutdownGPUShaders(void)

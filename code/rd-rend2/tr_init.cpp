@@ -309,6 +309,9 @@ cvar_t  *r_diffuseIBL;
 cvar_t  *r_diffuseIBLStrength;
 cvar_t  *r_diffuseIBLDebug;
 
+cvar_t  *r_glslCache;
+cvar_t  *r_glslCacheMaxMB;
+
 cvar_t  *r_forwardPlus;
 cvar_t  *r_forwardPlusTileSize;
 cvar_t  *r_forwardPlusSlices;
@@ -2094,6 +2097,12 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_diffuseIBLDebug, 0, 5, qtrue );
 
 	// Forward+ / clustered dynamic lights (tr_forwardplus.cpp), off by default
+	// compiled GLSL program cache on disk (tr_glsl.cpp)
+	r_glslCache = ri_Cvar_Get_NoComm( "r_glslCache", "1", CVAR_ARCHIVE | CVAR_LATCH, "Keep compiled GLSL programs in glslcache/ so later starts skip compiling them (needs GL_ARB_get_program_binary)" );
+	ri.Cvar_CheckRange( r_glslCache, 0, 1, qtrue );
+	r_glslCacheMaxMB = ri_Cvar_Get_NoComm( "r_glslCacheMaxMB", "512", CVAR_ARCHIVE, "Size limit of the GLSL program cache file, least recently used programs are dropped first" );
+	ri.Cvar_CheckRange( r_glslCacheMaxMB, 16, 4096, qtrue );
+
 	r_forwardPlus = ri_Cvar_Get_NoComm( "r_forwardPlus", "0", CVAR_ARCHIVE, "Dynamic lights: 0 = legacy (32 lights, per surface masks), 1 = Forward+ clustered light lists (up to 256 lights)" );
 	ri.Cvar_CheckRange( r_forwardPlus, 0, 1, qtrue );
 	r_forwardPlusTileSize = ri_Cvar_Get_NoComm( "r_forwardPlusTileSize", "64", CVAR_ARCHIVE, "Forward+: screen tile size in pixels" );

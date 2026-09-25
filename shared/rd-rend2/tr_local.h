@@ -347,6 +347,9 @@ extern cvar_t  *r_diffuseIBL;
 extern cvar_t  *r_diffuseIBLStrength;
 extern cvar_t  *r_diffuseIBLDebug;
 
+extern cvar_t  *r_glslCache;
+extern cvar_t  *r_glslCacheMaxMB;
+
 extern cvar_t  *r_forwardPlus;
 extern cvar_t  *r_forwardPlusTileSize;
 extern cvar_t  *r_forwardPlusSlices;
@@ -3154,6 +3157,7 @@ typedef struct {
 
 	qboolean debugContext;
 	qboolean timerQuery;
+	qboolean programBinary;		// GL_ARB_get_program_binary with a binary format, r_glslCache
 
 	qboolean floatLightmap;
 

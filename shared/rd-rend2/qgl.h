@@ -616,6 +616,9 @@ extern PFNGLGETDEBUGMESSAGELOGARBPROC qglGetDebugMessageLogARB;
 
 // GL_ARB_timer_query
 extern PFNGLQUERYCOUNTERPROC qglQueryCounter;
+extern PFNGLGETPROGRAMBINARYPROC qglGetProgramBinary;
+extern PFNGLPROGRAMBINARYPROC qglProgramBinary;
+extern PFNGLPROGRAMPARAMETERIPROC qglProgramParameteri;
 extern PFNGLGETQUERYOBJECTI64VPROC qglGetQueryObjecti64v;
 extern PFNGLGETQUERYOBJECTUI64VPROC qglGetQueryObjectui64v;
 
