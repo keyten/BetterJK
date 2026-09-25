@@ -600,6 +600,54 @@ namespace
 		RB_AddDrawItem(backEndData->currentPass,
 			RB_CreateSortKey(item, 15, SS_SEE_THROUGH), item);
 	}
+
+	// r_rainStreaks: streaks follow the particle velocity relative to the
+	// camera. The velocity of the scene camera (not of a portal or mirror
+	// view; world units per ms, like the particle velocity) is measured once
+	// per frame and smoothed so frame time jitter does not shake the rain;
+	// teleports and respawns reset it.
+	const float RAIN_MAX_CAMERA_SPEED = 1.0f;
+
+	void RB_RainCameraVelocity(vec3_t velocity)
+	{
+		static vec3_t smoothed = {};
+		static vec3_t lastOrigin = {};
+		static int lastFrame = -1;
+		static bool valid = false;
+
+		if (lastFrame != backEndData->realFrameNumber)
+		{
+			const float dt = backEnd.refdef.frameTime;
+			vec3_t delta;
+			VectorSubtract(backEnd.refdef.vieworg, lastOrigin, delta);
+			const float speed = dt > 0.0f ? VectorLength(delta) / dt : 0.0f;
+			if (!valid || lastFrame != backEndData->realFrameNumber - 1 ||
+				!std::isfinite(speed) || dt <= 0.0f || dt > 250.0f || speed > 3.0f)
+			{
+				VectorClear(smoothed);
+			}
+			else
+			{
+				const float blend = 1.0f - expf(-dt / 80.0f);
+				for (int axis = 0; axis < 3; ++axis)
+					smoothed[axis] += (delta[axis] / dt - smoothed[axis]) * blend;
+				const float length = VectorLength(smoothed);
+				if (length > RAIN_MAX_CAMERA_SPEED)
+					VectorScale(smoothed, RAIN_MAX_CAMERA_SPEED / length, smoothed);
+			}
+			VectorCopy(backEnd.refdef.vieworg, lastOrigin);
+			lastFrame = backEndData->realFrameNumber;
+			valid = true;
+		}
+		VectorCopy(smoothed, velocity);
+	}
+
+	// Largest half length the rain geometry shader can produce (vertical),
+	// see EmitRain in weather.glsl: preset * cvar * variation * speed factor.
+	float RainMaxHalfLength(const weatherObject_t *weatherObject)
+	{
+		return std::fabs(weatherObject->size[1]) * r_rainStreakLength->value * 1.15f * 2.0f;
+	}
 }
 
 void R_InitWeatherForMap()
@@ -705,7 +753,14 @@ void R_LoadWeatherImages()
 		flags |= IMGFLAG_SRGB;
 
 	if (tr.weatherSystem->weatherSlots[WEATHER_RAIN].active)
+	{
 		tr.weatherSystem->weatherSlots[WEATHER_RAIN].drawImage = R_FindImageFile("gfx/world/rain.jpg", type, flags);
+		// r_rainLighting reads the merged light grid (built at load only
+		// for volumetric fog). Small, so built for every rain map, which
+		// keeps r_rainStreaks switchable at run time.
+		if (tr.world)
+			R_BuildLightGridColorTexture(tr.world);
+	}
 	if (tr.weatherSystem->weatherSlots[WEATHER_SNOW].active)
 		tr.weatherSystem->weatherSlots[WEATHER_SNOW].drawImage = R_FindImageFile("gfx/effects/snowflake1", type, flags);
 	if (tr.weatherSystem->weatherSlots[WEATHER_SPACEDUST].active)
@@ -1337,9 +1392,16 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 			weatherObject->fadeDistance
 		};
 
+		// r_rainStreaks: the rain slot alone switches to lit, premultiplied
+		// streaks; snow, spacedust, sand and fog keep the legacy path
+		const bool rainStreaks = weatherType == WEATHER_RAIN &&
+			r_rainStreaks->integer != 0 && tr.weatherSystem->depthMapValid;
+
 		int stateBits = weatherType == WEATHER_SAND ?
 			GLS_DEPTHFUNC_LESS | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA :
 			GLS_DEPTHFUNC_LESS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+		if (rainStreaks)
+			stateBits = GLS_DEPTHFUNC_LESS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
 
 		DrawItem item = {};
 
@@ -1367,17 +1429,51 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		const byte currentFrameScene = backEndData->currentFrame->currentScene;
 		const GLuint currentFrameUbo = backEndData->currentFrame->ubo[currentFrameScene];
 		const UniformBlockBinding uniformBlockBindings[] = {
-			{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA }
+			{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA },
+			{ currentFrameUbo, (size_t)tr.sceneUboOffset, UNIFORM_BLOCK_SCENE }
 		};
 		DrawItemSetUniformBlockBindings(item, uniformBlockBindings, frameAllocator);
+
+		// rain light: the merged light grid when the map has one, else the
+		// sun's ambient + half its direct light, else the legacy brightness
+		image_t *rainGrid = rainStreaks && tr.world->volumetricLightMaps[0] ?
+			tr.world->volumetricLightMaps[0] : nullptr;
+		vec4_t rainLight = { 1.0f, 1.0f, 1.0f, rainGrid ? 1.0f : 0.0f };
+		if (rainStreaks && !rainGrid)
+		{
+			vec3_t sunLight;
+			VectorMA(backEnd.refdef.sunAmbCol, 0.5f, backEnd.refdef.sunCol, sunLight);
+			if (sunLight[0] + sunLight[1] + sunLight[2] > 1e-3f)
+				VectorCopy(sunLight, rainLight);
+		}
 
 		SamplerBindingsWriter samplerBindingsWriter;
 		samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_SHADOWMAP);
 		samplerBindingsWriter.AddStaticImage(
 			weatherObject->drawImage != nullptr ? weatherObject->drawImage : tr.whiteImage,
 			TB_DIFFUSEMAP);
+		// always a 3D texture on the sampler3D unit, read only with a grid
+		samplerBindingsWriter.AddStaticImage(rainGrid ? rainGrid : tr.whiteImage3D, TB_LIGHTMAP);
 		item.samplerBindings = samplerBindingsWriter.Finish(
 			frameAllocator, &item.numSamplerBindings);
+
+		vec3_t cameraVelocity = {};
+		vec4_t rainStreak = {}, rainShade = {};
+		if (rainStreaks)
+		{
+			RB_RainCameraVelocity(cameraVelocity);
+			const image_t *rainImage = weatherObject->drawImage;
+			rainStreak[0] = r_rainStreakWidth->value;
+			rainStreak[1] = r_rainStreakLength->value;
+			rainStreak[2] = tr.weatherSystem->depthRangeWorld;
+			rainStreak[3] = (rainImage && (rainImage->flags & IMGFLAG_SRGB)) ? 1.0f : 0.0f;
+			rainShade[0] = r_rainOpacity->value;
+			rainShade[1] = r_rainLighting->value;
+			// world size of one pixel at distance 1
+			rainShade[2] = 2.0f * tanf(DEG2RAD(backEnd.viewParms.fovY) * 0.5f) /
+				(float)MAX(backEnd.viewParms.viewportHeight, 1);
+			rainShade[3] = (float)r_rainDebug->integer;
+		}
 
 		// The update shader now wraps local XY at +/-1000, so every VBO slot
 		// stays inside its nominal zone even when the camera remaps the slots.
@@ -1387,13 +1483,24 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		const float verticalVelocity = std::max(0.00001f,
 			weatherObject->minDownwardVelocity *
 			std::fabs(weatherObject->velocityOrientationScale));
-		const float tiltX = weatherObject->velocityOrientationScale != 0.0f ?
+		float tiltX = weatherObject->velocityOrientationScale != 0.0f ?
 			streakHeight * weatherObject->maxHorizontalVelocity[0] / verticalVelocity : 0.0f;
-		const float tiltY = weatherObject->velocityOrientationScale != 0.0f ?
+		float tiltY = weatherObject->velocityOrientationScale != 0.0f ?
 			streakHeight * weatherObject->maxHorizontalVelocity[1] / verticalVelocity : 0.0f;
-		const float marginX = streakWidth + tiltX + 8.0f;
-		const float marginY = streakWidth + tiltY + 8.0f;
-		const float marginZ = streakHeight + 8.0f +
+		float marginWidth = streakWidth;
+		float marginHeight = streakHeight;
+		if (rainStreaks)
+		{
+			// the rain geometry shader bounds its tilt at 3:1 and clamps the
+			// width to a pixel at most at the fade distance
+			marginHeight = RainMaxHalfLength(weatherObject);
+			tiltX = tiltY = 3.0f * marginHeight;
+			marginWidth = std::max(streakWidth * r_rainStreakWidth->value * 1.15f,
+				0.5f * weatherObject->fadeDistance * rainShade[2]);
+		}
+		const float marginX = marginWidth + tiltX + 8.0f;
+		const float marginY = marginWidth + tiltY + 8.0f;
+		const float marginZ = marginHeight + 8.0f +
 			weatherObject->maxVerticalVelocity * 50.0f;
 		const float mapHeight = tr.world->bmodels[0].bounds[1][2] -
 			tr.world->bmodels[0].bounds[0][2];
@@ -1463,6 +1570,21 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 				uniformDataWriter.SetUniformVec4(UNIFORM_COLOR, weatherObject->color);
 				uniformDataWriter.SetUniformVec4(UNIFORM_VIEWINFO, viewInfo);
 				uniformDataWriter.SetUniformMatrix4x4(UNIFORM_SHADOWMVP, tr.weatherSystem->weatherMVP);
+				// set for every draw: a uniform left out keeps the value of
+				// the previous weather type's draw
+				uniformDataWriter.SetUniformInt(UNIFORM_WEATHERTYPE, rainStreaks ? 1 : 0);
+				if (rainStreaks)
+				{
+					uniformDataWriter.SetUniformVec4(UNIFORM_RAINSTREAK, rainStreak);
+					uniformDataWriter.SetUniformVec4(UNIFORM_RAINSHADE, rainShade);
+					uniformDataWriter.SetUniformVec4(UNIFORM_RAINLIGHT, rainLight);
+					uniformDataWriter.SetUniformVec3(UNIFORM_CAMERAVELOCITY, cameraVelocity);
+					if (rainGrid)
+					{
+						uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDORIGIN, tr.world->lightGridOrigin);
+						uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDCELLINVERSESIZE, tr.world->lightGridInverseSize);
+					}
+				}
 				item.uniformData = uniformDataWriter.Finish(*backEndData->perFrameMemory);
 
 				item.draw.params.arrays.firstVertex = weatherObject->particleCount * zoneMapping[currentIndex];

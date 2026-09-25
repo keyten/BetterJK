@@ -506,6 +506,12 @@ cvar_t *r_debugContext;
 cvar_t *r_debugWeather;
 cvar_t *r_weatherCull;
 cvar_t *r_weatherDebugChunks;
+cvar_t *r_rainStreaks;
+cvar_t *r_rainStreakWidth;
+cvar_t *r_rainStreakLength;
+cvar_t *r_rainOpacity;
+cvar_t *r_rainLighting;
+cvar_t *r_rainDebug;
 
 cvar_t	*r_aspectCorrectFonts;
 
@@ -1737,6 +1743,23 @@ void R_Register( void )
 		"Cull weather chunks outside the camera frustum (0 draws all nine)");
 	r_weatherDebugChunks = ri.Cvar_Get("r_weatherDebugChunks", "0", 0,
 		"Draw weather chunk bounds and print mapping, visibility and particle counts (2 prints AABBs)");
+	r_rainStreaks = ri.Cvar_Get("r_rainStreaks", "0", CVAR_ARCHIVE,
+		"Rain streak rendering: 0 legacy additive, 1 lit premultiplied streaks sized by velocity with contact / near / sub-pixel fades");
+	r_rainStreakWidth = ri.Cvar_Get("r_rainStreakWidth", "1", CVAR_ARCHIVE,
+		"r_rainStreaks: streak width scale");
+	r_rainStreakLength = ri.Cvar_Get("r_rainStreakLength", "1", CVAR_ARCHIVE,
+		"r_rainStreaks: streak length scale (length also follows fall speed and wind)");
+	r_rainOpacity = ri.Cvar_Get("r_rainOpacity", "1", CVAR_ARCHIVE,
+		"r_rainStreaks: rain opacity scale");
+	r_rainLighting = ri.Cvar_Get("r_rainLighting", "1", CVAR_ARCHIVE,
+		"r_rainStreaks: 0 fixed tint (legacy brightness), 1 lit by the light grid and the sun");
+	r_rainDebug = ri.Cvar_Get("r_rainDebug", "0", CVAR_CHEAT,
+		"r_rainStreaks debug: 1 coverage, 2 distance fade (red near, blue far), 3 lighting factor, 4 weather depth contact, 5 particle variation");
+	ri.Cvar_CheckRange(r_rainStreakWidth, 0.25f, 4.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainStreakLength, 0.25f, 4.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainOpacity, 0.0f, 4.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainLighting, 0.0f, 1.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainDebug, 0, 5, qtrue);
 
 	r_picmip = ri.Cvar_Get ("r_picmip", "0", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	ri.Cvar_CheckRange( r_picmip, 0, 16, qtrue );

@@ -2179,6 +2179,12 @@ typedef enum
 	UNIFORM_SKINSETTINGS,	// skin SSS blur / composite, pass specific
 	UNIFORM_SKINSETTINGS2,	// skin SSS blur / composite, pass specific
 
+	UNIFORM_WEATHERTYPE,		// weather.glsl: 0 legacy particle (snow, dust, sand, fog), 1 rain streak (r_rainStreaks)
+	UNIFORM_RAINSTREAK,			// width scale, length scale, depth range of the weather map (world units), sRGB coverage (0/1)
+	UNIFORM_RAINSHADE,			// opacity, lighting mix, world size of a pixel at distance 1, debug mode
+	UNIFORM_RAINLIGHT,			// rgb = light without a grid, w = light grid valid (0/1)
+	UNIFORM_CAMERAVELOCITY,		// smoothed view origin velocity, world units per ms
+
 	UNIFORM_COUNT
 } uniform_t;
 
@@ -3820,6 +3826,12 @@ extern cvar_t	*r_debugContext;
 extern cvar_t	*r_debugWeather;
 extern cvar_t	*r_weatherCull;
 extern cvar_t	*r_weatherDebugChunks;
+extern cvar_t	*r_rainStreaks;
+extern cvar_t	*r_rainStreakWidth;
+extern cvar_t	*r_rainStreakLength;
+extern cvar_t	*r_rainOpacity;
+extern cvar_t	*r_rainLighting;
+extern cvar_t	*r_rainDebug;
 
 //====================================================================
 

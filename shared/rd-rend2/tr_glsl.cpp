@@ -248,6 +248,12 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_SkinKernel",			GLSL_VEC4, SKIN_SSS_MAX_TAPS },
 	{ "u_SkinSettings",			GLSL_VEC4, 1 },
 	{ "u_SkinSettings2",		GLSL_VEC4, 1 },
+
+	{ "u_WeatherType",			GLSL_INT, 1 },
+	{ "u_RainStreak",			GLSL_VEC4, 1 },
+	{ "u_RainShade",			GLSL_VEC4, 1 },
+	{ "u_RainLight",			GLSL_VEC4, 1 },
+	{ "u_CameraVelocity",		GLSL_VEC3, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
