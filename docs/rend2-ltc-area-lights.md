@@ -17,13 +17,14 @@ launched yet**: the in-game checks, GPU timings and screenshots below are still 
 | `r_ltcDebugLight` | -1 | map light highlighted in modes 5–7 (-1 = the nearest) |
 | `r_ltcIntensityScale` | 1 | radiance multiplier for all area lights |
 | `r_ltcStaticDiffuse` | 0 | also add diffuse for `static_specular` lights (their diffuse is normally baked) |
-| `r_ltcMaxLights` | 64 | map lights per scene, nearest first (dynamic lights are not counted) |
+| `r_ltcMaxLights` | 64 | map lights per scene, most important first: emitted power / distance² (dynamic lights are not counted) |
+| `r_ltcAutoAreaLights` | 1 | for maps without an `.arealights.json`: 0 off, 1 confident lamp shapes, 2 also loosely fitted ones (see "Automatic conversion"). Runs at map load only while `r_ltcAreaLights` is on |
 | `r_saberAreaLights` | 0 | sabers light as lines instead of a point light |
 
 There is no quality cvar, because the polygon integral takes no samples.
 
 Commands:
-- `r_reloadAreaLights` rereads the map file without restarting the map.
+- `r_reloadAreaLights` rereads the map file without restarting the map (or redoes the automatic conversion when there is no file).
 - `r_ltcList` lists the loaded lights with their IDs.
 - `r_ltcNearest` shows the nearest light.
 - `r_extractAreaLights` writes candidate lights (see below).
@@ -143,21 +144,69 @@ Rectangle fields:
 Line fields: `type` `"line"`, `start`, `end`, `radius`, plus the same color / intensity / range /
 mode fields.
 
-## Stock asset discovery and extraction
+## Automatic conversion of stock maps (`r_ltcAutoAreaLights`)
 
-- The parser now keeps `surfacelight` / `q3map_surfacelight` and `lightColor` / `q3map_lightRGB` in
-  `shader_t` (`surfaceLight`, `surfaceLightColor`). Nothing renders from them, so legacy behavior is
-  unchanged.
-- `r_extractAreaLights` takes the loaded map's `SF_FACE`/`SF_TRIANGLES` surfaces whose shader has a
-  surfacelight hint or a `glow` stage, skipping sky and nodraw.
-- It groups coplanar, vertex-connected triangles of one shader (union-find), fits the plane bounding
-  rectangle along the principal axis, and emits along the face normal.
-- Confidence = covered fraction of that rectangle. `"review": true` marks confidence < 0.8 or
-  glow-only (no surfacelight).
-- Intensity is `surfacelight / 300`, clamped. That is only a starting point: q3map values are not
-  radiance.
-- It writes `maps/<map>.arealights.generated.json`. That file is never loaded automatically, and
-  the BSP is never modified. Rename it to use it.
+Stock maps ship without a light file. Their lamps are still lit by the lightmap, so without area lights
+LTC does nothing on them. When a map has no `maps/<map>.arealights.json`, its lamps are converted at
+map load, in memory. The map is never changed. They become `static_specular` lights, so there is no
+double lighting: the lightmap has no specular, and these lights add only the highlight.
+
+What the stock data looks like, checked offline on 10 stock SP/MP maps with the same algorithm:
+- Almost no stock lamp sets `surfacelight`: only a few MP track lights do.
+- A lamp is a lightmapped surface plus an additive `glow` stage. Its mask texture is lit only where
+  the lamp is, often a thin strip or several spots inside a larger texture.
+- Models baked into the BSP often have glow maps with tiny details (ships, bridges, rings). Their
+  average brightness is 0.000–0.008.
+
+Algorithm (`R_FindAreaLightCandidates` in `tr_arealights.cpp`):
+1. Take shaders with a glow or emissive stage, or a surfacelight hint; skip sky and nodraw. Group
+   coplanar, vertex-connected triangles of one shader.
+2. Read back the emitting stage's texture once per image, as a mip level of at most 128×128 converted
+   to linear color. Sample the group in texture space, up to 96×96 samples: a sample inside a
+   triangle whose mask texel has luminance > 0.1 becomes a world point with that color (through the
+   triangle barycentrics).
+3. Split the lit samples into connected blobs (8-neighbour). Each blob is one light, so a texture
+   with two tubes or a row of bulbs gives one rectangle per tube or bulb.
+4. Fit the rectangle to the blob along its principal axis in the surface plane, with half a sample of
+   margin. It emits along the face normal.
+5. **Radiance** = blob power / rectangle area (sum of colors × area per sample, times the stage's
+   emissive color and scale or its constant color), capped at the brightest texel. This is the
+   brightness the lamp is drawn with, and it keeps its energy.
+6. **Confidence** = lit area / rectangle area.
+7. If the stage's texture coordinates move (tcMod, tcGen), the mask cannot be sampled: the whole
+   surface becomes the rectangle, with the texture average as its radiance.
+
+Acceptance:
+- **Rejected**: blinking or animated stages (rgbGen wave, animMap, deforms); lit area < 16 units²
+  (8 in mode 2); a side < 2 units; radiance < 0.02.
+- **Required confidence**: ≥ 0.6 in mode 1, ≥ 0.35 in mode 2.
+- Duplicate fragments are dropped.
+
+Offline result (mode 1): lamps are found as proper shapes. Examples:
+- `vjun/lights3` → 17.8×4 tube strips, confidence 0.93.
+- `hoth/lights_tube` → 112×48 panels.
+- `desert/s_light` → 38.6×3.2 strips.
+- MP track lights, street lamps, `hoth/light_ceiling`, `impdetention/light_blue`.
+
+Counts range from 0 (kor1, which has no lamps) to about 400 lights per map; t3_hevil has about 4000
+small light strips. Only `r_ltcMaxLights` of them are used per scene, chosen by importance.
+
+Remaining false positives are small real emitters: wall indicators, antenna lights, glowing panels.
+They are genuinely emissive, and their highlights are small.
+
+Brightness is only as right as the glow textures are. Adjust globally with `r_ltcIntensityScale`,
+or write a light file for a map.
+
+Cost: once per map load, only while `r_ltcAreaLights` is on. It is one texture readback per emitting
+image plus the sampling; the per-frame cost is a sort of the map's lights by importance.
+
+`r_extractAreaLights` writes the same candidates to `maps/<map>.arealights.generated.json` for
+review or hand tuning. `"review": false` marks the ones the automatic mode would take; the file also
+has `fittedToTexels`, `litArea`, `confidence` and `animated`. It is never loaded by itself; rename it
+to `<map>.arealights.json` to use it (a file always overrides the automatic mode).
+
+The shader parser keeps `surfacelight` / `q3map_surfacelight` and `lightColor` / `q3map_lightRGB`
+in `shader_t` as hints. Nothing renders from them, so legacy behavior is unchanged.
 
 ## Sabers
 
@@ -215,5 +264,5 @@ when off.
 - There are no area shadows and no volumetric scattering from area lights.
 - The specular LUT has a 9% mean error at grazing angles.
 - Vertex-lit surfaces are not lit by area lights.
-- Extracted intensities need hand tuning.
+- Automatic lights: brightness follows the glow textures; curved lamps (patches) and lamps without a glow stage are not found; only flat faces and triangle soups are scanned.
 - The `range` default is heuristic.

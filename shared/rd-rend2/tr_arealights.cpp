@@ -44,6 +44,8 @@ The LUTs (tr_ltc_data.h) come from tools/ltcfit, never fitted at startup.
 #include "tr_ltc_data.h"
 
 #include <algorithm>
+#include <array>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -66,6 +68,7 @@ struct mapAreaLight_t
 	float range;
 	qboolean twoSided;
 	int mode;					// AREAMODE_*
+	qboolean automatic;			// r_ltcAutoAreaLights, not from a file
 	char name[64];
 };
 
@@ -320,6 +323,10 @@ static qboolean R_ParseAreaLight( const char *obj, const char *end, int index, c
 	return qtrue;
 }
 
+static void R_AutoAreaLights( void );
+static void R_ClearImageAverages( void );
+
+// the map file when there is one, else r_ltcAutoAreaLights candidates
 static void R_LoadAreaLightFile( void )
 {
 	s_al.lights.clear();
@@ -333,7 +340,12 @@ static void R_LoadAreaLightFile( void )
 	union { char *c; void *v; } buffer;
 	const int length = ri.FS_ReadFile(fileName, &buffer.v);
 	if ( !buffer.c || length <= 0 )
+	{
+		if ( buffer.c )
+			ri.FS_FreeFile(buffer.v);
+		R_AutoAreaLights();
 		return;
+	}
 	const char *end = buffer.c + length;
 
 	const char *lights = nullptr;
@@ -372,6 +384,7 @@ void R_ClearAreaLights( void )
 	s_al.selected = -1;
 	s_al.debugShader = 0;
 	s_al.unitsChecked = qfalse;
+	R_ClearImageAverages();
 }
 
 void R_ReloadAreaLights_f( void )
@@ -383,7 +396,8 @@ void R_ReloadAreaLights_f( void )
 	}
 	R_LoadAreaLightFile();
 	if ( s_al.lights.empty() )
-		ri.Printf(PRINT_ALL, "maps/%s.arealights.json: none loaded\n", s_al.mapName);
+		ri.Printf(PRINT_ALL, "maps/%s.arealights.json: none loaded (r_ltcAutoAreaLights %d)\n",
+			s_al.mapName, r_ltcAutoAreaLights->integer);
 }
 
 /*
@@ -466,9 +480,20 @@ void R_AddAreaLightsToScene( const refdef_t *fd )
 	order.reserve(numLights);
 	for ( int i = 0; i < numLights; i++ )
 	{
+		// most important first: emitted power over squared distance (lights
+		// the view is inside of rank by their size), so a big ceiling panel
+		// is not pushed out by small indicators next to the camera; lights
+		// whose sphere cannot reach the view origin's surroundings rank last
 		const mapAreaLight_t *l = &s_al.lights[i];
 		const float extent = l->range + sqrtf(l->halfWidth * l->halfWidth + l->halfHeight * l->halfHeight);
-		order.push_back(std::make_pair(Distance(fd->vieworg, l->center) - extent, i));
+		const float dist = Distance(fd->vieworg, l->center);
+		const float power = 4.0f * l->halfWidth * l->halfHeight * l->intensity *
+			(0.2126f * l->color[0] + 0.7152f * l->color[1] + 0.0722f * l->color[2]);
+		const float reach = Q_max(dist, 0.1f * l->range);
+		float score = power / (reach * reach);
+		if ( dist - extent > 0.5f * l->range )
+			score *= 0.01f;
+		order.push_back(std::make_pair(-score, i));
 	}
 	const int count = Q_min(maxLights, numLights);
 	std::partial_sort(order.begin(), order.begin() + count, order.end());
@@ -676,8 +701,8 @@ static void R_PrintMapLight( int i )
 {
 	const mapAreaLight_t *l = &s_al.lights[i];
 	ri.Printf(PRINT_ALL,
-		"%3d %-5s %-15s centre (%.1f %.1f %.1f) half %.1f x %.1f range %.0f color (%.2f %.2f %.2f) x %.2f%s %s\n",
-		i, l->type == DLIGHT_LINE ? "line" : "rect", s_modeNames[l->mode],
+		"%3d %-5s %-15s%s centre (%.1f %.1f %.1f) half %.1f x %.1f range %.0f color (%.2f %.2f %.2f) x %.2f%s %s\n",
+		i, l->type == DLIGHT_LINE ? "line" : "rect", s_modeNames[l->mode], l->automatic ? " auto" : "",
 		l->center[0], l->center[1], l->center[2], l->halfWidth, l->halfHeight, l->range,
 		l->color[0], l->color[1], l->color[2], l->intensity, l->twoSided ? " two sided" : "", l->name);
 }
@@ -706,25 +731,80 @@ void R_AreaLightsNearest_f( void )
 /*
 ============================================================
 
-r_extractAreaLights: candidate lights from the emissive surfaces of the
-loaded map (surfacelight / q3map_surfacelight hints, glow stages), written to
-maps/<map>.arealights.generated.json for review. Never loaded by itself and
-never changes the map; rename it to <map>.arealights.json to use it.
+Candidates from the emissive surfaces of the loaded map: used by
+r_ltcAutoAreaLights (in memory, at map load, when the map has no
+.arealights.json) and by r_extractAreaLights (written for review, never
+loaded by itself; the map is never changed).
 
-Coplanar, connected triangles of the same shader form one candidate; the
-rectangle is the bounding box in the plane along the principal axis. The
-confidence is the covered fraction of that rectangle.
+Stock JA lamps are a lightmapped surface plus an additive "glow" stage
+whose mask texture is lit only where the lamp is (often a thin strip of a
+larger texture); surfacelight is almost never set. So:
+  1. emitting shaders: glow or emissive stage, or a surfacelight hint;
+     sky and nodraw excluded
+  2. coplanar, vertex connected triangles of one shader form a group
+  3. the group is sampled in texture space: samples inside its triangles
+     whose mask texel is lit become world points (through the triangle
+     barycentrics), with their linear color
+  4. the rectangle is fitted to the lit points (principal axis in the
+     plane), emitting along the face normal
+  5. radiance = lit power / rectangle area (sum of lit colors times the
+     area per sample), so a strip of a big texture keeps its energy;
+     confidence = lit area / rectangle area
+Stages whose texture coordinates move (tcMod, tcGen) cannot be sampled:
+the whole group is the rectangle with the texture average as radiance.
+
+The mask is a small mip level read back once per image, at map load.
 
 ============================================================
 */
+
+#define AUTO_LIT_LUMINANCE		0.1f	// linear: a mask texel above this emits
+#define AUTO_MAX_SAMPLES		96		// per texture axis and group
+#define AUTO_MIN_LIT_AREA		16.0f	// square units: skip indicators and buttons
+#define AUTO_MIN_HALF_SIZE		1.0f
+#define AUTO_CONFIDENCE			0.6f	// r_ltcAutoAreaLights 1
+#define AUTO_CONFIDENCE_WIDE	0.35f	// r_ltcAutoAreaLights 2
+#define AUTO_MIN_RADIANCE		0.02f
 
 struct extractTri_t
 {
 	const shader_t *shader;
 	vec3_t v[3];
+	vec2_t st[3];
 	vec3_t normal;
 	float area;
 };
+
+struct litPoint_t
+{
+	vec3_t p;
+};
+
+struct areaCandidate_t
+{
+	mapAreaLight_t light;
+	const shader_t *shader;
+	float litArea;			// square units
+	float confidence;
+	qboolean hinted;		// surfacelight given
+	qboolean animated;		// blinking / pulsing / animMap / deformed emitter
+	qboolean sampled;		// fitted to the lit texels (else the whole surface)
+};
+
+struct imageMask_t
+{
+	int width, height;
+	std::vector<float> rgb;	// linear
+	vec3_t average;
+};
+
+static std::unordered_map<const image_t *, imageMask_t> s_imageMasks;
+
+// images die with the renderer
+static void R_ClearImageAverages( void )
+{
+	s_imageMasks.clear();
+}
 
 static int R_FindRoot( std::vector<int>& parent, int i )
 {
@@ -744,23 +824,339 @@ static qboolean R_ShaderEmits( const shader_t *sh, qboolean *hinted )
 	if ( *hinted )
 		return qtrue;
 	for ( int s = 0; s < MAX_SHADER_STAGES; s++ )
-		if ( sh->stages[s] && sh->stages[s]->active && sh->stages[s]->glow )
+		if ( sh->stages[s] && sh->stages[s]->active && (sh->stages[s]->glow || sh->stages[s]->emissive) )
 			return qtrue;
 	return qfalse;
 }
 
-void R_ExtractAreaLights_f( void )
+static float R_SrgbToLinear( float c )
 {
-	if ( !tr.world )
+	return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// linear colors of a mip level of at most 128 x 128; NULL = no data
+// (constant white for the white image)
+static const imageMask_t *R_ImageMask( image_t *image )
+{
+	if ( !image || (image->flags & IMGFLAG_CUBEMAP) )
+		return nullptr;
+	auto it = s_imageMasks.find(image);
+	if ( it != s_imageMasks.end() )
+		return it->second.width > 0 ? &it->second : nullptr;
+
+	imageMask_t& mask = s_imageMasks[image];
+	mask.width = mask.height = 0;
+	VectorSet(mask.average, 1.0f, 1.0f, 1.0f);
+
+	GL_Bind(image);
+	int level = -1, width = 0, height = 0;
+	for ( int l = 0; l < 16; l++ )
 	{
-		ri.Printf(PRINT_ALL, "r_extractAreaLights: no map loaded\n");
+		GLint w = 0, h = 0;
+		qglGetTexLevelParameteriv(GL_TEXTURE_2D, l, GL_TEXTURE_WIDTH, &w);
+		qglGetTexLevelParameteriv(GL_TEXTURE_2D, l, GL_TEXTURE_HEIGHT, &h);
+		if ( w <= 0 || h <= 0 )
+			break;
+		level = l;
+		width = w;
+		height = h;
+		if ( w <= 128 && h <= 128 )
+			break;
+	}
+	if ( level < 0 )
+		return nullptr;
+
+	std::vector<float> texels((size_t)width * height * 4);
+	qglGetTexImage(GL_TEXTURE_2D, level, GL_RGBA, GL_FLOAT, texels.data());
+	// float images hold linear values, the rest is sRGB authored
+	const qboolean linear = (qboolean)(image->internalFormat == GL_RGBA16F ||
+		image->internalFormat == GL_RGB16F || image->internalFormat == GL_RGBA32F);
+	mask.width = width;
+	mask.height = height;
+	mask.rgb.resize((size_t)width * height * 3);
+	double sum[3] = { 0.0, 0.0, 0.0 };
+	for ( int i = 0; i < width * height; i++ )
+		for ( int c = 0; c < 3; c++ )
+		{
+			const float v = texels[i * 4 + c];
+			const float lin = linear ? v : R_SrgbToLinear(Com_Clamp(0.0f, 1.0f, v));
+			mask.rgb[i * 3 + c] = lin;
+			sum[c] += lin;
+		}
+	for ( int c = 0; c < 3; c++ )
+		mask.average[c] = (float)(sum[c] / (width * height));
+	return &mask;
+}
+
+// the stage the lamp is drawn with, its image bundle and color multiplier
+struct emitterStage_t
+{
+	const shaderStage_t *stage;
+	int bundle;
+	vec3_t scale;
+	qboolean animated;
+	qboolean staticCoords;	// plain texture coordinates: the mask can be sampled
+};
+
+static qboolean R_ShaderEmitterStage( const shader_t *sh, emitterStage_t *out )
+{
+	Com_Memset(out, 0, sizeof(*out));
+	for ( int s = 0; s < MAX_SHADER_STAGES && !out->stage; s++ )
+	{
+		const shaderStage_t *st = sh->stages[s];
+		if ( st && st->active && st->emissive && st->bundle[TB_EMISSIVEMAP].image[0] )
+		{
+			out->stage = st;
+			out->bundle = TB_EMISSIVEMAP;
+		}
+	}
+	for ( int s = 0; s < MAX_SHADER_STAGES && !out->stage; s++ )
+	{
+		const shaderStage_t *st = sh->stages[s];
+		if ( st && st->active && st->glow )
+			out->stage = st;
+	}
+	// surfacelight hint only: the base texture, as the lamp is drawn
+	if ( !out->stage && sh->stages[0] && sh->stages[0]->active )
+		out->stage = sh->stages[0];
+	if ( !out->stage )
+		return qfalse;
+
+	const shaderStage_t *st = out->stage;
+	const textureBundle_t *b = &st->bundle[out->bundle];
+	VectorSet(out->scale, 1.0f, 1.0f, 1.0f);
+	if ( out->bundle == TB_EMISSIVEMAP )
+		VectorScale(st->emissiveColor, st->emissiveIntensity, out->scale);
+	else if ( st->rgbGen == CGEN_CONST )
+		VectorCopy(st->constantColor, out->scale);
+
+	out->animated = (qboolean)(st->rgbGen == CGEN_WAVEFORM || b->numImageAnimations > 1 || sh->numDeforms > 0);
+	out->staticCoords = (qboolean)(b->tcGen == TCGEN_TEXTURE && b->numTexMods == 0);
+	return qtrue;
+}
+
+// rectangle in the plane (normal) around the points, along their principal axis
+static void R_FitRect( const std::vector<const float *>& points, const vec3_t normal, float margin, mapAreaLight_t *l )
+{
+	vec3_t centroid = { 0.0f, 0.0f, 0.0f };
+	for ( const float *p : points )
+		VectorAdd(centroid, p, centroid);
+	VectorScale(centroid, 1.0f / points.size(), centroid);
+
+	vec3_t a1, a2;
+	PerpendicularVector(a1, normal);
+	CrossProduct(normal, a1, a2);
+	float cxx = 0, cxy = 0, cyy = 0;
+	for ( const float *p : points )
+	{
+		vec3_t d;
+		VectorSubtract(p, centroid, d);
+		const float x = DotProduct(d, a1), y = DotProduct(d, a2);
+		cxx += x * x; cxy += x * y; cyy += y * y;
+	}
+	const float angle = 0.5f * atan2f(2.0f * cxy, cxx - cyy);
+	VectorScale(a1, cosf(angle), l->right);
+	VectorMA(l->right, sinf(angle), a2, l->right);
+	CrossProduct(normal, l->right, l->up);	// cross(right, up) = normal
+
+	float minR = 1e30f, maxR = -1e30f, minU = 1e30f, maxU = -1e30f;
+	for ( const float *p : points )
+	{
+		vec3_t d;
+		VectorSubtract(p, centroid, d);
+		minR = Q_min(minR, DotProduct(d, l->right)); maxR = Q_max(maxR, DotProduct(d, l->right));
+		minU = Q_min(minU, DotProduct(d, l->up)); maxU = Q_max(maxU, DotProduct(d, l->up));
+	}
+	l->halfWidth = 0.5f * (maxR - minR) + margin;
+	l->halfHeight = 0.5f * (maxU - minU) + margin;
+	VectorMA(centroid, 0.5f * (maxR + minR), l->right, l->center);
+	VectorMA(l->center, 0.5f * (maxU + minU), l->up, l->center);
+	VectorMA(l->center, 0.25f, normal, l->center);	// off the lamp surface itself
+}
+
+// one candidate from the points of a lit region (sampled: blob of texel
+// samples of sampleArea each, else the surface corners with its area);
+// peak = brightest texel of the region, the radiance never exceeds it
+static void R_EmitCandidate( const areaCandidate_t& base, const std::vector<const float *>& points,
+	const vec3_t power, const vec3_t peak, float sampleArea, qboolean sampled, const vec3_t normal,
+	const vec3_t scale, std::vector<areaCandidate_t>& out )
+{
+	if ( points.size() < 3 )
+		return;
+	areaCandidate_t c = base;
+	mapAreaLight_t *l = &c.light;
+	c.sampled = sampled;
+	// a lit sample stands for a small square: half its side of margin
+	R_FitRect(points, normal, sampled ? 0.5f * sqrtf(sampleArea) : 0.0f, l);
+	if ( l->halfWidth < 0.5f || l->halfHeight < 0.5f )
+		return;
+
+	const float rectArea = 4.0f * l->halfWidth * l->halfHeight;
+	if ( sampled )
+		c.litArea = sampleArea * points.size();
+	c.confidence = Com_Clamp(0.0f, 1.0f, c.litArea / rectArea);
+
+	// radiance: lit power spread over the rectangle (a blob of a few samples
+	// can get a rectangle smaller than its samples: capped at the peak)
+	for ( int k = 0; k < 3; k++ )
+		l->color[k] = Q_min(power[k] * sampleArea / rectArea, peak[k]) * scale[k];
+	l->intensity = 1.0f;
+	l->mode = AREAMODE_STATIC_SPECULAR;
+	l->twoSided = qfalse;
+	l->range = R_AreaLightDefaultRange(l);
+	l->automatic = qtrue;
+	Q_strncpyz(l->name, c.shader->name, sizeof(l->name));
+	out.push_back(c);
+}
+
+static void R_BuildCandidate( const std::vector<extractTri_t>& tris, const std::vector<int>& members,
+	std::vector<areaCandidate_t>& out )
+{
+	const shader_t *sh = tris[members[0]].shader;
+
+	// plane: area weighted normal
+	vec3_t normal = { 0, 0, 0 };
+	float area = 0.0f;
+	for ( int m : members )
+	{
+		VectorMA(normal, tris[m].area, tris[m].normal, normal);
+		area += tris[m].area;
+	}
+	if ( area < 1.0f || VectorNormalize(normal) < 1e-4f )
+		return;
+
+	areaCandidate_t c;
+	Com_Memset(&c, 0, sizeof(c));
+	mapAreaLight_t *l = &c.light;
+	l->type = DLIGHT_RECT;
+	c.shader = sh;
+	R_ShaderEmits(sh, &c.hinted);
+
+	emitterStage_t emitter;
+	if ( !R_ShaderEmitterStage(sh, &emitter) )
+		return;
+	c.animated = emitter.animated;
+	image_t *image = emitter.stage->bundle[emitter.bundle].image[0];
+	const imageMask_t *mask = image == tr.whiteImage ? nullptr : R_ImageMask(image);
+
+	if ( mask && emitter.staticCoords )
+	{
+		// texture space bounds of the group
+		float smin = 1e30f, smax = -1e30f, tmin = 1e30f, tmax = -1e30f;
+		for ( int m : members )
+			for ( int k = 0; k < 3; k++ )
+			{
+				smin = Q_min(smin, tris[m].st[k][0]); smax = Q_max(smax, tris[m].st[k][0]);
+				tmin = Q_min(tmin, tris[m].st[k][1]); tmax = Q_max(tmax, tris[m].st[k][1]);
+			}
+		const int ns = Com_Clampi(4, AUTO_MAX_SAMPLES, (int)ceilf((smax - smin) * mask->width));
+		const int nt = Com_Clampi(4, AUTO_MAX_SAMPLES, (int)ceilf((tmax - tmin) * mask->height));
+
+		// sample grid: -1 outside the surface, 0 unlit, 1 lit
+		std::vector<signed char> state((size_t)ns * nt, -1);
+		std::vector<litPoint_t> points((size_t)ns * nt);
+		std::vector<litPoint_t> colors((size_t)ns * nt);
+		int inside = 0;
+		for ( int j = 0; j < nt; j++ )
+			for ( int i = 0; i < ns; i++ )
+			{
+				const float s = smin + (smax - smin) * (i + 0.5f) / ns;
+				const float t = tmin + (tmax - tmin) * (j + 0.5f) / nt;
+				for ( int m : members )
+				{
+					// barycentrics in texture space
+					const extractTri_t *tri = &tris[m];
+					const float d = (tri->st[1][1] - tri->st[2][1]) * (tri->st[0][0] - tri->st[2][0]) +
+						(tri->st[2][0] - tri->st[1][0]) * (tri->st[0][1] - tri->st[2][1]);
+					if ( fabsf(d) < 1e-10f )
+						continue;
+					const float b0 = ((tri->st[1][1] - tri->st[2][1]) * (s - tri->st[2][0]) +
+						(tri->st[2][0] - tri->st[1][0]) * (t - tri->st[2][1])) / d;
+					const float b1 = ((tri->st[2][1] - tri->st[0][1]) * (s - tri->st[2][0]) +
+						(tri->st[0][0] - tri->st[2][0]) * (t - tri->st[2][1])) / d;
+					const float b2 = 1.0f - b0 - b1;
+					if ( b0 < -1e-4f || b1 < -1e-4f || b2 < -1e-4f )
+						continue;
+
+					inside++;
+					const size_t cell = (size_t)j * ns + i;
+					const float fs = s - floorf(s), ft = t - floorf(t);
+					const int x = Com_Clampi(0, mask->width - 1, (int)(fs * mask->width));
+					const int y = Com_Clampi(0, mask->height - 1, (int)(ft * mask->height));
+					const float *rgb = &mask->rgb[((size_t)y * mask->width + x) * 3];
+					const float lum = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
+					state[cell] = lum > AUTO_LIT_LUMINANCE ? 1 : 0;
+					VectorScale(tri->v[0], b0, points[cell].p);
+					VectorMA(points[cell].p, b1, tri->v[1], points[cell].p);
+					VectorMA(points[cell].p, b2, tri->v[2], points[cell].p);
+					VectorCopy(rgb, colors[cell].p);
+					break;
+				}
+			}
+		if ( inside == 0 )
+			return;
+		const float sampleArea = area / inside;
+
+		// one light per connected lit blob (8-neighbours): a texture with two
+		// tubes or a row of bulbs gives one rectangle each, not one with gaps
+		std::vector<int> stack;
+		for ( size_t start = 0; start < state.size(); start++ )
+		{
+			if ( state[start] != 1 )
+				continue;
+			std::vector<const float *> blob;
+			vec3_t power = { 0.0f, 0.0f, 0.0f }, peak = { 0.0f, 0.0f, 0.0f };
+			state[start] = 2;
+			stack.push_back((int)start);
+			while ( !stack.empty() )
+			{
+				const int cell = stack.back();
+				stack.pop_back();
+				blob.push_back(points[cell].p);
+				VectorAdd(power, colors[cell].p, power);
+				for ( int k = 0; k < 3; k++ )
+					peak[k] = Q_max(peak[k], colors[cell].p[k]);
+				const int ci = cell % ns, cj = cell / ns;
+				for ( int dj = -1; dj <= 1; dj++ )
+					for ( int di = -1; di <= 1; di++ )
+					{
+						const int ni = ci + di, nj = cj + dj;
+						if ( ni < 0 || nj < 0 || ni >= ns || nj >= nt )
+							continue;
+						const int next = nj * ns + ni;
+						if ( state[next] == 1 )
+						{
+							state[next] = 2;
+							stack.push_back(next);
+						}
+					}
+			}
+			R_EmitCandidate(c, blob, power, peak, sampleArea, qtrue, normal, emitter.scale, out);
+		}
 		return;
 	}
 
+	// moving texture coordinates, or no image data: the whole surface
+	std::vector<const float *> corners;
+	for ( int m : members )
+		for ( int k = 0; k < 3; k++ )
+			corners.push_back(tris[m].v[k]);
+	vec3_t power = { 1.0f, 1.0f, 1.0f };
+	if ( mask )
+		VectorCopy(mask->average, power);
+	const vec3_t peak = { 1e30f, 1e30f, 1e30f };
+	VectorScale(power, area, power);
+	c.litArea = area;
+	R_EmitCandidate(c, corners, power, peak, 1.0f, qfalse, normal, emitter.scale, out);
+}
+
+static void R_FindAreaLightCandidates( const world_t *world, std::vector<areaCandidate_t>& out, int *numTriangles )
+{
+	out.clear();
 	std::vector<extractTri_t> tris;
-	for ( int s = 0; s < tr.world->numsurfaces; s++ )
+	for ( int s = 0; s < world->numsurfaces; s++ )
 	{
-		const msurface_t *surf = &tr.world->surfaces[s];
+		const msurface_t *surf = &world->surfaces[s];
 		qboolean hinted;
 		if ( !surf->shader || !surf->data || !R_ShaderEmits(surf->shader, &hinted) )
 			continue;
@@ -774,7 +1170,12 @@ void R_ExtractAreaLights_f( void )
 			extractTri_t t;
 			t.shader = surf->shader;
 			for ( int k = 0; k < 3; k++ )
-				VectorCopy(bsp->verts[bsp->indexes[i + k]].xyz, t.v[k]);
+			{
+				const srfVert_t *v = &bsp->verts[bsp->indexes[i + k]];
+				VectorCopy(v->xyz, t.v[k]);
+				t.st[k][0] = v->st[0];
+				t.st[k][1] = v->st[1];
+			}
 			vec3_t e1, e2;
 			VectorSubtract(t.v[1], t.v[0], e1);
 			VectorSubtract(t.v[2], t.v[0], e2);
@@ -784,6 +1185,7 @@ void R_ExtractAreaLights_f( void )
 				tris.push_back(t);
 		}
 	}
+	*numTriangles = (int)tris.size();
 
 	// union triangles of one shader and plane sharing a vertex
 	const int n = (int)tris.size();
@@ -811,81 +1213,88 @@ void R_ExtractAreaLights_f( void )
 		}
 	}
 
-	std::unordered_map<int, std::vector<int>> groups;
+	std::map<int, std::vector<int>> groups;	// ordered: the same output every run
 	for ( int i = 0; i < n; i++ )
 		groups[R_FindRoot(parent, i)].push_back(i);
+	for ( auto& group : groups )
+		R_BuildCandidate(tris, group.second, out);
+}
 
+static qboolean R_AutoAccepts( const areaCandidate_t *c, int mode )
+{
+	const mapAreaLight_t *l = &c->light;
+	if ( c->animated || c->litArea < AUTO_MIN_LIT_AREA * (mode >= 2 ? 0.5f : 1.0f) ||
+		l->halfWidth < AUTO_MIN_HALF_SIZE || l->halfHeight < AUTO_MIN_HALF_SIZE )
+	{
+		return qfalse;
+	}
+	if ( MAX(l->color[0], MAX(l->color[1], l->color[2])) < AUTO_MIN_RADIANCE )
+		return qfalse;
+	return (qboolean)(c->confidence >= (mode >= 2 ? AUTO_CONFIDENCE_WIDE : AUTO_CONFIDENCE));
+}
+
+// one lamp split in fragments of the same size: keep the first
+static qboolean R_AutoDuplicate( const mapAreaLight_t *l )
+{
+	for ( const mapAreaLight_t& o : s_al.lights )
+	{
+		const float d = DotProduct(o.right, l->right);
+		if ( Distance(o.center, l->center) < 4.0f && d * d > 0.98f &&
+			fabsf(o.halfWidth - l->halfWidth) < 2.0f && fabsf(o.halfHeight - l->halfHeight) < 2.0f )
+		{
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+static void R_AutoAreaLights( void )
+{
+	// latched r_ltcAreaLights: turning it on reloads the map (vid_restart),
+	// so maps loaded without it skip the scan and the texture readbacks
+	const int mode = r_ltcAutoAreaLights->integer;
+	if ( mode <= 0 || !r_ltcAreaLights->integer || !tr.world )
+		return;
+
+	std::vector<areaCandidate_t> candidates;
+	int numTriangles = 0;
+	R_FindAreaLightCandidates(tr.world, candidates, &numTriangles);
+
+	int skipped = 0;
+	for ( const areaCandidate_t& c : candidates )
+	{
+		if ( !R_AutoAccepts(&c, mode) || R_AutoDuplicate(&c.light) )
+		{
+			skipped++;
+			continue;
+		}
+		s_al.lights.push_back(c.light);
+	}
+	ri.Printf(PRINT_ALL, "r_ltcAutoAreaLights %d: %d area lights from %d emissive surfaces (%d skipped)\n",
+		mode, (int)s_al.lights.size(), (int)candidates.size(), skipped);
+}
+
+void R_ExtractAreaLights_f( void )
+{
+	if ( !tr.world )
+	{
+		ri.Printf(PRINT_ALL, "r_extractAreaLights: no map loaded\n");
+		return;
+	}
+
+	std::vector<areaCandidate_t> candidates;
+	int numTriangles = 0;
+	R_FindAreaLightCandidates(tr.world, candidates, &numTriangles);
+
+	const int autoMode = Q_max(1, r_ltcAutoAreaLights->integer);
 	std::string out = "{\n\t\"generator\": \"r_extractAreaLights\",\n\t\"lights\": [\n";
 	int numOut = 0, numReview = 0;
-	for ( auto& group : groups )
+	for ( const areaCandidate_t& c : candidates )
 	{
-		const std::vector<int>& members = group.second;
-		const shader_t *sh = tris[members[0]].shader;
-
-		// plane: area weighted normal and centroid
-		vec3_t normal = { 0, 0, 0 }, centroid = { 0, 0, 0 };
-		float area = 0.0f;
-		for ( int m : members )
-		{
-			const extractTri_t *t = &tris[m];
-			VectorMA(normal, t->area, t->normal, normal);
-			for ( int k = 0; k < 3; k++ )
-				VectorMA(centroid, t->area / 3.0f, t->v[k], centroid);
-			area += t->area;
-		}
-		if ( area < 16.0f || VectorNormalize(normal) < 1e-4f )
-			continue;
-		VectorScale(centroid, 1.0f / area, centroid);
-
-		// principal axis in the plane (2x2 covariance of the vertices)
-		vec3_t a1, a2;
-		PerpendicularVector(a1, normal);
-		CrossProduct(normal, a1, a2);
-		float cxx = 0, cxy = 0, cyy = 0;
-		for ( int m : members )
-			for ( int k = 0; k < 3; k++ )
-			{
-				vec3_t d;
-				VectorSubtract(tris[m].v[k], centroid, d);
-				const float x = DotProduct(d, a1), y = DotProduct(d, a2);
-				cxx += x * x; cxy += x * y; cyy += y * y;
-			}
-		const float angle = 0.5f * atan2f(2.0f * cxy, cxx - cyy);
-		vec3_t right, up;
-		VectorScale(a1, cosf(angle), right);
-		VectorMA(right, sinf(angle), a2, right);
-		CrossProduct(normal, right, up);		// cross(right, up) = normal: emits along the face normal
-
-		float minR = 1e30f, maxR = -1e30f, minU = 1e30f, maxU = -1e30f;
-		for ( int m : members )
-			for ( int k = 0; k < 3; k++ )
-			{
-				vec3_t d;
-				VectorSubtract(tris[m].v[k], centroid, d);
-				minR = Q_min(minR, DotProduct(d, right)); maxR = Q_max(maxR, DotProduct(d, right));
-				minU = Q_min(minU, DotProduct(d, up)); maxU = Q_max(maxU, DotProduct(d, up));
-			}
-		const float halfWidth = 0.5f * (maxR - minR), halfHeight = 0.5f * (maxU - minU);
-		if ( halfWidth < 1.0f || halfHeight < 1.0f )
-			continue;
-		vec3_t center;
-		VectorMA(centroid, 0.5f * (maxR + minR), right, center);
-		VectorMA(center, 0.5f * (maxU + minU), up, center);
-		VectorMA(center, 0.25f, normal, center);	// off the lamp surface itself
-
-		const float confidence = Com_Clamp(0.0f, 1.0f, area / (4.0f * halfWidth * halfHeight));
-		qboolean hinted;
-		R_ShaderEmits(sh, &hinted);
-		const qboolean review = (qboolean)(confidence < 0.8f || !hinted);
-
-		vec3_t color = { 1.0f, 1.0f, 1.0f };
-		if ( sh->surfaceLightColor[0] + sh->surfaceLightColor[1] + sh->surfaceLightColor[2] > 0.0f )
-			VectorCopy(sh->surfaceLightColor, color);
-		// q3map surfacelight is a light compiler value, not a radiance:
-		// a starting point for hand tuning
-		const float intensity = hinted ? Com_Clamp(0.1f, 20.0f, sh->surfaceLight / 300.0f) : 1.0f;
-
-		char entry[1024];
+		const mapAreaLight_t *l = &c.light;
+		// what r_ltcAutoAreaLights would take needs no review
+		const qboolean review = (qboolean)!R_AutoAccepts(&c, autoMode);
+		char entry[1400];
 		Com_sprintf(entry, sizeof(entry),
 			"%s\t\t{\n"
 			"\t\t\t\"type\": \"rect\",\n"
@@ -896,17 +1305,23 @@ void R_ExtractAreaLights_f( void )
 			"\t\t\t\"halfWidth\": %.2f,\n"
 			"\t\t\t\"halfHeight\": %.2f,\n"
 			"\t\t\t\"color\": [%.3f, %.3f, %.3f],\n"
-			"\t\t\t\"intensity\": %.3f,\n"
+			"\t\t\t\"intensity\": 1.0,\n"
+			"\t\t\t\"range\": %.0f,\n"
 			"\t\t\t\"mode\": \"static_specular\",\n"
 			"\t\t\t\"twoSided\": false,\n"
 			"\t\t\t\"surfacelight\": %.1f,\n"
+			"\t\t\t\"litArea\": %.1f,\n"
+			"\t\t\t\"fittedToTexels\": %s,\n"
+			"\t\t\t\"animated\": %s,\n"
 			"\t\t\t\"confidence\": %.2f,\n"
 			"\t\t\t\"review\": %s\n"
 			"\t\t}",
-			numOut ? ",\n" : "", sh->name,
-			center[0], center[1], center[2], right[0], right[1], right[2], up[0], up[1], up[2],
-			halfWidth, halfHeight, color[0], color[1], color[2], intensity, sh->surfaceLight,
-			confidence, review ? "true" : "false");
+			numOut ? ",\n" : "", c.shader->name,
+			l->center[0], l->center[1], l->center[2], l->right[0], l->right[1], l->right[2],
+			l->up[0], l->up[1], l->up[2], l->halfWidth, l->halfHeight,
+			l->color[0], l->color[1], l->color[2], l->range, c.shader->surfaceLight, c.litArea,
+			c.sampled ? "true" : "false", c.animated ? "true" : "false", c.confidence,
+			review ? "true" : "false");
 		out += entry;
 		numOut++;
 		if ( review )
@@ -918,5 +1333,5 @@ void R_ExtractAreaLights_f( void )
 	Com_sprintf(fileName, sizeof(fileName), "maps/%s.arealights.generated.json", tr.world->baseName);
 	ri.FS_WriteFile(fileName, out.c_str(), (int)out.size());
 	ri.Printf(PRINT_ALL, "%s: %d candidates (%d marked for review) from %d emissive triangles\n",
-		fileName, numOut, numReview, n);
+		fileName, numOut, numReview, numTriangles);
 }

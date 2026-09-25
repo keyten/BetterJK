@@ -4700,10 +4700,6 @@ world_t *R_LoadBSP(const char *name, int *bspIndex)
 		R_SetHeightFogBase(worldData);
 	}
 
-	// LTC area lights (maps/<map>.arealights.json), used with r_ltcAreaLights
-	if (bspIndex == nullptr)
-		R_LoadAreaLights(worldData->baseName);
-
 	// load cubemaps
 	if ((r_cubeMapping->integer || r_diffuseIBL->integer) && bspIndex == nullptr)
 	{
@@ -4840,6 +4836,10 @@ void RE_LoadWorldMap( const char *name ) {
 
 	tr.worldMapLoaded = qtrue;
 	tr.world = world;
+
+	// LTC area lights: maps/<map>.arealights.json, else r_ltcAutoAreaLights
+	// candidates from the emissive surfaces (used with r_ltcAreaLights)
+	R_LoadAreaLights(world->baseName);
 
 	R_UpdateFixedExposureLevel();
 	R_SetMapColorGrading(tr.worldName);

@@ -1989,6 +1989,7 @@ void R_Register( void )
 	r_ltcStaticDiffuse = ri.Cvar_Get( "r_ltcStaticDiffuse", "0", CVAR_ARCHIVE, "LTC area lights: also diffuse for static_specular map lights (their diffuse is usually baked in the lightmap)" );
 	r_ltcMaxLights = ri.Cvar_Get( "r_ltcMaxLights", "64", CVAR_ARCHIVE, "LTC area lights: map lights per scene, nearest first" );
 	ri.Cvar_CheckRange( r_ltcMaxLights, 0, MAX_RENDER_DLIGHTS, qtrue );
+	r_ltcAutoAreaLights = ri.Cvar_Get( "r_ltcAutoAreaLights", "1", CVAR_ARCHIVE, "LTC area lights from the emissive surfaces of maps without an .arealights.json (at map load, r_reloadAreaLights): 0 off, 1 confident lamp shapes, 2 also loosely fitted ones (glow / emissive / surfacelight surfaces)" );
 	r_saberAreaLights = ri.Cvar_Get( "r_saberAreaLights", "0", CVAR_ARCHIVE, "Saber blades light as LTC lines instead of a point light (requires r_ltcAreaLights 1)" );
 
 	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH, "Disable/enable normal mapping" );
