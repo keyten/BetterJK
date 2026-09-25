@@ -34,11 +34,28 @@ namespace
 	const float CHUNK_EXTENDS = 2000.f;
 	const float HALF_CHUNK_EXTENDS = CHUNK_EXTENDS * 0.5f;
 
+	// Interleaved transform feedback records, in the order of the XFB
+	// varyings (var_Position, var_Velocity[, var_Impact]); position is chunk
+	// local. Weather particles use rainVertex_t. With r_rainSplashes the rain
+	// slot switches to rainSplashVertex_t: impact is the drop's last impact
+	// in world space and its state (life, one impact per fall), see
+	// weatherUpdate.glsl. The splash draw reads it; an event driven ripple
+	// pass could read the same record.
 	struct rainVertex_t
 	{
 		vec3_t position;
 		vec3_t velocity;
 	};
+	struct rainSplashVertex_t
+	{
+		vec3_t position;
+		vec3_t velocity;
+		vec4_t impact;
+	};
+	static_assert(sizeof(rainVertex_t) == 24 && offsetof(rainVertex_t, velocity) == 12,
+		"rainVertex_t must match the interleaved weatherUpdate varyings");
+	static_assert(sizeof(rainSplashVertex_t) == 40 && offsetof(rainSplashVertex_t, impact) == 24,
+		"rainSplashVertex_t must match the interleaved weatherUpdate varyings");
 
 	void RB_UpdateWindObject( windObject_t *wo )
 	{
@@ -73,48 +90,96 @@ namespace
 		VectorAdd(wo->currentVelocity, deltaVelocity, wo->currentVelocity);
 	}
 
-	void GenerateRainModel( weatherObject_t& ws, const int maxParticleCount )
+	// Fresh particles, resting, at random heights, in the slot's layout.
+	std::vector<byte> RainParticles(const weatherObject_t& ws, size_t bufferSize)
 	{
-		std::vector<rainVertex_t> rainVertices(maxParticleCount * CHUNK_COUNT);
-
-		for ( size_t i = 0; i < rainVertices.size(); ++i )
+		const size_t stride = ws.impactLayout ? sizeof(rainSplashVertex_t) : sizeof(rainVertex_t);
+		const size_t count = (size_t)ws.maxParticles * CHUNK_COUNT;
+		std::vector<byte> data(MAX(bufferSize, count * stride), 0);
+		for (size_t i = 0; i < count; ++i)
 		{
-			rainVertex_t& vertex = rainVertices[i];
+			rainVertex_t& vertex = *(rainVertex_t *)(data.data() + i * stride);
 			vertex.position[0] = Q_flrand(-HALF_CHUNK_EXTENDS, HALF_CHUNK_EXTENDS);
 			vertex.position[1] = Q_flrand(-HALF_CHUNK_EXTENDS, HALF_CHUNK_EXTENDS);
 			vertex.position[2] = Q_flrand(tr.world->bmodels[0].bounds[0][2], tr.world->bmodels[0].bounds[1][2]);
 			vertex.velocity[0] = 0.0f; //Q_flrand(0.0f, 0.0f);
 			vertex.velocity[1] = 0.0f; //Q_flrand(0.0f, 0.0f);
 			vertex.velocity[2] = 0.0f; //Q_flrand(-1.0f, 0.0f);
+			// rainSplashVertex_t::impact stays zero: no splash, may hit
 		}
+		return data;
+	}
 
-		ws.lastVBO = R_CreateVBO(
-			nullptr,
-			sizeof(rainVertex_t) * rainVertices.size(),
-			VBO_USAGE_XFB, "Weather_ping");
-		ws.vbo = R_CreateVBO(
-			(byte *)rainVertices.data(),
-			sizeof(rainVertex_t) * rainVertices.size(),
-			VBO_USAGE_XFB, "Weather_pong");
-		ws.vboLastUpdateFrame = 0;
-		VectorSet2(ws.maxHorizontalVelocity, 0.0f, 0.0f);
-		ws.minDownwardVelocity = 0.0f;
-		ws.maxVerticalVelocity = 0.0f;
-		ws.velocityBoundsReliable = true;
+	void SetRainLayout( weatherObject_t& ws, bool impactLayout )
+	{
+		ws.impactLayout = impactLayout;
+		ws.numAttribs = impactLayout ? 3 : 2;
+		const int stride = impactLayout ? sizeof(rainSplashVertex_t) : sizeof(rainVertex_t);
 
 		ws.attribsTemplate[0].index = ATTR_INDEX_POSITION;
 		ws.attribsTemplate[0].numComponents = 3;
 		ws.attribsTemplate[0].offset = offsetof(rainVertex_t, position);
-		ws.attribsTemplate[0].stride = sizeof(rainVertex_t);
+		ws.attribsTemplate[0].stride = stride;
 		ws.attribsTemplate[0].type = GL_FLOAT;
 		ws.attribsTemplate[0].vbo = nullptr;
 
 		ws.attribsTemplate[1].index = ATTR_INDEX_COLOR;
 		ws.attribsTemplate[1].numComponents = 3;
 		ws.attribsTemplate[1].offset = offsetof(rainVertex_t, velocity);
-		ws.attribsTemplate[1].stride = sizeof(rainVertex_t);
+		ws.attribsTemplate[1].stride = stride;
 		ws.attribsTemplate[1].type = GL_FLOAT;
 		ws.attribsTemplate[1].vbo = nullptr;
+
+		// r_rainSplashes impact state (rain slot, impact layout only)
+		ws.attribsTemplate[2].index = ATTR_INDEX_TEXCOORD0;
+		ws.attribsTemplate[2].numComponents = 4;
+		ws.attribsTemplate[2].offset = offsetof(rainSplashVertex_t, impact);
+		ws.attribsTemplate[2].stride = stride;
+		ws.attribsTemplate[2].type = GL_FLOAT;
+		ws.attribsTemplate[2].vbo = nullptr;
+	}
+
+	void ResetRainSimulation( weatherObject_t& ws )
+	{
+		ws.vboLastUpdateFrame = 0;
+		VectorSet2(ws.maxHorizontalVelocity, 0.0f, 0.0f);
+		ws.minDownwardVelocity = 0.0f;
+		ws.maxVerticalVelocity = 0.0f;
+		ws.velocityBoundsReliable = true;
+	}
+
+	// splashCapable (the rain slot) sizes the buffers for the impact layout,
+	// so r_rainSplashes switches layouts in place (SwitchRainLayout)
+	void GenerateRainModel( weatherObject_t& ws, const int maxParticleCount,
+		bool splashCapable, bool impactLayout )
+	{
+		ws.maxParticles = maxParticleCount;
+		ws.splashCapable = splashCapable;
+		SetRainLayout(ws, splashCapable && impactLayout);
+
+		const size_t bufferSize = (size_t)maxParticleCount * CHUNK_COUNT *
+			(splashCapable ? sizeof(rainSplashVertex_t) : sizeof(rainVertex_t));
+		std::vector<byte> rainVertices = RainParticles(ws, bufferSize);
+
+		ws.lastVBO = R_CreateVBO(
+			nullptr,
+			bufferSize,
+			VBO_USAGE_XFB, "Weather_ping");
+		ws.vbo = R_CreateVBO(
+			rainVertices.data(),
+			bufferSize,
+			VBO_USAGE_XFB, "Weather_pong");
+		ResetRainSimulation(ws);
+	}
+
+	// r_rainSplashes toggled: the records change size, the particles restart
+	void SwitchRainLayout( weatherObject_t& ws, bool impactLayout )
+	{
+		SetRainLayout(ws, impactLayout);
+		const std::vector<byte> rainVertices = RainParticles(ws, 0);
+		R_BindVBO(ws.vbo);
+		qglBufferSubData(GL_ARRAY_BUFFER, 0, rainVertices.size(), rainVertices.data());
+		ResetRainSimulation(ws);
 	}
 
 	bool intersectPlane(const vec3_t n, const float dist, const vec3_t l0, const vec3_t l, float &t)
@@ -127,6 +192,47 @@ namespace
 		}
 
 		return false;
+	}
+
+	// World geometry depth of the current (orthographic) tr.viewParms into
+	// fbo. keepDepth draws over what is there (the weather brushes).
+	void RenderWeatherWorldDepth(FBO_t *fbo, bool keepDepth)
+	{
+		RE_BeginFrame(STEREO_CENTER);
+
+		if (keepDepth)
+			tr.viewParms.flags |= VPF_NOCLEAR;
+
+		tr.refdef.numDrawSurfs = 0;
+		tr.refdef.drawSurfs = backEndData->drawSurfs;
+
+		tr.refdef.num_entities = 0;
+		tr.refdef.entities = backEndData->entities;
+
+		tr.refdef.num_dlights = 0;
+		tr.refdef.dlights = backEndData->dlights;
+
+		tr.refdef.fistDrawSurf = 0;
+
+		tr.skyPortalEntities = 0;
+
+		tr.viewParms.targetFbo = fbo;
+		tr.viewParms.currentViewParm = 0;
+		Com_Memcpy(&tr.cachedViewParms[0], &tr.viewParms, sizeof(viewParms_t));
+		tr.numCachedViewParms = 1;
+
+		RB_UpdateConstants(&tr.refdef);
+
+		R_GenerateDrawSurfs(&tr.viewParms, &tr.refdef);
+		R_SortAndSubmitDrawSurfs(tr.refdef.drawSurfs, tr.refdef.numDrawSurfs);
+
+		R_IssuePendingRenderCommands();
+		tr.refdef.numDrawSurfs = 0;
+		tr.numCachedViewParms = 0;
+
+		RE_EndScene();
+
+		R_NewFrameSync();
 	}
 
 	void GenerateDepthMap()
@@ -378,41 +484,23 @@ namespace
 			qglDisable(GL_DEPTH_CLAMP);
 		}
 
-		RE_BeginFrame(STEREO_CENTER);
+		RenderWeatherWorldDepth(tr.weatherDepthFbo, tr.weatherSystem->numWeatherBrushes > 0);
 
-		if (tr.weatherSystem->numWeatherBrushes > 0)
-			tr.viewParms.flags |= VPF_NOCLEAR;
-
-		tr.refdef.numDrawSurfs = 0;
-		tr.refdef.drawSurfs = backEndData->drawSurfs;
-
-		tr.refdef.num_entities = 0;
-		tr.refdef.entities = backEndData->entities;
-
-		tr.refdef.num_dlights = 0;
-		tr.refdef.dlights = backEndData->dlights;
-
-		tr.refdef.fistDrawSurf = 0;
-
-		tr.skyPortalEntities = 0;
-
-		tr.viewParms.targetFbo = tr.weatherDepthFbo;
-		tr.viewParms.currentViewParm = 0;
-		Com_Memcpy(&tr.cachedViewParms[0], &tr.viewParms, sizeof(viewParms_t));
-		tr.numCachedViewParms = 1;
-
-		RB_UpdateConstants(&tr.refdef);
-
-		R_GenerateDrawSurfs(&tr.viewParms, &tr.refdef);
-		R_SortAndSubmitDrawSurfs(tr.refdef.drawSurfs, tr.refdef.numDrawSurfs);
-
-		R_IssuePendingRenderCommands();
-		tr.refdef.numDrawSurfs = 0;
-		tr.numCachedViewParms = 0;
-
-		RE_EndScene();
-
-		R_NewFrameSync();
+		// r_rainSplashes: weather brushes are invisible, a splash must not
+		// land on them. The world alone, same view, into its own map.
+		tr.weatherSystem->surfaceMapValid = false;
+		if (tr.weatherSystem->numWeatherBrushes > 0 && tr.weatherSurfaceFbo)
+		{
+			R_SetupViewParmsForOrthoRendering(
+				tr.weatherSurfaceFbo->width,
+				tr.weatherSurfaceFbo->height,
+				tr.weatherSurfaceFbo,
+				VPF_DEPTHCLAMP | VPF_DEPTHSHADOW | VPF_ORTHOGRAPHIC | VPF_NOVIEWMODEL,
+				orientation,
+				viewBounds);
+			RenderWeatherWorldDepth(tr.weatherSurfaceFbo, false);
+			tr.weatherSystem->surfaceMapValid = true;
+		}
 
 		tr.weatherSystem->depthRangeWorld = MAX(
 			tr.world->bmodels[0].bounds[1][2] - tr.world->bmodels[0].bounds[0][2], 1.0f);
@@ -422,7 +510,87 @@ namespace
 		tr.weatherSystem->depthMapValid = true;
 	}
 
-	void RB_SimulateWeather(weatherObject_t *ws)
+	/*
+	r_rainSplashes: impact events
+
+	weatherUpdate.glsl compares each rain drop's step with the static rain
+	occlusion map (tr.weatherDepthImage): a drop that goes from above to
+	below the occluder of the column it lands in has hit that surface. The
+	crossing point, snapped onto the surface, and a life of 1 go into the
+	drop's transform feedback record (rainVertex_t::impact); the life then
+	runs out over r_rainSplashLifetime. The drop itself falls on unchanged.
+	weatherSplash.glsl draws the live impacts. No CPU trace, no readback.
+	*/
+	bool RainSplashesEnabled(int weatherType)
+	{
+		return weatherType == WEATHER_RAIN && r_rainSplashes->integer != 0 &&
+			tr.weatherSystem->depthMapValid;
+	}
+
+	float RainSplashLifetime()
+	{
+		return Com_Clamp(50.0f, 2000.0f, r_rainSplashLifetime->value);
+	}
+
+	void RB_SetSplashUpdateParams(const weatherObject_t *ws, const float (*slotZones)[2],
+		UniformDataWriter& uniformDataWriter, SamplerBindingsWriter& samplerBindingsWriter)
+	{
+		const weatherSystem_t& weather = *tr.weatherSystem;
+		const float texelWorld = weather.texelSizeWorld;
+		const vec4_t params = {
+			1.0f / RainSplashLifetime(),
+			(float)MAX(ws->particleCount, 1),
+			weather.depthRangeWorld,
+			0.0f
+		};
+		const vec4_t params2 = {
+			1.0f / (float)tr.weatherDepthImage->width,
+			// neighbour rise that is still a slope or a stair, not an edge
+			MAX(3.0f * texelWorld, 32.0f),
+			// snapping error allowed: about a texel of a 45 degree slope
+			4.0f + texelWorld,
+			weather.surfaceMapValid ? 1.0f : 0.0f
+		};
+		uniformDataWriter.SetUniformVec4(UNIFORM_SPLASHPARAMS, params);
+		uniformDataWriter.SetUniformVec4(UNIFORM_SPLASHPARAMS2, params2);
+		uniformDataWriter.SetUniformVec2(UNIFORM_ZONEOFFSET, &slotZones[0][0], CHUNK_COUNT);
+		uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, weather.weatherMVP);
+
+		samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_SHADOWMAP);
+		samplerBindingsWriter.AddStaticImage(weather.surfaceMapValid ?
+			tr.weatherSurfaceImage : tr.weatherDepthImage, TB_NORMALMAP);
+	}
+
+	// Once per simulated frame: remember where each slot was before a remap.
+	void RB_TrackSplashSlots(const float (*slotZones)[2])
+	{
+		// the simulation uses the first view of the frame (RB_SimulateWeather)
+		static int trackedFrame = -1;
+		if (trackedFrame == (int)backEndData->realFrameNumber)
+			return;
+		trackedFrame = (int)backEndData->realFrameNumber;
+
+		weatherSystem_t& weather = *tr.weatherSystem;
+		const float now = backEnd.refdef.floatTime * 1000.0f;
+		for (int slot = 0; slot < CHUNK_COUNT; ++slot)
+		{
+			if (!weather.splashSlotsValid)
+			{
+				VectorCopy2(slotZones[slot], weather.splashSlotPrevZone[slot]);
+				weather.splashSlotRemapTime[slot] = -1e9f;
+			}
+			else if (weather.splashSlotZone[slot][0] != slotZones[slot][0] ||
+				weather.splashSlotZone[slot][1] != slotZones[slot][1])
+			{
+				VectorCopy2(weather.splashSlotZone[slot], weather.splashSlotPrevZone[slot]);
+				weather.splashSlotRemapTime[slot] = now;
+			}
+			VectorCopy2(slotZones[slot], weather.splashSlotZone[slot]);
+		}
+		weather.splashSlotsValid = true;
+	}
+
+	void RB_SimulateWeather(weatherObject_t *ws, const float (*slotZones)[2])
 	{
 		if (ws->vboLastUpdateFrame == backEndData->realFrameNumber ||
 			tr.weatherSystem->frozen)
@@ -441,9 +609,10 @@ namespace
 		DrawItem item = {};
 		item.renderState.transformFeedback = true;
 		item.transformFeedbackBuffer = {rainVBO->vertexesVBO, 0, rainVBO->vertexesSize};
-		item.program = &tr.weatherUpdateShader;
+		// r_rainSplashes: the rain slot's impact layout has its own program
+		item.program = ws->impactLayout ? &tr.weatherUpdateSplashShader : &tr.weatherUpdateShader;
 
-		const size_t numAttribs = ARRAY_LEN(ws->attribsTemplate);
+		const size_t numAttribs = ws->numAttribs;
 		item.numAttributes = numAttribs;
 		item.attributes = ojkAllocArray<vertexAttribute_t>(
 			*backEndData->perFrameMemory, numAttribs);
@@ -451,11 +620,18 @@ namespace
 			item.attributes,
 			ws->attribsTemplate,
 			sizeof(*item.attributes) * numAttribs);
-		item.attributes[0].vbo = lastRainVBO;
-		item.attributes[1].vbo = lastRainVBO;
+		for (size_t i = 0; i < numAttribs; ++i)
+			item.attributes[i].vbo = lastRainVBO;
 
 		UniformDataWriter uniformDataWriter;
-		uniformDataWriter.Start(&tr.weatherUpdateShader);
+		uniformDataWriter.Start(item.program);
+		if (ws->impactLayout)
+		{
+			SamplerBindingsWriter samplerBindingsWriter;
+			RB_SetSplashUpdateParams(ws, slotZones, uniformDataWriter, samplerBindingsWriter);
+			item.samplerBindings = samplerBindingsWriter.Finish(
+				frameAllocator, &item.numSamplerBindings);
+		}
 
 		const vec2_t mapZExtents = {
 			tr.world->bmodels[0].bounds[0][2],
@@ -648,13 +824,223 @@ namespace
 	{
 		return std::fabs(weatherObject->size[1]) * r_rainStreakLength->value * 1.15f * 2.0f;
 	}
+
+	struct rainSplashStats_t
+	{
+		int draws;
+		int culled;
+	};
+
+	// r_rainSplashes: one GL_POINTS draw per visible VBO chunk slot through
+	// weatherSplash.glsl, which emits geometry for live impacts only.
+	void RB_AddRainSplashes(const weatherObject_t *weatherObject,
+		const float (*viewSlotZones)[2], rainSplashStats_t& stats)
+	{
+		weatherSystem_t& weather = *tr.weatherSystem;
+		Allocator& frameAllocator = *backEndData->perFrameMemory;
+		const int debugMode = Com_Clampi(0, 3, r_rainSplashDebug->integer);
+		const float size = Com_Clamp(1.0f, 64.0f, r_rainSplashSize->value);
+		const float lifetime = RainSplashLifetime();
+		// splashes are a few units wide: gone well before the rain fades
+		const float fadeDistance = debugMode ? weatherObject->fadeDistance :
+			MIN(1500.0f, weatherObject->fadeDistance);
+
+		DrawItem item = {};
+		// premultiplied over; debug views opaque, impact points through walls
+		item.renderState.stateBits = debugMode == 0 ?
+			GLS_DEPTHFUNC_LESS | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA :
+			debugMode == 1 ? GLS_DEPTHTEST_DISABLE : GLS_DEPTHFUNC_LESS;
+		item.renderState.cullType = CT_TWO_SIDED;
+		item.renderState.depthRange = { 0.0f, 1.0f };
+		item.program = &tr.weatherSplashShader;
+
+		const size_t numAttribs = weatherObject->numAttribs;
+		item.numAttributes = numAttribs;
+		item.attributes = ojkAllocArray<vertexAttribute_t>(frameAllocator, numAttribs);
+		memcpy(item.attributes, weatherObject->attribsTemplate,
+			sizeof(*item.attributes) * numAttribs);
+		for (size_t i = 0; i < numAttribs; ++i)
+			item.attributes[i].vbo = weatherObject->vbo;
+
+		item.draw.type = DRAW_COMMAND_ARRAYS;
+		item.draw.numInstances = 1;
+		item.draw.primitiveType = GL_POINTS;
+		item.draw.params.arrays.numVertices = weatherObject->particleCount;
+
+		const byte currentFrameScene = backEndData->currentFrame->currentScene;
+		const GLuint currentFrameUbo = backEndData->currentFrame->ubo[currentFrameScene];
+		const UniformBlockBinding uniformBlockBindings[] = {
+			{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA },
+			{ currentFrameUbo, (size_t)tr.sceneUboOffset, UNIFORM_BLOCK_SCENE }
+		};
+		DrawItemSetUniformBlockBindings(item, uniformBlockBindings, frameAllocator);
+
+		// the rain's light (r_rainLighting): merged light grid, else the sun
+		image_t *grid = r_rainLighting->value > 0.0f && tr.world->volumetricLightMaps[0] ?
+			tr.world->volumetricLightMaps[0] : nullptr;
+		vec4_t light = { 1.0f, 1.0f, 1.0f, grid ? 1.0f : 0.0f };
+		if (r_rainLighting->value > 0.0f && !grid)
+		{
+			vec3_t sunLight;
+			VectorMA(backEnd.refdef.sunAmbCol, 0.5f, backEnd.refdef.sunCol, sunLight);
+			if (sunLight[0] + sunLight[1] + sunLight[2] > 1e-3f)
+				VectorCopy(sunLight, light);
+		}
+
+		SamplerBindingsWriter samplerBindingsWriter;
+		samplerBindingsWriter.AddStaticImage(tr.weatherDepthImage, TB_SHADOWMAP);
+		samplerBindingsWriter.AddStaticImage(grid ? grid : tr.whiteImage3D, TB_LIGHTMAP);
+		item.samplerBindings = samplerBindingsWriter.Finish(
+			frameAllocator, &item.numSamplerBindings);
+
+		const vec4_t params = { size, Com_Clamp(0.0f, 4.0f, r_rainSplashOpacity->value),
+			fadeDistance, (float)debugMode };
+		const vec4_t params2 = { weather.texelSizeWorld, weather.depthRangeWorld,
+			backEnd.refdef.frameTime, 1.0f / lifetime };
+
+		// an upper bound for r_rainSplashDebug: every drop hits once per fall
+		// through the map height (the respawn lifts it by exactly that)
+		const float fallSpeed = weatherObject->gravity * 0.7f;
+		const float mapHeight = tr.world->bmodels[0].bounds[1][2] -
+			tr.world->bmodels[0].bounds[0][2];
+		weather.splashExpected = fallSpeed > 0.0f && mapHeight > 0.0f ?
+			(float)(weatherObject->particleCount * CHUNK_COUNT) * lifetime * fallSpeed / mapHeight : 0.0f;
+
+		const bool canCull = r_weatherCull->integer != 0 && debugMode < 2;
+		const float now = backEnd.refdef.floatTime * 1000.0f;
+		const float marginXY = 2.0f * size + 8.0f;
+		const float marginZ = 3.0f * size + 8.0f;
+		for (int slot = 0; slot < CHUNK_COUNT; ++slot)
+		{
+			// live impacts are where the simulation put them: the slot's zone
+			// at simulation time, or its previous zone for a lifetime after a
+			// remap
+			const float *zone = weather.splashSlotsValid ?
+				weather.splashSlotZone[slot] : viewSlotZones[slot];
+			vec3_t bounds[2] = {
+				{ zone[0] - HALF_CHUNK_EXTENDS - marginXY, zone[1] - HALF_CHUNK_EXTENDS - marginXY,
+				  tr.world->bmodels[0].bounds[0][2] - marginZ },
+				{ zone[0] + HALF_CHUNK_EXTENDS + marginXY, zone[1] + HALF_CHUNK_EXTENDS + marginXY,
+				  tr.world->bmodels[0].bounds[1][2] + marginZ }
+			};
+			if (weather.splashSlotsValid && now - weather.splashSlotRemapTime[slot] < lifetime + 100.0f)
+			{
+				const float *prev = weather.splashSlotPrevZone[slot];
+				for (int axis = 0; axis < 2; ++axis)
+				{
+					bounds[0][axis] = MIN(bounds[0][axis], prev[axis] - HALF_CHUNK_EXTENDS - marginXY);
+					bounds[1][axis] = MAX(bounds[1][axis], prev[axis] + HALF_CHUNK_EXTENDS + marginXY);
+				}
+			}
+			const bool culled = canCull && R_CullBoxView(bounds, &backEnd.viewParms) == CULL_OUT;
+			if (r_weatherDebugChunks->integer != 0)
+			{
+				const vec4_t visibleColor = { 0.2f, 0.6f, 1.0f, 0.65f };
+				const vec4_t culledColor = { 0.6f, 0.1f, 0.9f, 0.65f };
+				RB_AddWeatherBounds(bounds, culled ? culledColor : visibleColor);
+				if (backEndData->realFrameNumber % 60 == 0)
+					ri.Printf(PRINT_ALL, "  splash slot %d zone (%.0f %.0f)%s %s\n", slot,
+						zone[0], zone[1],
+						weather.splashSlotsValid && now - weather.splashSlotRemapTime[slot] < lifetime + 100.0f ?
+							" + previous zone" : "",
+						culled ? "culled" : "drawn");
+			}
+			if (culled)
+			{
+				++stats.culled;
+				continue;
+			}
+
+			UniformDataWriter uniformDataWriter;
+			uniformDataWriter.Start(&tr.weatherSplashShader);
+			// the particle positions of the debug views follow this view
+			uniformDataWriter.SetUniformVec2(UNIFORM_ZONEOFFSET, viewSlotZones[slot][0], viewSlotZones[slot][1]);
+			uniformDataWriter.SetUniformVec4(UNIFORM_COLOR, weatherObject->color);
+			uniformDataWriter.SetUniformMatrix4x4(UNIFORM_WEATHERMVP, weather.weatherMVP);
+			uniformDataWriter.SetUniformVec4(UNIFORM_SPLASHPARAMS, params);
+			uniformDataWriter.SetUniformVec4(UNIFORM_SPLASHPARAMS2, params2);
+			uniformDataWriter.SetUniformVec4(UNIFORM_RAINLIGHT, light);
+			if (grid)
+			{
+				uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDORIGIN, tr.world->lightGridOrigin);
+				uniformDataWriter.SetUniformVec3(UNIFORM_LIGHTGRIDCELLINVERSESIZE, tr.world->lightGridInverseSize);
+			}
+			item.uniformData = uniformDataWriter.Finish(frameAllocator);
+			item.draw.params.arrays.firstVertex = weatherObject->particleCount * slot;
+
+			RB_AddDrawItem(backEndData->currentPass, RB_CreateSortKey(item, 15, SS_SEE_THROUGH), item);
+			++stats.draws;
+		}
+	}
+}
+
+/*
+r_rainSplashDebug: count what the splash geometry shader emits. Called by
+RB_DrawItems around a run of weatherSplash draws. Only the first run of a
+frame is measured; results are read once the GPU has them.
+*/
+void RB_RainSplashQuery(bool begin)
+{
+	weatherSystem_t *weather = tr.weatherSystem;
+	if (!weather || !r_rainSplashDebug->integer)
+		return;
+
+	const unsigned frame = backEndData->realFrameNumber;
+	if (!begin)
+	{
+		if (weather->splashQueryOpen)
+		{
+			qglEndQuery(GL_PRIMITIVES_GENERATED);
+			weather->splashQueryOpen = 0;
+		}
+		return;
+	}
+
+	if (!weather->splashQueries[0])
+		qglGenQueries(ARRAY_LEN(weather->splashQueries), weather->splashQueries);
+
+	const int count = ARRAY_LEN(weather->splashQueries);
+	const int current = frame % count;
+	if (weather->splashQueryFrame[current] == frame + 1 || weather->splashQueryOpen)
+		return;	// this frame is measured already
+
+	// the oldest query: printed if the GPU is done with it, else skipped
+	const int oldest = (frame + 1) % count;
+	if (weather->splashQueryFrame[oldest] != 0)
+	{
+		GLint available = 0;
+		qglGetQueryObjectiv(weather->splashQueries[oldest], GL_QUERY_RESULT_AVAILABLE, &available);
+		if (available && (int)frame - weather->splashLastPrint >= 60)
+		{
+			GLuint primitives = 0;
+			qglGetQueryObjectuiv(weather->splashQueries[oldest], GL_QUERY_RESULT, &primitives);
+			const int debugMode = r_rainSplashDebug->integer;
+			ri.Printf(PRINT_ALL,
+				"Rain splashes (frame %u): %u GS triangles = %u %s; at most %.0f live splashes if every column were exposed\n",
+				weather->splashQueryFrame[oldest] - 1, primitives,
+				debugMode == 1 ? primitives / 2 : primitives / 4,
+				debugMode == 1 ? "impact markers" : debugMode >= 2 ? "(debug particles)" : "live splashes (2 quads each, fewer without spray)",
+				weather->splashExpected);
+			weather->splashLastPrint = (int)frame;
+		}
+		weather->splashQueryFrame[oldest] = 0;
+	}
+
+	// a query still in flight is never restarted
+	if (weather->splashQueryFrame[current] != 0)
+		return;
+	qglBeginQuery(GL_PRIMITIVES_GENERATED, weather->splashQueries[current]);
+	weather->splashQueryFrame[current] = frame + 1;
+	weather->splashQueryOpen = current + 1;
 }
 
 void R_InitWeatherForMap()
 {
+	tr.weatherSystem->splashSlotsValid = false;
 	for (int i = 0; i < NUM_WEATHER_TYPES; i++)
 		if (tr.weatherSystem->weatherSlots[i].active)
-			GenerateRainModel(tr.weatherSystem->weatherSlots[i], maxWeatherTypeParticles[i]);
+			GenerateRainModel(tr.weatherSystem->weatherSlots[i], maxWeatherTypeParticles[i],
+				i == WEATHER_RAIN, false);
 	GenerateDepthMap();
 }
 
@@ -1357,6 +1743,22 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		}
 	}
 
+	// r_rainSplashes: world XY offset of each VBO slot (zoneMapping inverted)
+	float slotZones[CHUNK_COUNT][2];
+	{
+		int currentIndex = 0;
+		for (int y = -1; y <= 1; ++y)
+		{
+			for (int x = -1; x <= 1; ++x, ++currentIndex)
+			{
+				slotZones[zoneMapping[currentIndex]][0] = (centerZoneOffsetX + x) * CHUNK_EXTENDS;
+				slotZones[zoneMapping[currentIndex]][1] = (centerZoneOffsetY + y) * CHUNK_EXTENDS;
+			}
+		}
+	}
+	RB_TrackSplashSlots(slotZones);
+	rainSplashStats_t splashStats = {};
+
 	// Get current global wind vector
 	VectorCopy(tr.weatherSystem->constWindDirection, tr.weatherSystem->windDirection);
 	for (int i = 0; i < tr.weatherSystem->activeWindObjects; i++)
@@ -1375,15 +1777,23 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		if (!weatherObject->active)
 			continue;
 
+		// r_rainSplashes switches the rain records to the impact layout; only
+		// at the frame's simulation, not between the views of a frame
+		const bool splashes = RainSplashesEnabled(weatherType);
 		if (weatherObject->vbo == nullptr)
 			GenerateRainModel(
 				tr.weatherSystem->weatherSlots[weatherType],
-				maxWeatherTypeParticles[weatherType]);
+				maxWeatherTypeParticles[weatherType],
+				weatherType == WEATHER_RAIN, splashes);
+		else if (weatherObject->splashCapable && weatherObject->impactLayout != splashes &&
+			weatherObject->vboLastUpdateFrame != backEndData->realFrameNumber)
+			SwitchRainLayout(*weatherObject, splashes);
+		const bool splashLayout = weatherObject->impactLayout;
 
 		if (weatherObject->vboLastUpdateFrame != backEndData->realFrameNumber &&
 			!tr.weatherSystem->frozen)
 			simulationVertices += weatherObject->particleCount * CHUNK_COUNT;
-		RB_SimulateWeather(weatherObject);
+		RB_SimulateWeather(weatherObject, slotZones);
 
 		vec4_t viewInfo = {
 			weatherObject->size[0],
@@ -1410,7 +1820,8 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 		item.renderState.depthRange = { 0.0f, 1.0f };
 		item.program = &tr.weatherShader;
 
-		const size_t numAttribs = ARRAY_LEN(weatherObject->attribsTemplate);
+		// weather.glsl reads position and velocity only
+		const size_t numAttribs = 2;
 		item.numAttributes = numAttribs;
 		item.attributes = ojkAllocArray<vertexAttribute_t>(
 			*backEndData->perFrameMemory, numAttribs);
@@ -1595,6 +2006,9 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 				renderedVertices += item.draw.params.arrays.numVertices;
 			}
 		}
+
+		if (splashLayout)
+			RB_AddRainSplashes(weatherObject, slotZones, splashStats);
 	}
 	if (measureWeather)
 	{
@@ -1602,8 +2016,9 @@ void RB_SurfaceWeather( srfWeather_t *surf )
 			std::chrono::steady_clock::now() - cpuStart).count();
 		ri.Printf(PRINT_ALL,
 			"Weather: %d draws, %d culled chunks, %d render vertices, %d TF vertices, "
-			"RB_SurfaceWeather %.3f ms CPU\n",
-			weatherDrawCalls, culledChunks, renderedVertices, simulationVertices, cpuMs);
+			"%d splash draws, %d culled splash slots, RB_SurfaceWeather %.3f ms CPU\n",
+			weatherDrawCalls, culledChunks, renderedVertices, simulationVertices,
+			splashStats.draws, splashStats.culled, cpuMs);
 	}
 }
 

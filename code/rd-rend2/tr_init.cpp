@@ -525,6 +525,11 @@ cvar_t *r_rainStreakLength;
 cvar_t *r_rainOpacity;
 cvar_t *r_rainLighting;
 cvar_t *r_rainDebug;
+cvar_t *r_rainSplashes;
+cvar_t *r_rainSplashSize;
+cvar_t *r_rainSplashLifetime;
+cvar_t *r_rainSplashOpacity;
+cvar_t *r_rainSplashDebug;
 
 cvar_t	*r_aspectCorrectFonts;
 
@@ -1802,6 +1807,20 @@ void R_Register( void )
 	ri.Cvar_CheckRange(r_rainOpacity, 0.0f, 4.0f, qfalse);
 	ri.Cvar_CheckRange(r_rainLighting, 0.0f, 1.0f, qfalse);
 	ri.Cvar_CheckRange(r_rainDebug, 0, 5, qtrue);
+	r_rainSplashes = ri_Cvar_Get_NoComm("r_rainSplashes", "0", CVAR_ARCHIVE,
+		"Rain impact splashes: drops crossing the rain occlusion map on the GPU make short-lived splashes (0 off)");
+	r_rainSplashSize = ri_Cvar_Get_NoComm("r_rainSplashSize", "6", CVAR_ARCHIVE,
+		"r_rainSplashes: splash radius in world units");
+	r_rainSplashLifetime = ri_Cvar_Get_NoComm("r_rainSplashLifetime", "350", CVAR_ARCHIVE,
+		"r_rainSplashes: splash lifetime in ms");
+	r_rainSplashOpacity = ri_Cvar_Get_NoComm("r_rainSplashOpacity", "0.5", CVAR_ARCHIVE,
+		"r_rainSplashes: splash opacity");
+	r_rainSplashDebug = ri_Cvar_Get_NoComm("r_rainSplashDebug", "0", CVAR_CHEAT,
+		"r_rainSplashes debug: 1 impact points (yellow new, red old, through walls), 2 crossing test (green above, red under, cyan accepted, magenta rejected), 3 trajectories; prints the live splash count");
+	ri.Cvar_CheckRange(r_rainSplashSize, 1.0f, 64.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainSplashLifetime, 50.0f, 2000.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainSplashOpacity, 0.0f, 4.0f, qfalse);
+	ri.Cvar_CheckRange(r_rainSplashDebug, 0, 3, qtrue);
 
 	r_picmip = ri_Cvar_Get_NoComm ("r_picmip", "0", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	ri.Cvar_CheckRange( r_picmip, 0, 16, qtrue );

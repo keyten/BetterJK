@@ -1132,15 +1132,23 @@ static void RB_DrawItems(
 	{
 		const DrawItem& drawItem = drawItems[drawOrder[i]];
 		shaderProgram_t *weatherProgram =
+			drawItem.program == &tr.weatherUpdateSplashShader ? &tr.weatherUpdateShader :
 			(drawItem.program == &tr.weatherUpdateShader ||
-			 drawItem.program == &tr.weatherShader) ? drawItem.program : nullptr;
+			 drawItem.program == &tr.weatherShader ||
+			 drawItem.program == &tr.weatherSplashShader) ? drawItem.program : nullptr;
 		if (weatherProgram != timedWeatherProgram)
 		{
 			RB_ScreenEndTimer(weatherTimer);
+			if (timedWeatherProgram == &tr.weatherSplashShader)
+				RB_RainSplashQuery(false);
 			weatherTimer = weatherProgram == &tr.weatherUpdateShader ?
 				RB_ScreenBeginTimer("Weather simulation") :
 				weatherProgram == &tr.weatherShader ?
-				RB_ScreenBeginTimer("Weather draw") : -1;
+				RB_ScreenBeginTimer("Weather draw") :
+				weatherProgram == &tr.weatherSplashShader ?
+				RB_ScreenBeginTimer("Weather splashes") : -1;
+			if (weatherProgram == &tr.weatherSplashShader)
+				RB_RainSplashQuery(true);
 			timedWeatherProgram = weatherProgram;
 		}
 
@@ -1206,6 +1214,8 @@ static void RB_DrawItems(
 		}
 	}
 	RB_ScreenEndTimer(weatherTimer);
+	if (timedWeatherProgram == &tr.weatherSplashShader)
+		RB_RainSplashQuery(false);
 
 	GL_SetScreenAuxWrite(false);
 }

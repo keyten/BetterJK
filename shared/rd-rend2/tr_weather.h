@@ -49,7 +49,11 @@ struct weatherObject_t
 	VBO_t *lastVBO;
 	VBO_t *vbo;
 	unsigned vboLastUpdateFrame;
-	vertexAttribute_t attribsTemplate[2];
+	vertexAttribute_t attribsTemplate[3];	// position, velocity[, impact] (tr_weather.cpp rain*Vertex_t)
+	int numAttribs;			// 3 in the impact layout
+	int maxParticles;		// per chunk, buffer capacity
+	bool splashCapable;		// buffers sized for the impact layout (the rain slot)
+	bool impactLayout;		// r_rainSplashes records with impact state
 	float maxHorizontalVelocity[2];
 	float minDownwardVelocity;
 	float maxVerticalVelocity;
@@ -121,6 +125,24 @@ struct weatherSystem_t
 	bool		depthMapValid = false;
 	float		depthRangeWorld = 1.0f;
 	float		texelSizeWorld = 1.0f;
+
+	// r_rainSplashes: tr.weatherSurfaceImage (no weather brushes) holds this
+	// map; world XY offset of each VBO chunk slot at the last simulation, the
+	// offset before it and when it changed. Impacts are world space, so a
+	// slot's live splashes can still be in its previous zone after a remap.
+	bool		surfaceMapValid = false;
+	bool		splashSlotsValid = false;
+	float		splashSlotZone[9][2];
+	float		splashSlotPrevZone[9][2];
+	float		splashSlotRemapTime[9];
+
+	// r_rainSplashDebug: GL_PRIMITIVES_GENERATED of the first splash batch
+	// of a frame, read back frames later only once available (no stall)
+	GLuint		splashQueries[4];
+	unsigned	splashQueryFrame[4];
+	int			splashQueryOpen;		// query index + 1 while a query runs
+	float		splashExpected;			// live splashes if every column were exposed
+	int			splashLastPrint;
 };
 struct srfWeather_t;
 

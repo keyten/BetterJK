@@ -627,6 +627,7 @@ enum
 {
 	XFB_VAR_POSITION,
 	XFB_VAR_VELOCITY,
+	XFB_VAR_IMPACT,		// weather: rain impact (r_rainSplashes)
 
 	XFB_VAR_COUNT
 };
@@ -2193,6 +2194,10 @@ typedef enum
 	UNIFORM_RAINLIGHT,			// rgb = light without a grid, w = light grid valid (0/1)
 	UNIFORM_CAMERAVELOCITY,		// smoothed view origin velocity, world units per ms
 
+	UNIFORM_WEATHERSURFACEMAP,	// r_rainSplashes: world-only weather depth (tr.weatherSurfaceImage)
+	UNIFORM_SPLASHPARAMS,		// r_rainSplashes, program specific (weatherUpdate / weatherSplash)
+	UNIFORM_SPLASHPARAMS2,		// r_rainSplashes, program specific (weatherUpdate / weatherSplash)
+
 	UNIFORM_COUNT
 } uniform_t;
 
@@ -3335,6 +3340,7 @@ typedef struct trGlobals_s {
 	image_t					*probeAverageImage;
 	image_t					*textureDepthImage;
 	image_t					*weatherDepthImage;
+	image_t					*weatherSurfaceImage;	// world geometry only, maps with weather brushes (r_rainSplashes)
 	image_t					*smaaSearchImage;
 	image_t					*smaaAreaImage;
 	image_t					*smaaEdgeImage;
@@ -3394,6 +3400,7 @@ typedef struct trGlobals_s {
 	FBO_t                   *renderCubeFbo[6];
 	FBO_t                   *filterCubeFbo;
 	FBO_t					*weatherDepthFbo;
+	FBO_t					*weatherSurfaceFbo;
 	FBO_t					*smaaEdgeFbo;
 	FBO_t					*smaaBlendFbo;
 	FBO_t					*smaaResolveFbo;
@@ -3482,6 +3489,8 @@ typedef struct trGlobals_s {
 	shaderProgram_t spriteShader[SSDEF_COUNT];
 	shaderProgram_t weatherUpdateShader;
 	shaderProgram_t weatherShader;
+	shaderProgram_t weatherSplashShader;
+	shaderProgram_t weatherUpdateSplashShader;	// weatherUpdate + impact state (r_rainSplashes)
 	shaderProgram_t smaaEdgeShader;
 	shaderProgram_t smaaBlendShader;
 	shaderProgram_t smaaResolveShader;
@@ -3841,6 +3850,11 @@ extern cvar_t	*r_rainStreakLength;
 extern cvar_t	*r_rainOpacity;
 extern cvar_t	*r_rainLighting;
 extern cvar_t	*r_rainDebug;
+extern cvar_t	*r_rainSplashes;
+extern cvar_t	*r_rainSplashSize;
+extern cvar_t	*r_rainSplashLifetime;
+extern cvar_t	*r_rainSplashOpacity;
+extern cvar_t	*r_rainSplashDebug;
 
 //====================================================================
 
@@ -5119,6 +5133,7 @@ void GL_SetScreenAuxWrite(bool enable);
 void GL_ResetScreenAuxWrite(void);
 int RB_ScreenBeginTimer(const char *name);
 void RB_ScreenEndTimer(int handle);
+void RB_RainSplashQuery(bool begin);	// r_rainSplashDebug splash counter (tr_weather.cpp)
 void RB_ScreenSetViewUniforms(shaderProgram_t *sp, const screenViewInfo_t& info);
 void RB_ScreenBeginPass(FBO_t *fbo, shaderProgram_t *sp, int width, int height, uint32_t stateBits = GLS_DEPTHTEST_DISABLE);
 void RB_ScreenTexelSize(vec4_t out, int srcWidth, int srcHeight, int dstWidth, int dstHeight);

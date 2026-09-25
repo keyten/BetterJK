@@ -3936,6 +3936,17 @@ void R_CreateBuiltinImages( void ) {
 		IMGTYPE_COLORALPHA,
 		IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE,
 		GL_DEPTH_COMPONENT16);
+
+	// r_rainSplashes: the same view without weather brushes, so splashes
+	// only land on real geometry (tr_weather.cpp GenerateDepthMap)
+	tr.weatherSurfaceImage = R_CreateImage(
+		"*weatherSurface",
+		nullptr,
+		1024,
+		1024,
+		IMGTYPE_COLORALPHA,
+		IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE,
+		GL_DEPTH_COMPONENT16);
 }
 
 

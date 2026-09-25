@@ -259,6 +259,10 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_RainShade",			GLSL_VEC4, 1 },
 	{ "u_RainLight",			GLSL_VEC4, 1 },
 	{ "u_CameraVelocity",		GLSL_VEC3, 1 },
+
+	{ "u_WeatherSurfaceMap",	GLSL_INT, 1 },
+	{ "u_SplashParams",			GLSL_VEC4, 1 },
+	{ "u_SplashParams2",		GLSL_VEC4, 1 },
 };
 
 static_assert(ARRAY_LEN(uniformsInfo) == UNIFORM_COUNT,
@@ -762,6 +766,7 @@ static void GLSL_BindShaderInterface( shaderProgram_t *program )
 	static const char *xfbVarNames[XFB_VAR_COUNT] = {
 		"var_Position",
 		"var_Velocity",
+		"var_Impact",
 	};
 
 	static const char *shaderOutputNames[] = {
@@ -3785,7 +3790,42 @@ static int GLSL_LoadGPUProgramWeather(
 	GLSL_InitUniforms(&tr.weatherUpdateShader);
 	GLSL_FinishGPUShader(&tr.weatherUpdateShader);
 
-	return 2;
+	// r_rainSplashes: the rain update with impact detection writes a 40 byte
+	// record (tr_weather.cpp rainSplashVertex_t), the plain one keeps 24
+	GLSL_LoadGPUProgramBasicWithDefinitions(
+		builder,
+		scratchAlloc,
+		&tr.weatherUpdateSplashShader,
+		"weatherUpdate",
+		fallback_weatherUpdateProgram,
+		"#define USE_RAIN_SPLASHES\n",
+		ATTR_POSITION | ATTR_COLOR | ATTR_TEXCOORD0,
+		(1u << XFB_VAR_POSITION) | (1u << XFB_VAR_VELOCITY) | (1u << XFB_VAR_IMPACT));
+
+	GLSL_InitUniforms(&tr.weatherUpdateSplashShader);
+	qglUseProgram(tr.weatherUpdateSplashShader.program);
+	GLSL_SetUniformInt(&tr.weatherUpdateSplashShader, UNIFORM_SHADOWMAP, TB_SHADOWMAP);
+	GLSL_SetUniformInt(&tr.weatherUpdateSplashShader, UNIFORM_WEATHERSURFACEMAP, TB_NORMALMAP);
+	qglUseProgram(0);
+	GLSL_FinishGPUShader(&tr.weatherUpdateSplashShader);
+
+	// r_rainSplashes: splashes drawn from the impact state of the rain VBO
+	GLSL_LoadGPUProgramBasic(
+		builder,
+		scratchAlloc,
+		&tr.weatherSplashShader,
+		"weatherSplash",
+		fallback_weatherSplashProgram,
+		ATTR_POSITION | ATTR_COLOR | ATTR_TEXCOORD0);
+
+	GLSL_InitUniforms(&tr.weatherSplashShader);
+	qglUseProgram(tr.weatherSplashShader.program);
+	GLSL_SetUniformInt(&tr.weatherSplashShader, UNIFORM_SHADOWMAP, TB_SHADOWMAP);
+	GLSL_SetUniformInt(&tr.weatherSplashShader, UNIFORM_VOLUMETRICLIGHTMAP, TB_LIGHTMAP);
+	qglUseProgram(0);
+	GLSL_FinishGPUShader(&tr.weatherSplashShader);
+
+	return 4;
 }
 
 static int GLSL_LoadGPUProgramSMAA(
@@ -4145,7 +4185,9 @@ void GLSL_ShutdownGPUShaders(void)
 		GLSL_DeleteGPUShader(&tr.spriteShader[i]);
 
 	GLSL_DeleteGPUShader(&tr.weatherUpdateShader);
+	GLSL_DeleteGPUShader(&tr.weatherUpdateSplashShader);
 	GLSL_DeleteGPUShader(&tr.weatherShader);
+	GLSL_DeleteGPUShader(&tr.weatherSplashShader);
 
 	GLSL_DeleteGPUShader(&tr.smaaEdgeShader);
 	GLSL_DeleteGPUShader(&tr.smaaBlendShader);

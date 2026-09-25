@@ -816,6 +816,20 @@ void FBO_Init(void)
 		R_CheckFBO(tr.weatherDepthFbo);
 	}
 
+	if (tr.weatherSurfaceImage != nullptr)
+	{
+		tr.weatherSurfaceFbo = FBO_Create(
+			"_weatherSurfaceFbo",
+			tr.weatherSurfaceImage->width,
+			tr.weatherSurfaceImage->height);
+
+		FBO_Bind(tr.weatherSurfaceFbo);
+		R_AttachFBOTextureDepth(tr.weatherSurfaceImage->texnum);
+		FBO_SetupDrawBuffers();
+
+		R_CheckFBO(tr.weatherSurfaceFbo);
+	}
+
 	GL_CheckErrors();
 
 	FBO_Bind(NULL);
