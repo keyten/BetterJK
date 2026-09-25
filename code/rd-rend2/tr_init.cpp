@@ -393,6 +393,10 @@ cvar_t  *r_shadowPcssQuality;
 cvar_t  *r_shadowSunAngularDiameter;
 cvar_t  *r_shadowPcssMaxPenumbra;
 cvar_t  *r_shadowDebug;
+cvar_t  *r_shadowCasterLod;
+cvar_t  *r_shadowCasterStats;
+cvar_t  *r_dlightShadowBias;
+cvar_t  *r_contactShadowSoft;
 cvar_t	*r_ignoreDstAlpha;
 cvar_t	*r_refractionChromaticAberration;
 
@@ -2232,8 +2236,15 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_shadowSunAngularDiameter, 0.0f, 8.0f, qfalse );
 	r_shadowPcssMaxPenumbra = ri_Cvar_Get_NoComm( "r_shadowPcssMaxPenumbra", "32", CVAR_ARCHIVE, "Maximum PCSS penumbra radius in world units" );
 	ri.Cvar_CheckRange( r_shadowPcssMaxPenumbra, 0.0f, 256.0f, qfalse );
-	r_shadowDebug = ri_Cvar_Get_NoComm( "r_shadowDebug", "0", CVAR_CHEAT, "Sun shadow debug: 1 cascades, 2 depth, 3 PCF, 4 blockers, 5 penumbra, 6 PCSS, 7 contact, 8 final, 9 bias" );
-	ri.Cvar_CheckRange( r_shadowDebug, 0, 9, qtrue );
+	r_shadowDebug = ri_Cvar_Get_NoComm( "r_shadowDebug", "0", CVAR_CHEAT, "Sun shadow debug: 1 cascades, 2 depth, 3 PCF, 4 blockers, 5 penumbra, 6 PCSS, 7 contact, 8 final, 9 bias, 10 point shadows, 11 G2 receivers" );
+	ri.Cvar_CheckRange( r_shadowDebug, 0, 11, qtrue );
+	r_shadowCasterLod = ri_Cvar_Get_NoComm( "r_shadowCasterLod", "0", CVAR_ARCHIVE, "Ghoul2 models in sun cascades and dlight shadow cubes use the LOD of the camera view (0 = LOD of the shadow view)" );
+	ri.Cvar_CheckRange( r_shadowCasterLod, 0, 1, qtrue );
+	r_shadowCasterStats = ri_Cvar_Get_NoComm( "r_shadowCasterStats", "0", CVAR_CHEAT, "Print Ghoul2 shadow caster counts and LODs per view type once per second" );
+	r_dlightShadowBias = ri_Cvar_Get_NoComm( "r_dlightShadowBias", "0", CVAR_ARCHIVE, "Dynamic light shadow cube bias: 0 legacy slope offset, 1 texel scaled normal + clamped slope bias" );
+	ri.Cvar_CheckRange( r_dlightShadowBias, 0, 1, qtrue );
+	r_contactShadowSoft = ri_Cvar_Get_NoComm( "r_contactShadowSoft", "0", CVAR_ARCHIVE, "Contact shadows: 0 first hit, 1 soft depth weighted hits with steps packed near the receiver" );
+	ri.Cvar_CheckRange( r_contactShadowSoft, 0, 1, qtrue );
 	r_ignoreDstAlpha = ri_Cvar_Get_NoComm( "r_ignoreDstAlpha", "1", CVAR_ARCHIVE | CVAR_LATCH, "" );
 	r_refractionChromaticAberration = ri_Cvar_Get_NoComm( "r_refractionChromaticAberration", "0.05", CVAR_ARCHIVE, "" );
 	ri.Cvar_CheckRange(r_refractionChromaticAberration, 0.f, 0.3f, qfalse);

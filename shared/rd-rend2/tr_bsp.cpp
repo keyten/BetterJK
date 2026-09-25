@@ -4474,14 +4474,12 @@ void R_UpdateEntityLightGridTextures(world_t *world)
 		R_BuildEntityLightGridTextures(world, qtrue);
 }
 
-static void R_BuildLightGridTexture(world_t *world)
+// Merged (ambient + directed) light grid as one filterable 3D texture. Built
+// at load for volumetric fog, and on demand for lit rain (tr_weather.cpp).
+void R_BuildLightGridColorTexture(world_t *world)
 {
-	if (r_entityLightGrid->integer > 1 || r_entityLightGridDebug->integer)
-		R_BuildEntityLightGridTextures(world, qfalse);
-	if (!r_volumetricFog->integer)
-	{
+	if (!world || world->volumetricLightMaps[0] || !world->lightGridData)
 		return;
-	}
 
 	// Upload light grid as a 3D texture
 	// For volumetric fog, we don't need directionality, so just merge ambient and direct contributions
@@ -4571,6 +4569,14 @@ static void R_BuildLightGridTexture(world_t *world)
 	}
 
 	return;
+}
+
+static void R_BuildLightGridTexture(world_t *world)
+{
+	if (r_entityLightGrid->integer > 1 || r_entityLightGridDebug->integer)
+		R_BuildEntityLightGridTextures(world, qfalse);
+	if (r_volumetricFog->integer)
+		R_BuildLightGridColorTexture(world);
 }
 
 world_t *R_LoadBSP(const char *name, int *bspIndex)

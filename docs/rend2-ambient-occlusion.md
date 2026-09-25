@@ -73,7 +73,8 @@ In `ao_composite.glsl`, for the sun only (`r_sunlightMode 1/2`, map with sun sha
 1. view position from the full resolution depth;
 2. the sun direction in view space;
 3. the ray starts off the receiver by 1.5 pixel footprints (+0.1 units) to avoid self-shadowing;
-4. `r_contactShadowSteps` samples over `r_contactShadowLength` units, jittered by the 4x4 pattern (no banding);
+4. `r_contactShadowSteps` samples over `r_contactShadowLength` units at fixed step midpoints (a screen-locked
+   jitter crawled during camera motion); `r_contactShadowSoft 1` packs them towards the receiver instead;
 5. each sample is projected to the screen and compared with the depth buffer;
 6. a hit needs the ray to be behind the depth buffer by more than a bias (1.5 pixel footprints) and less than
    `r_contactShadowThickness` (+2 pixel footprints): farther behind means the ray passes behind a foreground
@@ -126,6 +127,7 @@ instead of turning dirty black.
 | `r_contactShadowSteps` | 12 | ray steps |
 | `r_contactShadowThickness` | 6 | assumed occluder thickness, world units |
 | `r_contactShadowStrength` | 0.85 | 0..1 |
+| `r_contactShadowSoft` | 0 | 1 = soft depth-weighted hits, steps packed near the receiver |
 | `r_debugAO` | 0 | cheat, debug views, see below |
 
 GPU resources (and the `USE_SSAO` define in the shaders) exist when `r_ssao`, `r_aoMode > 0` or
@@ -194,8 +196,9 @@ Start with `r_aoMode 2` (or `r_contactShadows 1`) in the config, or `vid_restart
 - Transparent / non-depth-writing surfaces (glass, effects, most foliage cards with alpha blending) neither
   receive nor cast AO/contact shadows.
 - No AO in mirrors/portals and sky portals, cubemap captures, or for the first person weapon.
-- Contact shadows: primary sun only; not for dynamic/point lights; the result is binary per pixel with an
-  ordered 4x4 jitter, visible as fine dithering on shadow edges up close.
+- Contact shadows: primary sun only; not for dynamic/point lights; the default result is binary per pixel
+  (hard, aliased edges up close); `r_contactShadowSoft 1` weights hits by depth instead, see
+  [rend2-character-shadows.md](rend2-character-shadows.md).
 - Half resolution GTAO loses detail on sub-2-pixel features; use `r_gtaoHalfRes 0` for them.
 - Lightmaps already contain large scale occlusion; `r_aoLightmapFraction` is an artistic, not a physical,
   split between direct and bounced baked light.

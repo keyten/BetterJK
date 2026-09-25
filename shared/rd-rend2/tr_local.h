@@ -426,6 +426,10 @@ extern cvar_t  *r_shadowPcssQuality;
 extern cvar_t  *r_shadowSunAngularDiameter;
 extern cvar_t  *r_shadowPcssMaxPenumbra;
 extern cvar_t  *r_shadowDebug;
+extern cvar_t  *r_shadowCasterLod;
+extern cvar_t  *r_shadowCasterStats;
+extern cvar_t  *r_dlightShadowBias;
+extern cvar_t  *r_contactShadowSoft;
 extern cvar_t  *r_ignoreDstAlpha;
 extern cvar_t  *r_refractionChromaticAberration;
 
@@ -1055,7 +1059,7 @@ struct LightsBlock
 	vec4_t shadowDepthSpan;		// light-space depth span for each cascade, unused
 	vec4_t shadowBias;			// constant world bias, normal texels, receiver-plane scale, clamp
 	vec4_t shadowPcss;			// tan angular radius, max world penumbra, enabled, quality
-	vec4_t shadowDebug;			// debug mode, unused
+	vec4_t shadowDebug;			// debug mode, dlight shadow bias mode, unused
 
 	int numLights;
 	float pad0[3];
@@ -2102,6 +2106,7 @@ typedef enum
 	UNIFORM_AOTEXELSIZE,	// 1 / source size, 1 / destination size
 	UNIFORM_AOSETTINGS,		// pass specific
 	UNIFORM_AOSETTINGS2,	// pass specific
+	UNIFORM_AOSETTINGS3,	// pass specific
 	UNIFORM_AOLIGHTDIR,		// view space direction to the sun
 
 	UNIFORM_MBINVVIEWPROJECTION,	// inverse of the current view projection
@@ -4166,6 +4171,7 @@ LIGHTS
 void R_DlightBmodel( bmodel_t *bmodel, trRefEntity_t *ent );
 void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent );
 void R_UpdateEntityLightGridTextures(world_t *world);
+void R_BuildLightGridColorTexture(world_t *world);
 void R_TransformDlights( int count, dlight_t *dl, orientationr_t *ori );
 int R_LightForPoint( vec3_t point, vec3_t ambientLight, vec3_t directedLight, vec3_t lightDir );
 int R_LightDirForPoint( vec3_t point, vec3_t lightDir, vec3_t normal, world_t *world );
@@ -4455,6 +4461,7 @@ public:
 };
 
 void R_AddGhoulSurfaces( trRefEntity_t *ent, int entityNum );
+void R_G2ShadowStatsEndFrame( void );
 void RB_SurfaceGhoul( CRenderableSurface *surf );
 void RB_TransformBones(const trRefEntity_t *ent, const trRefdef_t *refdef, int currentFrameNum, gpuFrame_t *frame);
 int RB_GetBoneUboOffset(CRenderableSurface *surf);

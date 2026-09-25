@@ -9,7 +9,8 @@ texture comparison state.
 - `1`: stable cascade spheres, independent texel snapping, explicit split
   blending, manual raw-depth filtering and optional directional-light PCSS.
 
-Dynamic-light cube shadow maps are unchanged.
+Dynamic-light cube shadow maps are unchanged. Ghoul2 caster/receiver behaviour, the caster LOD option and the
+dynamic light cube bias option are described in [rend2-character-shadows.md](rend2-character-shadows.md).
 
 ## Modern cascade fit
 
@@ -100,7 +101,8 @@ The contact controls are `r_contactShadows`, `r_contactShadowLength`,
 
 `r_shadowDebug` values are: 1 cascade colors, 2 raw depth, 3 fixed-radius PCF,
 4 average blocker depth, 5 penumbra radius, 6 PCSS visibility, 7 contact-only,
-8 final CSM/PCSS times contact visibility, and 9 effective bias.
+8 final CSM/PCSS times contact visibility, 9 effective bias, 10 dynamic light cube
+shadows only, and 11 Ghoul2 receivers (see rend2-character-shadows.md).
 
 ### Alpha-tested foliage casters
 

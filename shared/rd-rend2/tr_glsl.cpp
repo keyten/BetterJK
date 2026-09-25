@@ -172,6 +172,7 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_AOTexelSize",			GLSL_VEC4, 1 },
 	{ "u_AOSettings",			GLSL_VEC4, 1 },
 	{ "u_AOSettings2",			GLSL_VEC4, 1 },
+	{ "u_AOSettings3",			GLSL_VEC4, 1 },
 	{ "u_AOLightDir",			GLSL_VEC3, 1 },
 
 	{ "u_MBInvViewProjection",	GLSL_MAT4x4, 1 },
@@ -489,6 +490,10 @@ static size_t GLSL_GetShaderHeader(
 	Q_strcat(dest, size,
 		va("#define MAX_DLIGHTS %i\n",
 			MAX_DLIGHTS));
+
+	Q_strcat(dest, size,
+		va("#define DSHADOW_MAP_SIZE %i\n",
+			DSHADOW_MAP_SIZE));
 
 	fbufWidthScale = (float)glConfig.vidWidth;
 	fbufHeightScale = (float)glConfig.vidHeight;
@@ -3423,6 +3428,8 @@ static int GLSL_LoadGPUProgramWeather(
 	qglUseProgram(tr.weatherShader.program);
 	GLSL_SetUniformInt(&tr.weatherShader, UNIFORM_SHADOWMAP, TB_SHADOWMAP);
 	GLSL_SetUniformInt(&tr.weatherShader, UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+	// r_rainLighting: merged light grid, read in the vertex shader
+	GLSL_SetUniformInt(&tr.weatherShader, UNIFORM_VOLUMETRICLIGHTMAP, TB_LIGHTMAP);
 	qglUseProgram(0);
 	GLSL_FinishGPUShader(&tr.weatherShader);
 

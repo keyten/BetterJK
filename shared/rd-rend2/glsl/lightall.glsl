@@ -1972,6 +1972,12 @@ float PomLocalLightWeight(in float cut, in vec3 toLight, in vec3 lightColor, in 
 }
 #endif
 
+#if defined(USE_DSHADOWS)
+// r_shadowDebug 10: lowest cube shadow visibility of the lights reaching this
+// fragment
+float g_dlightShadowVisibility = 1.0;
+#endif
+
 // shadowLayer: cube index in u_ShadowMap2 (6 layers each), < 0 = unshadowed
 vec3 EvaluateDynamicLight(
 	in DLightSurface s,
@@ -1990,9 +1996,32 @@ vec3 EvaluateDynamicLight(
 		L /= sqrt(sqrLightDist);
 		if (shadowLayer >= 0)
 		{
-			sampleVector += L * tan(acos(dot(s.vertexNormal, -L)));
-			float distance = getLightDepth(sampleVector, lightRadius);
-			attenuation *= pcfShadow(u_ShadowMap2, L, distance, shadowLayer);
+			float dlightShadow;
+			if (u_ShadowDebug.y > 0.5)
+			{
+				// r_dlightShadowBias 1: bias in cube texels at the receiver
+				// (a 90 degree face spans 2 * distance): a normal offset
+				// growing towards grazing angles plus a clamped slope term
+				// covering the PCF footprint (about 2 texels)
+				vec3 geoNormal = normalize(s.vertexNormal);
+				float texelWorld = 2.0 * sqrt(sqrLightDist) / float(DSHADOW_MAP_SIZE);
+				float cosTheta = clamp(dot(geoNormal, L), 0.0, 1.0);
+				float slope = min(sqrt(1.0 - cosTheta * cosTheta) / max(cosTheta, 1e-3), 4.0);
+				sampleVector -= geoNormal * (texelWorld * 1.5 * (1.0 - cosTheta));
+				vec3 lookupDir = normalize(sampleVector);
+				sampleVector -= lookupDir * (texelWorld * (1.0 + 2.0 * slope));
+				float distance = getLightDepth(sampleVector, lightRadius);
+				dlightShadow = pcfShadow(u_ShadowMap2, lookupDir, distance, shadowLayer);
+			}
+			else
+			{
+				sampleVector += L * tan(acos(dot(s.vertexNormal, -L)));
+				float distance = getLightDepth(sampleVector, lightRadius);
+				dlightShadow = pcfShadow(u_ShadowMap2, L, distance, shadowLayer);
+			}
+			if (attenuation > 0.0 && dot(s.N, L) > 0.0)
+				g_dlightShadowVisibility = min(g_dlightShadowVisibility, dlightShadow);
+			attenuation *= dlightShadow;
 		}
 	#else
 		L /= sqrt(sqrLightDist);
@@ -3277,7 +3306,7 @@ void main()
   #endif
 
   #if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
-	// r_shadowDebug 1-9. These values are deliberately written unlit; the
+	// r_shadowDebug 1-11. These values are deliberately written unlit; the
 	// post-process path bypasses tone mapping while a shadow debug view is on.
 	if (u_ShadowDebug.x >= 1.0)
 	{
@@ -3304,6 +3333,25 @@ void main()
 			debugColor = vec3(contactShadow);
 		else if (u_ShadowDebug.x == 8.0)
 			debugColor = vec3(sunInfo.visibility * contactShadow);
+		else if (u_ShadowDebug.x == 10.0)
+		{
+			// lowest dynamic light cube shadow visibility (1 without cubes)
+			#if defined(USE_DSHADOWS)
+			debugColor = vec3(g_dlightShadowVisibility);
+			#else
+			debugColor = vec3(1.0);
+			#endif
+		}
+		else if (u_ShadowDebug.x == 11.0)
+		{
+			// skinned (Ghoul2) receivers magenta, everything else grey: shows
+			// Ghoul2 self shadowing and the shadows Ghoul2 casts on the world
+			#if defined(USE_SKELETAL_ANIMATION)
+			debugColor = vec3(1.0, 0.25, 1.0) * (0.15 + 0.85 * sunInfo.visibility * contactShadow);
+			#else
+			debugColor = vec3(0.6) * (0.15 + 0.85 * sunInfo.visibility * contactShadow);
+			#endif
+		}
 		else
 			debugColor = vec3(sunInfo.biasWorld / max(u_ShadowBias.w, 1e-5));
 

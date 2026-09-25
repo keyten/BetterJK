@@ -33,6 +33,7 @@ uniform vec4 u_AOViewport;          // view rectangle in texture coordinates
 uniform vec4 u_AOTexelSize;         // xy = 1 / AO texture size, zw = 1 / screen size
 uniform vec4 u_AOSettings;          // AO source (0 none, 1 legacy, 2 GTAO, 3 split), split x, contact shadows, contact strength
 uniform vec4 u_AOSettings2;         // contact length, steps, thickness, view size of a pixel at depth 1
+uniform vec4 u_AOSettings3;         // soft contact shadows (r_contactShadowSoft), unused, unused, unused
 uniform vec3 u_AOLightDir;          // view space direction to the sun
 
 out vec4 out_Color;
@@ -153,7 +154,40 @@ float ContactShadow(ivec2 pix, vec2 uv, vec3 P, float z)
 	vec2 viewportMax = u_AOViewport.xy + u_AOViewport.zw;
 
 	float occlusion = 0.0;
-	for (int i = 0; i < steps; i++)
+	if (u_AOSettings3.x > 0.5)
+	{
+		// r_contactShadowSoft: the steps are packed quadratically towards the
+		// receiver, where small occluders (nose, chin, armour overlaps, a hand
+		// on the torso) are. Every step occludes by how far it lies inside the
+		// assumed occluder thickness and the strongest one wins; without the
+		// first hit exit the result changes continuously while characters
+		// animate instead of flipping per pixel.
+		for (int i = 0; i < steps; i++)
+		{
+			float u = (float(i) + 0.5) / float(steps);
+			float t = u * u * rayLength;
+			vec3 Q = origin + L * t;
+			if (Q.z <= 1.0)
+				break;
+
+			vec2 quv = ProjectToUV(Q);
+			if (any(lessThan(quv, viewportMin)) || any(greaterThanEqual(quv, viewportMax)))
+				break;
+
+			float sceneZ = LinearDepth(texelFetch(u_ScreenDepthMap, ivec2(quv * screenSize), 0).r);
+			if (sceneZ < 0.0)
+				continue;
+
+			float behind = Q.z - sceneZ;
+			float samplePixelSize = Q.z * u_AOSettings2.w;
+			float bias = samplePixelSize * 1.5 + 0.05;
+			float thickness = u_AOSettings2.z + samplePixelSize * 2.0;
+			float inside = smoothstep(bias, bias + samplePixelSize * 2.0 + 0.1, behind) *
+				(1.0 - smoothstep(0.5 * thickness, thickness, behind));
+			occlusion = max(occlusion, inside * (1.0 - smoothstep(0.5, 1.0, t / rayLength)));
+		}
+	}
+	else for (int i = 0; i < steps; i++)
 	{
 		// A fixed midpoint is temporally stable. A screen-locked Bayer offset
 		// visibly crawled across receivers while the camera moved.

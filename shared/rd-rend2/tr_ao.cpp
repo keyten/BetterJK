@@ -430,6 +430,8 @@ static void RB_RenderAOComposite(
 		info.pixelViewSize);
 	GLSL_SetUniformVec4(sp, UNIFORM_AOSETTINGS, settings);
 	GLSL_SetUniformVec4(sp, UNIFORM_AOSETTINGS2, settings2);
+	const vec4_t settings3 = { r_contactShadowSoft->integer ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f };
+	GLSL_SetUniformVec4(sp, UNIFORM_AOSETTINGS3, settings3);
 
 	// the sun in view space (x right, y up, z forward)
 	const vec3_t *axis = backEnd.viewParms.ori.axis;
@@ -587,7 +589,7 @@ void RB_AOSceneParams( vec4_t aoParams, vec4_t aoParams2 )
 qboolean RB_AODebugBypassesToneMap( void )
 {
 	return (qboolean)(
-		(r_sunShadowMode->integer && r_shadowDebug->integer >= 1 && r_shadowDebug->integer <= 9) ||
+		(r_sunShadowMode->integer && r_shadowDebug->integer >= 1 && r_shadowDebug->integer <= 11) ||
 		(s_aoResources && r_debugAO->integer >= 7 && r_debugAO->integer <= 9) ||
 		(r_autoPBRDebug->integer >= 1 && r_autoPBRDebug->integer <= 2) ||
 		(r_weatherWetness->integer && r_weatherWetnessDebug->integer >= 1 && r_weatherWetnessDebug->integer <= 20 && r_weatherWetnessDebug->integer != 4) ||

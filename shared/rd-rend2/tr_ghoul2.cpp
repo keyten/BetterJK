@@ -990,40 +990,25 @@ static int R_GComputeFogNum( trRefEntity_t *ent ) {
 #endif
 }
 
-// work out lod for this entity.
-static int G2_ComputeLOD( trRefEntity_t *ent, const model_t *currentModel, int lodBias )
+// Projected radius as the camera of this scene sees the model: the value
+// ProjectRadius() returns in the main (symmetric perspective) view, where
+// projectionMatrix[5] = 1 / tan(fov_y / 2). 0 = at or behind the camera.
+static float G2_CameraProjectRadius( float r, const vec3_t location )
+{
+	vec3_t delta;
+	VectorSubtract(location, tr.refdef.vieworg, delta);
+	const float dist = DotProduct(delta, tr.refdef.viewaxis[0]);
+	const float tanHalfFovY = tanf(tr.refdef.fov_y * (float)M_PI / 360.0f);
+	if ( dist <= 0.0f || tanHalfFovY <= 0.0f )
+		return 0.0f;
+
+	return Q_min(1.0f, fabsf(r) / (dist * tanHalfFovY));
+}
+
+static int G2_LodFromProjectedRadius( float projectedRadius, const model_t *currentModel, int lodBias )
 {
 	float flod, lodscale;
-	float projectedRadius;
 	int lod;
-
-	if ( currentModel->numLods < 2 )
-	{	// model has only 1 LOD level, skip computations and bias
-		return(0);
-	}
-
-	if ( r_lodbias->integer > lodBias )
-	{
-		lodBias = r_lodbias->integer;
-	}
-
-	// scale the radius if need be
-	float largestScale = ent->e.modelScale[0];
-
-	if (ent->e.modelScale[1] > largestScale)
-	{
-		largestScale = ent->e.modelScale[1];
-	}
-	if (ent->e.modelScale[2] > largestScale)
-	{
-		largestScale = ent->e.modelScale[2];
-	}
-	if (!largestScale)
-	{
-		largestScale = 1;
-	}
-
-	projectedRadius = ProjectRadius( 0.75*largestScale*ent->e.radius, ent->e.origin );
 
 	// we reduce the radius to make the LOD match other model types which use
 	// the actual bound box size
@@ -1064,6 +1049,133 @@ static int G2_ComputeLOD( trRefEntity_t *ent, const model_t *currentModel, int l
 		lod = currentModel->numLods - 1;
 	if ( lod < 0 )
 		lod = 0;
+
+	return lod;
+}
+
+/*
+r_shadowCasterStats: Ghoul2 models added per view class during one second.
+Class 0 = camera views, 1-3 = sun cascades, 4 = dlight shadow cube faces,
+5 = other shadow views. Mismatch = LOD differs from the camera LOD.
+*/
+#define G2_STATS_CLASSES 5
+#define G2_STATS_LODS 4
+static struct {
+	int models[G2_STATS_CLASSES + 1];
+	int lods[G2_STATS_CLASSES + 1][G2_STATS_LODS];
+	int mismatches[G2_STATS_CLASSES + 1];
+	int frames;
+	int lastPrintTime;
+} g2ShadowStats;
+
+static int G2_StatsViewClass( void )
+{
+	if ( !(tr.viewParms.flags & VPF_DEPTHSHADOW) )
+		return 0;
+	if ( tr.viewParms.flags & VPF_SHADOWCASCADES )
+	{
+		for ( int i = 0; i < 3; i++ )
+		{
+			if ( tr.viewParms.targetFbo == tr.sunShadowFbo[i] )
+				return 1 + i;
+		}
+	}
+	if ( tr.viewParms.flags & VPF_POINTSHADOW )
+		return 4;
+	return G2_STATS_CLASSES;
+}
+
+void R_G2ShadowStatsEndFrame( void )
+{
+	if ( !r_shadowCasterStats->integer )
+	{
+		Com_Memset(&g2ShadowStats, 0, sizeof(g2ShadowStats));
+		return;
+	}
+
+	g2ShadowStats.frames++;
+	const int now = ri.Milliseconds();
+	if ( now - g2ShadowStats.lastPrintTime < 1000 )
+		return;
+
+	static const char *names[G2_STATS_CLASSES + 1] = {
+		"camera", "cascade 0", "cascade 1", "cascade 2", "dlight cubes", "other shadow" };
+	const float perFrame = 1.0f / (float)Q_max(1, g2ShadowStats.frames);
+	ri.Printf(PRINT_ALL, "Ghoul2 shadow casters, per frame (%d frames): models, LOD 0/1/2/3+, camera LOD mismatches\n",
+		g2ShadowStats.frames);
+	for ( int c = 0; c <= G2_STATS_CLASSES; c++ )
+	{
+		if ( !g2ShadowStats.models[c] && c != 0 )
+			continue;
+		ri.Printf(PRINT_ALL, "  %-12s %6.1f   %5.1f %5.1f %5.1f %5.1f   %5.1f\n", names[c],
+			g2ShadowStats.models[c] * perFrame,
+			g2ShadowStats.lods[c][0] * perFrame, g2ShadowStats.lods[c][1] * perFrame,
+			g2ShadowStats.lods[c][2] * perFrame, g2ShadowStats.lods[c][3] * perFrame,
+			g2ShadowStats.mismatches[c] * perFrame);
+	}
+
+	Com_Memset(&g2ShadowStats, 0, sizeof(g2ShadowStats));
+	g2ShadowStats.lastPrintTime = now;
+}
+
+// work out lod for this entity.
+static int G2_ComputeLOD( trRefEntity_t *ent, const model_t *currentModel, int lodBias )
+{
+	float projectedRadius;
+
+	if ( currentModel->numLods < 2 )
+	{	// model has only 1 LOD level, skip computations and bias
+		return(0);
+	}
+
+	if ( r_lodbias->integer > lodBias )
+	{
+		lodBias = r_lodbias->integer;
+	}
+
+	// scale the radius if need be
+	float largestScale = ent->e.modelScale[0];
+
+	if (ent->e.modelScale[1] > largestScale)
+	{
+		largestScale = ent->e.modelScale[1];
+	}
+	if (ent->e.modelScale[2] > largestScale)
+	{
+		largestScale = ent->e.modelScale[2];
+	}
+	if (!largestScale)
+	{
+		largestScale = 1;
+	}
+
+	const float radius = 0.75*largestScale*ent->e.radius;
+	projectedRadius = ProjectRadius( radius, ent->e.origin );
+
+	// Shadow views project the model with their own (orthographic sun or
+	// light centred) projection, which picks another LOD than the camera: the
+	// caster mesh then differs from the receiver mesh. r_shadowCasterLod uses
+	// the camera LOD; casters behind the camera keep the shadow view LOD, so
+	// no caster gets more detail than the camera would give it.
+	const bool shadowView = (tr.viewParms.flags & VPF_DEPTHSHADOW) != 0;
+	const bool cameraValid = !(tr.refdef.rdflags & RDF_NOWORLDMODEL);
+	const float cameraRadius = (shadowView && cameraValid &&
+		(r_shadowCasterLod->integer || r_shadowCasterStats->integer)) ?
+		G2_CameraProjectRadius(radius, ent->e.origin) : 0.0f;
+	if ( r_shadowCasterLod->integer && cameraRadius > 0.0f )
+		projectedRadius = cameraRadius;
+
+	const int lod = G2_LodFromProjectedRadius(projectedRadius, currentModel, lodBias);
+
+	if ( r_shadowCasterStats->integer )
+	{
+		const int c = G2_StatsViewClass();
+		g2ShadowStats.models[c]++;
+		g2ShadowStats.lods[c][Q_min(lod, G2_STATS_LODS - 1)]++;
+		if ( shadowView && cameraRadius > 0.0f &&
+			lod != G2_LodFromProjectedRadius(cameraRadius, currentModel, lodBias) )
+			g2ShadowStats.mismatches[c]++;
+	}
 
 	return lod;
 }
