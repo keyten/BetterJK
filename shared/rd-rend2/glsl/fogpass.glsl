@@ -268,6 +268,13 @@ void main()
 		wsPosition.xyz += LeafFlutterOffset(wsPosition.xyz, LeafFlutterSeed(u_ModelMatrix[3].xyz),
 			u_LeafFlutterParams.x, LeafFlutterWeight(position), leafBands);
 	}
+	// FOLIAGE_PLANT root bend, same as lightall (plant_bend.glsl)
+	if (PlantBendEnabled())
+	{
+		float plantHeat;
+		wsPosition.xyz = PlantBendPosition(wsPosition.xyz, PlantBendRoot(u_ModelMatrix),
+			PlantBendWeight(position), u_PlantBendTime.x, false, plantHeat);
+	}
 
 	gl_Position = u_viewProjectionMatrix * wsPosition;
 

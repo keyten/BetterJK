@@ -84,9 +84,10 @@ static int R_CullModel( mdvModel_t *model, trRefEntity_t *ent ) {
 	newFrame = model->frames + ent->e.frame;
 	oldFrame = model->frames + ent->e.oldframe;
 
-	// r_leafFlutter moves leaf vertices a little past the static bounds: grow
-	// them by the largest offset (world units) instead of recomputing them
-	const float flutterMargin = R_LeafFlutterCullMargin( model );
+	// r_leafFlutter moves leaf vertices a little past the static bounds, the
+	// plant root bend (r_plantWind, r_foliageInteraction) further: grow them
+	// by the largest offset (world units) instead of recomputing them
+	const float flutterMargin = MAX( R_LeafFlutterCullMargin( model ), R_PlantBendCullMargin( model ) );
 
 	// cull bounding sphere ONLY if this is not an upscaled entity
 	if ( !ent->e.nonNormalizedAxes )

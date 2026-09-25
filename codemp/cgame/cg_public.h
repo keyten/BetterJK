@@ -719,6 +719,9 @@ typedef struct cgameImport_s {
 		// LTC line light (saber blade), qfalse = not taken: add the point light
 		// instead. Only called with r_saberAreaLights set (older engines lack it)
 		qboolean		(*R_AddLineLightToScene)				( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b );
+		// foliage character colliders (rend2 foliage extension), once per frame.
+		// Only called with r_foliageInteraction set (older engines lack it)
+		void			(*R_SetFoliageInteractors)				( const foliageInteractor_t *interactors, int count );
 	} ext;
 } cgameImport_t;
 

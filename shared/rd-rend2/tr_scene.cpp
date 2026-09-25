@@ -511,6 +511,10 @@ void RE_BeginScene(const refdef_t *fd)
 	// r_ltcAreaLights: the map's area lights (and r_ltcDebug 6 / 7 polygons)
 	R_AddAreaLightsToScene(fd);
 
+	// r_foliageInteraction: the character colliders of this scene (and the
+	// r_foliageInteractionDebug 1 capsules)
+	R_FoliageInteractionBeginScene(fd);
+
 	tr.refdef.num_dlights = r_numdlights - r_firstSceneDlight;
 	tr.refdef.dlights = &backEndData->dlights[r_firstSceneDlight];
 

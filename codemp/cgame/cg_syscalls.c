@@ -228,6 +228,9 @@ int trap_R_Font_StrLenPixels(const char *text, const int iFontIndex, const float
 static qboolean trap_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float radius, float range, float r, float g, float b ) {
 	return qfalse;
 }
+// legacy VM cgame: no foliage colliders
+static void trap_R_SetFoliageInteractors( const foliageInteractor_t *interactors, int count ) {
+}
 float trap_R_Font_StrLenPixelsFloat(const char *text, const int iFontIndex, const float scale) {
 	//HACK! RE_Font_StrLenPixels works better with 1.0f scale
 	float width = (float)Q_syscall( CG_R_FONT_STRLENPIXELS, text, iFontIndex, PASSFLOAT(1.0f));
@@ -949,4 +952,5 @@ static void TranslateSyscalls( void ) {
 
 	trap->ext.R_Font_StrLenPixels			= trap_R_Font_StrLenPixelsFloat;
 	trap->ext.R_AddLineLightToScene			= trap_R_AddLineLightToScene;
+	trap->ext.R_SetFoliageInteractors		= trap_R_SetFoliageInteractors;
 }

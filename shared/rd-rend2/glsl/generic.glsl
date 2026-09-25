@@ -467,6 +467,15 @@ void main()
 		var_LeafFlutter = LeafFlutterMagnitude(leafOffset);
 	}
 
+	// FOLIAGE_PLANT root bend: wind + character colliders (plant_bend.glsl)
+	if (PlantBendEnabled())
+	{
+		float plantHeat;
+		wsPosition.xyz = PlantBendPosition(wsPosition.xyz, PlantBendRoot(u_ModelMatrix),
+			PlantBendWeight(position), u_PlantBendTime.x, false, plantHeat);
+		var_LeafFlutter = plantHeat;
+	}
+
 	gl_Position = u_viewProjectionMatrix * wsPosition;
 
 #if defined(USE_TCGEN)

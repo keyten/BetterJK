@@ -394,3 +394,13 @@ typedef struct refAreaLightExport_s {
 } refAreaLightExport_t;
 
 typedef	const refAreaLightExport_t* (QDECL *GetRefAreaLightAPI_t) ( void );
+
+// Optional renderer extension (rend2 foliage interaction, r_foliageInteraction),
+// looked up as "GetRefFoliageAPI". cgame sends the character colliders once per
+// frame, before the main scene; the renderer keeps the previous frame's list
+// for motion vectors. count 0 clears them.
+typedef struct refFoliageExport_s {
+	void		(*SetFoliageInteractors)( const foliageInteractor_t *interactors, int count );
+} refFoliageExport_t;
+
+typedef	const refFoliageExport_t* (QDECL *GetRefFoliageAPI_t) ( void );

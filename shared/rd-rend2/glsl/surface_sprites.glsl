@@ -57,6 +57,10 @@ uniform vec4 u_FoliageWind;
 // z = frozen time (seconds), w = 1 when the time is frozen
 uniform vec4 u_FoliageWindParams;
 
+// r_foliageInteraction (foliage_interact.glsl): x = 1 when the character
+// colliders bend these sprites, y = 1 for the contact heat debug color
+uniform vec4 u_FoliageInteract;
+
 #if defined(VELOCITY_PASS)
 layout(std140) uniform TemporalInfo
 {
@@ -124,6 +128,11 @@ float WindNoise(in vec2 x)
 // debug output of the last FoliageWind evaluation
 float g_WindGust = 0.0;
 vec2 g_WindBend = vec2(0.0);
+
+// r_foliageInteraction: which collider set CalculateVertexOffset uses (the
+// velocity pass evaluates the previous frame too) and the contact it found
+bool g_FoliagePrevious = false;
+float g_FoliageHeat = 0.0;
 
 // r_foliageWind 1: coherent breeze.  A pure function of the sprite anchor, its
 // stable random seed and time; no camera or instance input, so all cards of a
@@ -232,16 +241,38 @@ vec3 CalculateVertexOffset( in int vertex_id, in float sprite_time, in float win
 #if !defined(FACE_UP) && !defined(FX_SPRITE)
 	float isLowerVertex = float(offset.z == 0.0);
 	offset.xy += mix(skew, vec2(0.0), isLowerVertex);
-	if (u_FoliageWindParams.x < 0.5)
+	bool interaction = u_FoliageInteract.x > 0.5;
+	// the tip offset of the wind, the stem the colliders bend further
+	vec3 windTip = vec3(0.0);
+	if (interaction && FoliageInteractionNoWind())
+	{
+		// r_foliageInteractionDebug 4: interaction only
+	}
+	else if (u_FoliageWindParams.x < 0.5)
 	{
 		float angle = (attr_Position.x + attr_Position.y) * 0.02 + (sprite_time * 0.0015);
 		float windsway = mix(height* u_WindIdle * 0.075, 0.0, isLowerVertex);
 		offset.xy += vec2(cos(angle), sin(angle)) * windsway;
+		windTip.xy = vec2(cos(angle), sin(angle)) * (height * u_WindIdle * 0.075);
 	}
 	else if (u_WindIdle > 0.0)
 	{
 		vec3 wind = FoliageWind(attr_Position.xy, attr_Position.w, wind_time, height);
 		offset += wind * (1.0 - isLowerVertex);
+		windTip = wind;
+	}
+
+	// r_foliageInteraction: the character colliders bend the stem (anchor to
+	// tip, skew and wind included) further. Everything here depends on the
+	// anchor only, so all cards of a tuft move the top edge by the same
+	// vector; the bottom vertices stay on the ground. Near the ground (40 % of
+	// the height) is what the colliders test, so the feet part the grass.
+	if (interaction)
+	{
+		vec3 stem = vec3(skew, height) + windTip;
+		vec3 q = attr_Position.xyz + vec3(0.0, 0.0, 0.4 * height);
+		vec2 bend = FoliageInteractionBend(q, g_FoliagePrevious, g_FoliageHeat);
+		offset += (FoliageApplyBend(stem, bend, 1.0) - stem) * (1.0 - isLowerVertex);
 	}
 #endif
 	return offset;
@@ -292,10 +323,17 @@ void main()
 	var_WSPosition = worldPos.xyz;
 #endif
 
+#if !defined(FACE_UP) && !defined(FX_SPRITE)
+	float foliageHeat = g_FoliageHeat;
+#endif
+
 #if defined(VELOCITY_PASS)
 	var_Position = gl_Position;
 	sprite_time = u_previousFrameTime * 1000.0;
 	wind_time = windFrozen ? u_FoliageWindParams.z : u_previousFrameTime;
+#if !defined(FACE_UP) && !defined(FX_SPRITE)
+	g_FoliagePrevious = true;
+#endif
 	offset = CalculateVertexOffset(vertex_id, sprite_time, wind_time, fadeScale);
 	worldPos = vec4(attr_Position.xyz + offset, 1.0);
 	var_prevPosition = u_previousViewProjectionMatrix * worldPos;
@@ -327,6 +365,9 @@ void main()
 			var_Color = vec3(windGust);
 		}
 	}
+	// r_foliageInteractionDebug 8: collider contact, blue 0 -> yellow 1
+	if (u_FoliageInteract.y > 0.5)
+		var_Color = mix(vec3(0.05, 0.1, 0.8), vec3(1.0, 0.85, 0.1), foliageHeat);
 #endif
 
 #if defined(AUTO_GRASS)

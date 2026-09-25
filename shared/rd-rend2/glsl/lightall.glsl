@@ -298,6 +298,19 @@ void main()
 		var_LeafFlutter = LeafFlutterMagnitude(leafOffset);
 	}
 
+	// FOLIAGE_PLANT root bend: wind + character colliders (plant_bend.glsl).
+	// The normal and tangent turn with the stem below.
+	vec3 plantRest = wsPosition.xyz;
+	vec3 plantRoot = vec3(0.0);
+	if (PlantBendEnabled())
+	{
+		float plantHeat;
+		plantRoot = PlantBendRoot(u_ModelMatrix);
+		wsPosition.xyz = PlantBendPosition(plantRest, plantRoot, PlantBendWeight(position),
+			u_PlantBendTime.x, false, plantHeat);
+		var_LeafFlutter = plantHeat;
+	}
+
 #if defined(USE_TCGEN)
 	vec2 texCoords = GenTexCoords(u_TCGen0, position.xyz, normal, u_TCGen0Vector0, u_TCGen0Vector1);
 #else
@@ -321,6 +334,13 @@ void main()
   #endif
 	if (LeafFlutterEnabled())
 		normal = LeafFlutterNormal(normal, leafBands, leafWeight);
+	if (PlantBendEnabled())
+	{
+		normal = FoliageRotateNormal(normal, plantRest - plantRoot, position - plantRoot);
+  #if defined(PER_PIXEL_LIGHTING)
+		tangent = FoliageRotateNormal(tangent, plantRest - plantRoot, position - plantRoot);
+  #endif
+	}
 
 #if defined(USE_LIGHT_VECTOR)
 	vec3 L = u_LocalLightOrigin.xyz;

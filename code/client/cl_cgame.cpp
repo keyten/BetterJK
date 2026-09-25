@@ -1013,6 +1013,10 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		if ( !reAreaLights || !reAreaLights->AddLineLightToScene )
 			return qfalse;
 		return reAreaLights->AddLineLightToScene( (const float *) VMA(1), (const float *) VMA(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7) );
+	case CG_R_SETFOLIAGEINTERACTORS:
+		if ( reFoliage && reFoliage->SetFoliageInteractors )
+			reFoliage->SetFoliageInteractors( (const foliageInteractor_t *) VMA(1), args[2] );
+		return 0;
 	case CG_R_RENDERSCENE:
 		re.RenderScene( (const refdef_t *) VMA(1) );
 		return 0;

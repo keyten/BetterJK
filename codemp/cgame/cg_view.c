@@ -2397,6 +2397,110 @@ qboolean CG_CullPointAndRadius( const vec3_t pt, float radius ) {
 //=========================================================================
 
 /*
+=====================
+CG_AddFoliageInteractors
+
+r_foliageInteraction (rend2): the colliders that push grass and ferns aside.
+The real bodies, never the camera: the predicted player (slot 0, always first)
+and the nearest living players / NPCs, each as a vertical capsule from the
+bounding box. Called after CG_AddPacketEntities, so lerpOrigin is this frame's.
+=====================
+*/
+#define FOLIAGE_INTERACTOR_RANGE	1024.0f
+
+static void CG_FillFoliageInteractor( foliageInteractor_t *out, int id, const vec3_t origin,
+	const vec3_t mins, const vec3_t maxs, const vec3_t velocity, int flags )
+{
+	out->id = id;
+	out->base[0] = origin[0] + (mins[0] + maxs[0]) * 0.5f;
+	out->base[1] = origin[1] + (mins[1] + maxs[1]) * 0.5f;
+	out->base[2] = origin[2] + mins[2];
+	out->height = maxs[2] - mins[2];
+	out->radius = (maxs[0] - mins[0] + maxs[1] - mins[1]) * 0.25f;
+	VectorCopy( velocity, out->velocity );
+	out->flags = flags;
+}
+
+static void CG_AddFoliageInteractors( void )
+{
+	foliageInteractor_t list[MAX_FOLIAGE_INTERACTORS];
+	float distance2[MAX_FOLIAGE_INTERACTORS];
+	const playerState_t *ps = &cg.predictedPlayerState;
+	vec3_t mins, maxs;
+	int count = 0, first, num;
+
+	if ( !r_foliageInteraction.integer || !cg.snap || cg.hyperspace )
+		return;
+
+	// the player: the predicted body, also in third person
+	// (cg.refdef.vieworg is the camera and is never used here)
+	if ( ps->pm_type != PM_SPECTATOR && ps->pm_type != PM_INTERMISSION && ps->pm_type != PM_DEAD &&
+		cg.snap->ps.persistant[PERS_TEAM] != TEAM_SPECTATOR && !ps->m_iVehicleNum )
+	{
+		const int stand = ps->standheight ? ps->standheight : DEFAULT_MAXS_2;
+		const int crouch = ps->crouchheight ? ps->crouchheight : CROUCH_MAXS_2;
+		VectorSet( mins, -15.0f, -15.0f, DEFAULT_MINS_2 );
+		VectorSet( maxs, 15.0f, 15.0f, (ps->pm_flags & PMF_DUCKED) ? crouch : stand );
+		CG_FillFoliageInteractor( &list[0], ps->clientNum, ps->origin, mins, maxs, ps->velocity,
+			FOLIAGE_INTERACTOR_PLAYER );
+		distance2[0] = 0.0f;
+		count = 1;
+	}
+	first = count;	// the others never go in front of the player
+
+	// the nearest others, sorted by horizontal distance to the player; the
+	// farthest drop out when there are more than fit
+	for ( num = 0; num < cg.snap->numEntities; num++ )
+	{
+		const entityState_t *es = &cg.snap->entities[num];
+		const centity_t *cent = &cg_entities[es->number];
+		float dx, dy, d2;
+		int slot, x, zd, zu;
+
+		if ( es->number == ps->clientNum || (es->eType != ET_PLAYER && es->eType != ET_NPC) )
+			continue;
+		if ( (es->eFlags & (EF_DEAD | EF_NODRAW)) || es->NPC_class == CLASS_VEHICLE ||
+			es->solid == 0 || es->solid == SOLID_BMODEL )
+			continue;
+
+		dx = cent->lerpOrigin[0] - ps->origin[0];
+		dy = cent->lerpOrigin[1] - ps->origin[1];
+		d2 = dx * dx + dy * dy;
+		if ( d2 > FOLIAGE_INTERACTOR_RANGE * FOLIAGE_INTERACTOR_RANGE )
+			continue;
+
+		slot = count;
+		if ( count == MAX_FOLIAGE_INTERACTORS )
+		{
+			if ( count == first || d2 >= distance2[count - 1] )
+				continue;
+			slot = count - 1;
+		}
+		else
+		{
+			count++;
+		}
+		while ( slot > first && distance2[slot - 1] > d2 )
+		{
+			list[slot] = list[slot - 1];
+			distance2[slot] = distance2[slot - 1];
+			slot--;
+		}
+
+		// encoded bbox (as cg_predict.c)
+		x = es->solid & 255;
+		zd = (es->solid >> 8) & 255;
+		zu = ((es->solid >> 16) & 255) - 32;
+		VectorSet( mins, -x, -x, -zd );
+		VectorSet( maxs, x, x, zu );
+		CG_FillFoliageInteractor( &list[slot], es->number, cent->lerpOrigin, mins, maxs, es->pos.trDelta, 0 );
+		distance2[slot] = d2;
+	}
+
+	trap->ext.R_SetFoliageInteractors( list, count );
+}
+
+/*
 =================
 CG_DrawActiveFrame
 
@@ -2648,6 +2752,7 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView, qboolean demo
 	if ( !cg.hyperspace ) {
 		CG_AddPacketEntities(qfalse);			// adter calcViewValues, so predicted player state is correct
 		CG_AddMarks();
+		CG_AddFoliageInteractors();
 	}
 	CG_AddViewWeapon( &cg.predictedPlayerState );
 

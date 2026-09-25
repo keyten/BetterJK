@@ -397,6 +397,18 @@ void main()
 			u_LeafFlutterParams.y, LeafFlutterWeight(prevPosition), leafBands);
 		var_prevPosition = u_previousViewProjectionMatrix * prevWsPosition;
 	}
+	else if (PlantBendEnabled())
+	{
+		// FOLIAGE_PLANT root bend (plant_bend.glsl): the previous position
+		// uses the previous root, time and character colliders
+		float plantHeat;
+		vec4 prevWsPosition = u_PreviousModelMatrix * vec4(prevPosition, 1.0);
+		wsPosition.xyz = PlantBendPosition(wsPosition.xyz, PlantBendRoot(u_ModelMatrix),
+			PlantBendWeight(position), u_PlantBendTime.x, false, plantHeat);
+		prevWsPosition.xyz = PlantBendPosition(prevWsPosition.xyz, PlantBendRoot(u_PreviousModelMatrix),
+			PlantBendWeight(prevPosition), u_PlantBendTime.y, true, plantHeat);
+		var_prevPosition = u_previousViewProjectionMatrix * prevWsPosition;
+	}
 	else
 	{
 		var_prevPosition = u_previousViewProjectionMatrix * u_PreviousModelMatrix * vec4(prevPosition, 1.0);

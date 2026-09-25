@@ -147,7 +147,7 @@ void RB_BeginSurface( shader_t *shader, int fogNum, int cubemapIndex )
 	tess.multiDrawPrimitives = 0;
 	tess.shader = shader;
 	tess.foliageDebugClass = 0;
-	tess.leafFlutter = 0;
+	tess.foliageMotion = 0;
 	tess.fogNum = fogNum;
 	tess.cubemapIndex = cubemapIndex;
 	tess.dlightBits = 0;		// will be OR'd in by surface functions
@@ -1024,8 +1024,8 @@ static void DrawTris(shaderCommands_t *input, const VertexArraysProperties *vert
 		UniformDataWriter uniformDataWriter;
 		SamplerBindingsWriter samplerBindingsWriter;
 		uniformDataWriter.Start(sp);
-		// the wireframe follows the leaf flutter of the surface
-		RB_SetLeafFlutterUniforms(uniformDataWriter, input->leafFlutter != 0);
+		// the wireframe follows the leaf flutter / plant bend of the surface
+		RB_SetFoliageMotionUniforms(uniformDataWriter, input->foliageMotion);
 
 		const UniformBlockBinding uniformBlockBindings[] = {
 			GetCameraBlockUniformBinding(backEnd.currentEntity),
@@ -1033,7 +1033,8 @@ static void DrawTris(shaderCommands_t *input, const VertexArraysProperties *vert
 			GetEntityBlockUniformBinding(backEnd.currentEntity),
 			GetShaderInstanceBlockUniformBinding(
 				backEnd.currentEntity, input->shader),
-			GetBonesBlockUniformBinding()
+			GetBonesBlockUniformBinding(),
+			RB_GetFoliageInteractionBlockUniformBinding()
 		};
 
 		samplerBindingsWriter.AddStaticImage(tr.whiteImage, TB_DIFFUSEMAP);
@@ -1101,7 +1102,7 @@ static void DrawPomSilhouetteDebug( shaderCommands_t *input, const VertexArraysP
 		UniformDataWriter uniformDataWriter;
 		SamplerBindingsWriter samplerBindingsWriter;
 		uniformDataWriter.Start(sp);
-		RB_SetLeafFlutterUniforms(uniformDataWriter, false);
+		RB_SetFoliageMotionUniforms(uniformDataWriter, FOLIAGE_NONE);
 		samplerBindingsWriter.AddStaticImage(tr.whiteImage, TB_DIFFUSEMAP);
 		const vec4_t vertColor = { 0.0f, 0.0f, 0.0f, 0.0f };
 		uniformDataWriter.SetUniformVec4(UNIFORM_BASECOLOR, color);
@@ -1331,7 +1332,7 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 
 	UniformDataWriter uniformDataWriter;
 	uniformDataWriter.Start(sp);
-	RB_SetLeafFlutterUniforms(uniformDataWriter, input->leafFlutter != 0);
+	RB_SetFoliageMotionUniforms(uniformDataWriter, input->foliageMotion);
 	uniformDataWriter.SetUniformInt(UNIFORM_FOGINDEX, MAX(input->fogNum - 1, 0));
 	if (input->numPasses > 0 && tess.shader->fogPass != FP_EQUAL)
 		uniformDataWriter.SetUniformInt(UNIFORM_ALPHA_TEST_TYPE, input->xstages[0]->alphaTestType);
@@ -1380,7 +1381,8 @@ static void RB_FogPass( shaderCommands_t *input, const VertexArraysProperties *v
 			backEnd.currentEntity, input->shader),
 		GetBonesBlockUniformBinding(),
 		GetSceneBlockUniformBinding(),
-		RB_GetVolumetricFogBlockUniformBinding()
+		RB_GetVolumetricFogBlockUniformBinding(),
+		RB_GetFoliageInteractionBlockUniformBinding()
 	};
 
 	SamplerBindingsWriter samplerBindingsWriter;
@@ -1990,9 +1992,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			stateBits = RB_PomSilhouetteStateBits(stateBits, qfalse);
 
 		uniformDataWriter.Start(sp);
-		// r_leafFlutter (tr_leafflutter.cpp): main, depth prepass, velocity
-		// and shadow maps all draw through here
-		RB_SetLeafFlutterUniforms(uniformDataWriter, input->leafFlutter != 0);
+		// r_leafFlutter (tr_leafflutter.cpp) and the plant root bend
+		// (tr_foliageinteract.cpp): main, depth prepass, velocity and shadow
+		// maps all draw through here
+		RB_SetFoliageMotionUniforms(uniformDataWriter, input->foliageMotion);
 
 		// froxel volumetric fog (tr_volumetric.cpp): the in-shader fog of the
 		// generic programs, set for every stage (the value stays in the program).
@@ -2172,8 +2175,10 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 		// r_autoPBRDebug: lightall stages show their material, lit stages still
 		// on the vertex lit generic path show up red (generic.glsl)
 		vec4_t materialDebug = {};
-		// r_leafFlutterDebug 4 / 8 color the fluttering leaves first
-		if (!input->leafFlutter || !RB_LeafFlutterDebugColor(materialDebug))
+		// r_leafFlutterDebug 4 / 8 color the fluttering leaves first,
+		// r_foliageInteractionDebug 8 the bending plants
+		if ((input->foliageMotion != FOLIAGE_LEAF || !RB_LeafFlutterDebugColor(materialDebug)) &&
+			!RB_FoliageInteractionDebugColor(input->foliageMotion, materialDebug))
 		{
 			if (r_autoFoliageDebug->integer && r_autoFoliage->integer)
 				R_FoliageDebugColor(tess.foliageDebugClass, materialDebug);
@@ -2478,7 +2483,8 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input, const VertexArrays
 			GetBonesBlockUniformBinding(),
 			GetPreviousBonesBlockUniformBinding(),
 			GetTemporalBlockUniformBinding(),
-			RB_GetVolumetricFogBlockUniformBinding()
+			RB_GetVolumetricFogBlockUniformBinding(),
+			RB_GetFoliageInteractionBlockUniformBinding()
 		};
 
 		DrawItem item = {};

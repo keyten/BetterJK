@@ -1278,7 +1278,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 {
 	shader_t *oldShader = nullptr;
 	int oldEntityNum = -1;
-	bool oldLeafFlutter = false;
+	uint8_t oldFoliageMotion = 0;
 	CBoneCache *oldBoneCache = nullptr;
 
 	drawSurf_t *drawSurf = drawSurfs;
@@ -1291,8 +1291,8 @@ static void RB_SubmitDrawSurfsForDepthFill(
 
 		R_DecomposeSort(drawSurf->sort, &entityNum, &shader, &cubemapIndex, &postRender);
 		assert(shader != nullptr);
-		// r_leafFlutter: depth and shadows move with the lit surface
-		const bool leafFlutter = R_LeafFlutterSurface(drawSurf);
+		// r_leafFlutter / plant bend: depth and shadows move with the lit surface
+		const uint8_t foliageMotion = R_FoliageMotionClass(drawSurf);
 
 		const bool alphaShadowDepth =
 			r_sunShadowMode->integer &&
@@ -1327,7 +1327,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 			}
 		}
 
-		if ( shader == oldShader &&	entityNum == oldEntityNum && leafFlutter == oldLeafFlutter )
+		if ( shader == oldShader &&	entityNum == oldEntityNum && foliageMotion == oldFoliageMotion )
 		{
 			// fast path, same as previous sort
 			rb_surfaceTable[*drawSurf->surface](drawSurf->surface);
@@ -1339,7 +1339,7 @@ static void RB_SubmitDrawSurfsForDepthFill(
 		// seperate entities merged into a single batch, like smoke and blood
 		// puff sprites
 		if ( shader != oldShader ||
-				leafFlutter != oldLeafFlutter ||
+				foliageMotion != oldFoliageMotion ||
 				(entityNum != oldEntityNum && !tess.entityMergable) )
 		{
 			if ( oldShader != nullptr )
@@ -1350,8 +1350,8 @@ static void RB_SubmitDrawSurfsForDepthFill(
 			RB_BeginSurface(shader, 0, 0);
 			backEnd.pc.c_surfBatches++;
 			oldShader = shader;
-			oldLeafFlutter = leafFlutter;
-			tess.leafFlutter = leafFlutter;
+			oldFoliageMotion = foliageMotion;
+			tess.foliageMotion = foliageMotion;
 		}
 
 		// change the modelview matrix if needed
@@ -1385,7 +1385,7 @@ static void RB_SubmitDrawSurfs(
 	int oldPostRender = 0;
 	int oldCubemapIndex = -1;
 	int oldFoliageDebugClass = -1;
-	bool oldLeafFlutter = false;
+	uint8_t oldFoliageMotion = 0;
 	CBoneCache *oldBoneCache = nullptr;
 
 	drawSurf_t *drawSurf = drawSurfs;
@@ -1410,7 +1410,7 @@ static void RB_SubmitDrawSurfs(
 				drawSurf->foliage.score >= 6 && (drawSurf->foliage.reasons & FOLIAGE_ALPHA_TEST))
 				foliageDebugClass = 4;
 		}
-		const bool leafFlutter = R_LeafFlutterSurface(drawSurf);
+		const uint8_t foliageMotion = R_FoliageMotionClass(drawSurf);
 
 		if (*drawSurf->surface == SF_MDX)
 		{
@@ -1432,7 +1432,7 @@ static void RB_SubmitDrawSurfs(
 				entityNum == oldEntityNum &&
 				dlighted == oldDlighted &&
 				foliageDebugClass == oldFoliageDebugClass &&
-				leafFlutter == oldLeafFlutter &&
+				foliageMotion == oldFoliageMotion &&
 				backEnd.refractionFill == shader->useDistortion )
 		{
 			// fast path, same as previous sort
@@ -1450,7 +1450,7 @@ static void RB_SubmitDrawSurfs(
 				postRender != oldPostRender ||
 				cubemapIndex != oldCubemapIndex ||
 				foliageDebugClass != oldFoliageDebugClass ||
-				leafFlutter != oldLeafFlutter ||
+				foliageMotion != oldFoliageMotion ||
 				(entityNum != oldEntityNum && !tess.entityMergable)) )
 		{
 			if ( oldShader != nullptr )
@@ -1466,9 +1466,9 @@ static void RB_SubmitDrawSurfs(
 			oldPostRender = postRender;
 			oldCubemapIndex = cubemapIndex;
 			oldFoliageDebugClass = foliageDebugClass;
-			oldLeafFlutter = leafFlutter;
+			oldFoliageMotion = foliageMotion;
 			tess.foliageDebugClass = foliageDebugClass;
-			tess.leafFlutter = leafFlutter;
+			tess.foliageMotion = foliageMotion;
 			tess.dlightBits = dlighted;
 		}
 
@@ -3078,6 +3078,8 @@ void RB_UpdateConstants(const trRefdef_t *refdef)
 	RB_UpdateSceneConstants(frame, refdef);
 	RB_UpdateTemporalConstants(frame, backEndData->previousFrame, refdef);
 	RB_LeafFlutterBeginFrame(refdef->floatTime, backEndData->previousFrame ?
+		backEndData->previousFrame->time : refdef->floatTime);
+	RB_UpdateFoliageInteractionConstants(frame, refdef, backEndData->previousFrame ?
 		backEndData->previousFrame->time : refdef->floatTime);
 	RB_UpdateLightsConstants(frame, refdef);
 	RB_UpdateFogsConstants(frame);

@@ -225,6 +225,10 @@ Ghoul2 Insert End
 	// LTC line light (rend2 area light extension), returns qfalse when not
 	// taken; only called with r_saberAreaLights set (older engines lack it)
 	CG_R_ADDLINELIGHTTOSCENE,
+
+	// foliage character colliders (rend2 foliage extension); only called with
+	// r_foliageInteraction set (older engines lack it)
+	CG_R_SETFOLIAGEINTERACTORS,
 } cgameImport_t;
 
 #ifdef JK2_MODE

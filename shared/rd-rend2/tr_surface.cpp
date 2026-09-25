@@ -54,7 +54,7 @@ void RB_CheckOverflow( int verts, int indexes ) {
 	}
 
 	const uint8_t foliageDebugClass = tess.foliageDebugClass;
-	const uint8_t leafFlutter = tess.leafFlutter;
+	const uint8_t foliageMotion = tess.foliageMotion;
 	RB_EndSurface();
 
 	if ( verts >= SHADER_MAX_VERTEXES ) {
@@ -66,7 +66,7 @@ void RB_CheckOverflow( int verts, int indexes ) {
 
 	RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 	tess.foliageDebugClass = foliageDebugClass;
-	tess.leafFlutter = leafFlutter;
+	tess.foliageMotion = foliageMotion;
 }
 
 void RB_CheckVBOandIBO(VBO_t *vbo, IBO_t *ibo)
@@ -77,12 +77,12 @@ void RB_CheckVBOandIBO(VBO_t *vbo, IBO_t *ibo)
 	{
 		int dlightBits = tess.dlightBits;
 		const uint8_t foliageDebugClass = tess.foliageDebugClass;
-		const uint8_t leafFlutter = tess.leafFlutter;
+		const uint8_t foliageMotion = tess.foliageMotion;
 		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 		tess.dlightBits = dlightBits;
 		tess.foliageDebugClass = foliageDebugClass;
-		tess.leafFlutter = leafFlutter;
+		tess.foliageMotion = foliageMotion;
 		R_BindVBO(vbo);
 		R_BindIBO(ibo);
 	}
@@ -634,12 +634,12 @@ void RB_SetPomMode( int mode )
 	{
 		const int dlightBits = tess.dlightBits;
 		const uint8_t foliageDebugClass = tess.foliageDebugClass;
-		const uint8_t leafFlutter = tess.leafFlutter;
+		const uint8_t foliageMotion = tess.foliageMotion;
 		RB_EndSurface();
 		RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex);
 		tess.dlightBits = dlightBits;
 		tess.foliageDebugClass = foliageDebugClass;
-		tess.leafFlutter = leafFlutter;
+		tess.foliageMotion = foliageMotion;
 	}
 	tess.pomMode = mode;
 }
@@ -1969,11 +1969,11 @@ static void RB_SurfaceBSPGrid( srfBspSurface_t *srf ) {
 			// if we don't have enough space for at least one strip, flush the buffer
 			if ( vrows < 2 || irows < 1 ) {
 				const uint8_t foliageDebugClass = tess.foliageDebugClass;
-				const uint8_t leafFlutter = tess.leafFlutter;
+				const uint8_t foliageMotion = tess.foliageMotion;
 				RB_EndSurface();
 				RB_BeginSurface(tess.shader, tess.fogNum, tess.cubemapIndex );
 				tess.foliageDebugClass = foliageDebugClass;
-				tess.leafFlutter = leafFlutter;
+				tess.foliageMotion = foliageMotion;
 			} else {
 				break;
 			}
@@ -2818,6 +2818,9 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		uniformDataWriter.SetUniformVec4(UNIFORM_FOLIAGEWIND, foliageWind);
 		uniformDataWriter.SetUniformVec4(UNIFORM_FOLIAGEWINDPARAMS, foliageWindParams);
 	}
+	// r_foliageInteraction: the character colliders bend the tufts (every
+	// sprite draw writes it, the value sticks per program)
+	RB_SetSpriteInteractionUniforms(uniformDataWriter);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWORIGIN, *spriteViewOrigin);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWLEFT, *spriteViewLeft);
 	uniformDataWriter.SetUniformVec3(UNIFORM_SPRITEVIEWUP, *spriteViewUp);
@@ -2886,7 +2889,8 @@ static void RB_SurfaceSprites( srfSprites_t *surf )
 		{ currentFrameUbo, (size_t)tr.cameraUboOffsets[tr.viewParms.currentViewParm], UNIFORM_BLOCK_CAMERA },
 		{ currentFrameUbo, (size_t)tr.fogsUboOffset, UNIFORM_BLOCK_FOGS },
 		{ currentFrameUbo, (size_t)tr.temporalInfoUboOffset, UNIFORM_BLOCK_TEMPORAL_INFO },
-		RB_GetVolumetricFogBlockUniformBinding()
+		RB_GetVolumetricFogBlockUniformBinding(),
+		RB_GetFoliageInteractionBlockUniformBinding()
 	};
 
 	uint32_t numBindings;

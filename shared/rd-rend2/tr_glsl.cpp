@@ -43,6 +43,7 @@ const uniformBlockInfo_t uniformBlocksInfo[UNIFORM_BLOCK_COUNT] = {
 	{ 9, "TemporalInfo", sizeof(TemporalBlock) },
 	{ 10, "SurfaceSprite", sizeof(SurfaceSpriteBlock) },
 	{ 11, "VolumetricFog", sizeof(VolumetricFogBlock) },
+	{ 12, "FoliageInteraction", sizeof(FoliageInteractionBlock) },
 };
 
 typedef struct uniformInfo_s
@@ -140,6 +141,10 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_LeafFlutter",       GLSL_VEC4, 1 },
 	{ "u_LeafFlutterParams", GLSL_VEC4, 1 },
 	{ "u_LeafFlutterDebug",  GLSL_FLOAT, 1 },
+	{ "u_PlantBend",         GLSL_VEC4, 1 },
+	{ "u_PlantBendParams",   GLSL_VEC4, 1 },
+	{ "u_PlantBendTime",     GLSL_VEC4, 1 },
+	{ "u_FoliageInteract",   GLSL_VEC4, 1 },
 	{ "u_DiffuseBRDF",    GLSL_INT,  1 },
 	{ "u_ParallaxBias",  GLSL_FLOAT, 1 },
 
@@ -2058,13 +2063,13 @@ static const GPUShaderDesc *LoadVolumetricLibrary( Allocator& allocator )
 	return nullptr;
 }
 
-// MD3 leaf flutter (glsl/leaf_flutter.glsl, tr_leafflutter.cpp): vertex
-// functions shared by every program that draws a FOLIAGE_LEAF surface
-// (lightall, generic, fogpass, velocity), so all passes move it the same way.
-static const GPUShaderDesc *LoadLeafFlutterLibrary( Allocator& allocator )
+static const GPUShaderDesc *GLSL_CombineLibraries(
+	Allocator& allocator, const GPUShaderDesc *a, const GPUShaderDesc *b );
+
+static const GPUShaderDesc *LoadVertexLibrary(
+	Allocator& allocator, const char *name, const GPUProgramDesc& fallback )
 {
-	const GPUProgramDesc *programDesc =
-		LoadProgramSource("leaf_flutter", allocator, fallback_leaf_flutterProgram);
+	const GPUProgramDesc *programDesc = LoadProgramSource(name, allocator, fallback);
 	for ( size_t i = 0; i < programDesc->numShaders; ++i )
 	{
 		if ( programDesc->shaders[i].type == GPUSHADER_VERTEX )
@@ -2073,8 +2078,31 @@ static const GPUShaderDesc *LoadLeafFlutterLibrary( Allocator& allocator )
 		}
 	}
 
-	ri.Error(ERR_FATAL, "Could not load leaf_flutter shader library!");
+	ri.Error(ERR_FATAL, "Could not load %s shader library!", name);
 	return nullptr;
+}
+
+// Foliage character colliders (glsl/foliage_interact.glsl,
+// tr_foliageinteract.cpp): the FoliageInteraction block and the bend
+// functions, for the surface sprites (grass)
+static const GPUShaderDesc *LoadFoliageInteractLibrary( Allocator& allocator )
+{
+	return LoadVertexLibrary(allocator, "foliage_interact", fallback_foliage_interactProgram);
+}
+
+// MD3 foliage motion, vertex functions shared by every program that draws a
+// FOLIAGE_LEAF or FOLIAGE_PLANT surface (lightall, generic, fogpass,
+// velocity), so all passes move it the same way: leaf flutter
+// (glsl/leaf_flutter.glsl, tr_leafflutter.cpp), the character colliders and
+// the plant root bend (glsl/foliage_interact.glsl + plant_bend.glsl)
+static const GPUShaderDesc *LoadLeafFlutterLibrary( Allocator& allocator )
+{
+	const GPUShaderDesc *leaf =
+		LoadVertexLibrary(allocator, "leaf_flutter", fallback_leaf_flutterProgram);
+	const GPUShaderDesc *plant =
+		LoadVertexLibrary(allocator, "plant_bend", fallback_plant_bendProgram);
+	return GLSL_CombineLibraries(allocator,
+		GLSL_CombineLibraries(allocator, leaf, LoadFoliageInteractLibrary(allocator)), plant);
 }
 
 // texture units of the froxel volume lookup (FroxelFog)
@@ -2464,7 +2492,7 @@ static const GPUShaderDesc *LoadPomSilhouetteLibrary( Allocator& allocator )
 	return nullptr;
 }
 
-// Two fragment libraries in one (a program takes one): b follows a with its
+// Two libraries of one stage in one (a program takes one): b follows a with its
 // own line numbers, errors in b are reported as source string 2
 static const GPUShaderDesc *GLSL_CombineLibraries(
 	Allocator& allocator, const GPUShaderDesc *a, const GPUShaderDesc *b )
@@ -2482,7 +2510,7 @@ static const GPUShaderDesc *GLSL_CombineLibraries(
 	Q_strcat(source, size, b->source);
 
 	GPUShaderDesc *combined = ojkAlloc<GPUShaderDesc>(allocator);
-	combined->type = GPUSHADER_FRAGMENT;
+	combined->type = a->type;
 	combined->source = source;
 	combined->firstLineNumber = a->firstLineNumber;
 	return combined;
@@ -3668,6 +3696,8 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 	const GPUProgramDesc *programDesc =
 		LoadProgramSource("surface_sprites", allocator, fallback_surface_spritesProgram);
 	const GPUShaderDesc *volumetricLibrary = LoadVolumetricLibrary(allocator);
+	// r_foliageInteraction: the character colliders bend the grass
+	const GPUShaderDesc *foliageInteractLibrary = LoadFoliageInteractLibrary(allocator);
 	const uint32_t attribs = ATTR_POSITION | ATTR_POSITION2 | ATTR_NORMAL | ATTR_COLOR;
 	for ( int i = 0; i < SSDEF_COUNT; ++i )
 	{
@@ -3739,7 +3769,7 @@ static int GLSL_LoadGPUProgramSurfaceSprites(
 		}
 		shaderProgram_t *program = tr.spriteShader + i;
 		if (!GLSL_LoadGPUShader(builder, program, name, attribs, NO_XFB_VARS,
-				extradefines, *programDesc, volumetricLibrary))
+				extradefines, *programDesc, volumetricLibrary, foliageInteractLibrary))
 		{
 			ri.Error(ERR_FATAL, "Could not load surface sprites shader!");
 		}

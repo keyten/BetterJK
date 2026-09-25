@@ -1975,6 +1975,101 @@ void CG_RunEmplacedWeapon()
 	}
 }
 
+/*
+=====================
+CG_AddFoliageInteractors
+
+r_foliageInteraction (rend2): the colliders that push grass and ferns aside.
+The real bodies, never the camera: the predicted player (slot 0, always first)
+and the nearest living NPCs, each as a vertical capsule from the bounding box.
+Called after CG_AddPacketEntities, so lerpOrigin is this frame's.
+=====================
+*/
+#define FOLIAGE_INTERACTOR_RANGE	1024.0f
+
+static void CG_FillFoliageInteractor( foliageInteractor_t *out, int id, const vec3_t origin,
+	const vec3_t mins, const vec3_t maxs, const vec3_t velocity, int flags )
+{
+	out->id = id;
+	out->base[0] = origin[0] + (mins[0] + maxs[0]) * 0.5f;
+	out->base[1] = origin[1] + (mins[1] + maxs[1]) * 0.5f;
+	out->base[2] = origin[2] + mins[2];
+	out->height = maxs[2] - mins[2];
+	out->radius = (maxs[0] - mins[0] + maxs[1] - mins[1]) * 0.25f;
+	VectorCopy( velocity, out->velocity );
+	out->flags = flags;
+}
+
+static void CG_AddFoliageInteractors( void )
+{
+	if ( !r_foliageInteraction.integer || !cg.snap || cg.hyperspace )
+		return;
+
+	foliageInteractor_t list[MAX_FOLIAGE_INTERACTORS];
+	float distance2[MAX_FOLIAGE_INTERACTORS];
+	int count = 0;
+
+	// the player: the predicted body, also in third person and in cinematics
+	// (cg.refdef.vieworg is the camera and is never used here)
+	const playerState_t *ps = &cg.predicted_player_state;
+	const centity_t *player = &cg_entities[0];
+	vec3_t center;
+	VectorCopy( player->lerpOrigin, center );
+	if ( player->gent && player->gent->client && ps->pm_type != PM_INTERMISSION &&
+		!(player->currentState.eFlags & EF_NODRAW) && !G_IsRidingVehicle( player->gent ) )
+	{
+		CG_FillFoliageInteractor( &list[0], 0, player->lerpOrigin, player->gent->mins,
+			player->gent->maxs, ps->velocity, FOLIAGE_INTERACTOR_PLAYER );
+		distance2[0] = 0.0f;
+		count = 1;
+	}
+	const int first = count;	// NPCs never go in front of the player
+
+	// the nearest NPCs, sorted by horizontal distance to the player; the
+	// farthest drop out when there are more than fit
+	for ( int num = 0; num < cg.snap->numEntities; num++ )
+	{
+		const int number = cg.snap->entities[num].number;
+		if ( number == 0 )
+			continue;
+		const centity_t *cent = &cg_entities[number];
+		const gentity_t *gent = cent->gent;
+		if ( cent->currentState.eType != ET_PLAYER || !gent || !gent->client ||
+			gent->health <= 0 || (cent->currentState.eFlags & EF_NODRAW) ||
+			gent->client->NPC_class == CLASS_VEHICLE )
+			continue;
+
+		const float dx = cent->lerpOrigin[0] - center[0];
+		const float dy = cent->lerpOrigin[1] - center[1];
+		const float d2 = dx * dx + dy * dy;
+		if ( d2 > FOLIAGE_INTERACTOR_RANGE * FOLIAGE_INTERACTOR_RANGE )
+			continue;
+
+		int slot = count;
+		if ( count == MAX_FOLIAGE_INTERACTORS )
+		{
+			if ( count == first || d2 >= distance2[count - 1] )
+				continue;
+			slot = count - 1;
+		}
+		else
+		{
+			count++;
+		}
+		while ( slot > first && distance2[slot - 1] > d2 )
+		{
+			list[slot] = list[slot - 1];
+			distance2[slot] = distance2[slot - 1];
+			slot--;
+		}
+		CG_FillFoliageInteractor( &list[slot], number, cent->lerpOrigin, gent->mins, gent->maxs,
+			gent->client->ps.velocity, 0 );
+		distance2[slot] = d2;
+	}
+
+	cgi_R_SetFoliageInteractors( list, count );
+}
+
 //=========================================================================
 
 /*
@@ -2142,6 +2237,7 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 		CG_AddPacketEntities(qfalse);			// adter calcViewValues, so predicted player state is correct
 		CG_AddMarks();
 		CG_DrawMiscEnts();
+		CG_AddFoliageInteractors();
 	}
 
 	//check for opaque water

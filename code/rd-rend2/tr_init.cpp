@@ -303,6 +303,13 @@ cvar_t  *r_leafFlutterStrength;
 cvar_t  *r_leafFlutterSpeed;
 cvar_t  *r_leafFlutterNormal;
 cvar_t  *r_leafFlutterDebug;
+cvar_t  *r_foliageInteraction;
+cvar_t  *r_foliageInteractionStrength;
+cvar_t  *r_foliageInteractionRadius;
+cvar_t  *r_foliageInteractionMax;
+cvar_t  *r_foliageInteractionNPC;
+cvar_t  *r_foliageInteractionDebug;
+cvar_t  *r_plantWind;
 cvar_t  *r_autoPBRConvert;
 cvar_t  *r_diffuseBRDF;
 cvar_t  *r_diffuseIBL;
@@ -1704,6 +1711,7 @@ static consoleCommand_t	commands[] = {
 	{ "skinsss_kernel",	R_SkinSSSKernel_f },
 	{ "skinsss_list",	R_SkinSSSList_f },
 	{ "r_printAutoFoliage", R_PrintAutoFoliage_f },
+	{ "r_foliageInteractors", R_FoliageInteractionList_f },
 	{ "r_forwardPlusStats",	R_ForwardPlusStats_f },
 	{ "r_pomSilhouetteInfo",	R_PomSilhouetteInfo_f },
 	{ "r_autoPomSilhouette",	R_AutoPomSilhouette_f },
@@ -2104,6 +2112,27 @@ void R_Register( void )
 	r_leafFlutterDebug = ri_Cvar_Get_NoComm( "r_leafFlutterDebug", "0", CVAR_CHEAT,
 		"Leaf flutter debug bits: 1 = x8 amplitude, 2 = freeze time, 4 = highlight fluttering surfaces, 8 = color by displacement" );
 	ri.Cvar_CheckRange( r_leafFlutterDebug, 0, 15, qtrue );
+	r_foliageInteraction = ri_Cvar_Get_NoComm( "r_foliageInteraction", "0", CVAR_ARCHIVE,
+		"Characters push grass (surface sprites) and FOLIAGE_PLANT models (ferns, needs r_autoFoliage) aside: player + nearest NPCs as capsules sent by cgame" );
+	ri.Cvar_CheckRange( r_foliageInteraction, 0, 1, qtrue );
+	r_foliageInteractionStrength = ri_Cvar_Get_NoComm( "r_foliageInteractionStrength", "1", CVAR_ARCHIVE,
+		"r_foliageInteraction: bend strength (1 = a stem in full contact leans about 45 degrees, at most 65)" );
+	ri.Cvar_CheckRange( r_foliageInteractionStrength, 0.0f, 4.0f, qfalse );
+	r_foliageInteractionRadius = ri_Cvar_Get_NoComm( "r_foliageInteractionRadius", "1", CVAR_ARCHIVE,
+		"r_foliageInteraction: scale of the collider radius (bounding box half width)" );
+	ri.Cvar_CheckRange( r_foliageInteractionRadius, 0.5f, 3.0f, qfalse );
+	r_foliageInteractionMax = ri_Cvar_Get_NoComm( "r_foliageInteractionMax", "8", CVAR_ARCHIVE,
+		"r_foliageInteraction: colliders per frame, the player first, then the nearest NPCs" );
+	ri.Cvar_CheckRange( r_foliageInteractionMax, 1, MAX_FOLIAGE_INTERACTORS, qtrue );
+	r_foliageInteractionNPC = ri_Cvar_Get_NoComm( "r_foliageInteractionNPC", "1", CVAR_ARCHIVE,
+		"r_foliageInteraction: 0 = player only, 1 = also the nearest NPCs / other players" );
+	ri.Cvar_CheckRange( r_foliageInteractionNPC, 0, 1, qtrue );
+	r_foliageInteractionDebug = ri_Cvar_Get_NoComm( "r_foliageInteractionDebug", "0", CVAR_CHEAT,
+		"Foliage interaction debug bits: 1 = draw colliders, 2 = x2 radius and strength, 4 = interaction only (no wind), 8 = contact heat color, 16 = freeze colliders, 32 = player only" );
+	ri.Cvar_CheckRange( r_foliageInteractionDebug, 0, 63, qtrue );
+	r_plantWind = ri_Cvar_Get_NoComm( "r_plantWind", "0", CVAR_ARCHIVE,
+		"Breeze bend of FOLIAGE_PLANT models (ferns) around their root, 0 = none; direction and speed from r_foliageWindDirection / r_foliageWindSpeed (needs r_autoFoliage)" );
+	ri.Cvar_CheckRange( r_plantWind, 0.0f, 4.0f, qfalse );
 	r_autoPBRConvert = ri_Cvar_Get_NoComm( "r_autoPBRConvert", "0", CVAR_ARCHIVE | CVAR_LATCH, "Convert legacy shaders with alphaGen lightingSpecular / tcGen environment stages (vertex lit in rend2) to per pixel lightall materials; the specular mask becomes spatial roughness / metalness" );
 	ri.Cvar_CheckRange( r_autoPBRConvert, 0, 1, qtrue );
 	r_diffuseBRDF = ri_Cvar_Get_NoComm( "r_diffuseBRDF", "0", CVAR_ARCHIVE, "Standard PBR diffuse BRDF: 0 = Lambert, 1 = Burley/Disney" );
@@ -2961,6 +2990,7 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		R_DestroyGPUBuffers();
 		R_ShutdownForwardPlus();
 		R_ClearAreaLights();
+		R_FoliageInteractionReset();
 		R_ShutdownPomSilhouette();
 
 		if (!destroyWindow && !restarting)
@@ -3139,6 +3169,18 @@ Optional extension (tr_public.h): LTC area lights, tr_arealights.cpp
 extern "C" Q_EXPORT const refAreaLightExport_t* QDECL GetRefAreaLightAPI ( void ) {
 	static const refAreaLightExport_t areaLights = { RE_AddAreaLightToScene, RE_AddLineLightToScene };
 	return &areaLights;
+}
+
+/*
+@@@@@@@@@@@@@@@@@@@@@
+GetRefFoliageAPI
+
+Optional extension (tr_public.h): foliage interaction, tr_foliageinteract.cpp
+@@@@@@@@@@@@@@@@@@@@@
+*/
+extern "C" Q_EXPORT const refFoliageExport_t* QDECL GetRefFoliageAPI ( void ) {
+	static const refFoliageExport_t foliage = { RE_SetFoliageInteractors };
+	return &foliage;
 }
 
 /*

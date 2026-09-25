@@ -127,6 +127,7 @@ cvar_t	*cl_reconnectArgs;
 // Structure containing functions exported from refresh DLL
 refexport_t	*re = NULL;
 const refAreaLightExport_t	*reAreaLights = NULL;	// optional, see tr_public.h
+const refFoliageExport_t	*reFoliage = NULL;		// optional, see tr_public.h
 static void	*rendererLib = NULL;
 
 ping_t	cl_pinglist[MAX_PINGREQUESTS];
@@ -2321,6 +2322,7 @@ static void CL_ShutdownRef( qboolean restarting ) {
 
 	re = NULL;
 	reAreaLights = NULL;
+	reFoliage = NULL;
 
 	if ( rendererLib != NULL ) {
 		Sys_UnloadDll (rendererLib);
@@ -2543,6 +2545,8 @@ void CL_InitRef( void ) {
 
 	GetRefAreaLightAPI_t GetRefAreaLightAPI = (GetRefAreaLightAPI_t)Sys_LoadFunction( rendererLib, "GetRefAreaLightAPI" );
 	reAreaLights = GetRefAreaLightAPI ? GetRefAreaLightAPI() : NULL;
+	GetRefFoliageAPI_t GetRefFoliageAPI = (GetRefFoliageAPI_t)Sys_LoadFunction( rendererLib, "GetRefFoliageAPI" );
+	reFoliage = GetRefFoliageAPI ? GetRefFoliageAPI() : NULL;
 
 	// unpause so the cgame definately gets a snapshot and renders a frame
 	Cvar_Set( "cl_paused", "0" );

@@ -341,6 +341,13 @@ extern cvar_t  *r_leafFlutterStrength;
 extern cvar_t  *r_leafFlutterSpeed;
 extern cvar_t  *r_leafFlutterNormal;
 extern cvar_t  *r_leafFlutterDebug;
+extern cvar_t  *r_foliageInteraction;
+extern cvar_t  *r_foliageInteractionStrength;
+extern cvar_t  *r_foliageInteractionRadius;
+extern cvar_t  *r_foliageInteractionMax;
+extern cvar_t  *r_foliageInteractionNPC;
+extern cvar_t  *r_foliageInteractionDebug;
+extern cvar_t  *r_plantWind;
 extern cvar_t  *r_autoPBRConvert;
 extern cvar_t  *r_diffuseBRDF;
 extern cvar_t  *r_diffuseIBL;
@@ -1150,6 +1157,17 @@ struct TemporalBlock
 	float pad0[3];
 };
 
+// Foliage character colliders (r_foliageInteraction, tr_foliageinteract.cpp).
+// Same layout as the FoliageInteraction block of glsl/foliage_interact.glsl
+// (std140). Per collider: (axis x, y, feet z, head z), (radius, velocity x,
+// velocity y, unused).
+struct FoliageInteractionBlock
+{
+	vec4_t params;		// current count, previous count, strength, 1 = no wind (debug)
+	vec4_t current[MAX_FOLIAGE_INTERACTORS * 2];
+	vec4_t previous[MAX_FOLIAGE_INTERACTORS * 2];
+};
+
 // Froxel volumetric fog (r_volumetricFog 2, tr_volumetric.cpp). Same layout
 // as the VolumetricFog block of glsl/volumetric_common.glsl (std140).
 struct VolumetricFogBlock
@@ -1939,6 +1957,7 @@ enum uniformBlock_t
 	UNIFORM_BLOCK_TEMPORAL_INFO,
 	UNIFORM_BLOCK_SURFACESPRITE,
 	UNIFORM_BLOCK_VOLUMETRIC_FOG,
+	UNIFORM_BLOCK_FOLIAGE_INTERACTION,
 	UNIFORM_BLOCK_COUNT
 };
 
@@ -2073,6 +2092,10 @@ typedef enum
 	UNIFORM_LEAFFLUTTER,		// r_leafFlutter: wind dir x, y, amplitude (0 = off), speed
 	UNIFORM_LEAFFLUTTERPARAMS,	// r_leafFlutter: time, previous time, 1 / model xy radius, normal amount
 	UNIFORM_LEAFFLUTTERDEBUG,	// r_leafFlutterDebug: 0, 4 = highlight, 8 = magnitude colour
+	UNIFORM_PLANTBEND,			// FOLIAGE_PLANT: root (object space) xyz, 1 / plant size (0 = off)
+	UNIFORM_PLANTBENDPARAMS,	// FOLIAGE_PLANT: wind dir x, y, wind bend, interaction (0 / 1)
+	UNIFORM_PLANTBENDTIME,		// FOLIAGE_PLANT: time, previous time, wind speed, unused
+	UNIFORM_FOLIAGEINTERACT,	// surface sprites: interaction (0 / 1), contact heat debug (0 / 1)
 	UNIFORM_DIFFUSEBRDF,	// r_diffuseBRDF: 0 = Lambert, 1 = Burley/Disney
 	UNIFORM_PARALLAXBIAS,
 
@@ -3540,6 +3563,7 @@ typedef struct trGlobals_s {
 	long lightsUboOffset;
 	long fogsUboOffset;
 	long volumetricFogUboOffset;
+	long foliageInteractionUboOffset;
 	long skyEntityUboOffset;
 	long entityUboOffsets[REFENTITYNUM_WORLD + 1];
 	long previousEntityUboOffsets[REFENTITYNUM_WORLD + 1];
@@ -4086,7 +4110,7 @@ struct shaderCommands_s
 
 	shader_t	*shader;
 	uint8_t foliageDebugClass; // color only when r_autoFoliageDebug is enabled
-	uint8_t leafFlutter;       // r_leafFlutter: this batch is a FOLIAGE_LEAF surface
+	uint8_t foliageMotion;     // FOLIAGE_LEAF (r_leafFlutter), FOLIAGE_PLANT (root bend) or FOLIAGE_NONE
 	float		shaderTime;
 	int			fogNum;
 	int         cubemapIndex;
@@ -4934,6 +4958,22 @@ float R_LeafFlutterCullMargin(const mdvModel_t *model);
 void RB_LeafFlutterBeginFrame(float currentTime, float previousTime);
 void RB_SetLeafFlutterUniforms(UniformDataWriter& writer, bool active);
 bool RB_LeafFlutterDebugColor(vec4_t color);
+
+// tr_foliageinteract.cpp: character colliders bending grass and MD3 plants
+struct UniformBlockBinding;
+bool R_FoliageInteractionActive(void);
+bool R_PlantBendActive(void);
+uint8_t R_FoliageMotionClass(const drawSurf_t *drawSurf);
+float R_PlantBendCullMargin(const mdvModel_t *model);
+void RE_SetFoliageInteractors(const foliageInteractor_t *interactors, int count);
+void R_FoliageInteractionBeginScene(const refdef_t *fd);
+void R_FoliageInteractionReset(void);
+void R_FoliageInteractionList_f(void);
+void RB_UpdateFoliageInteractionConstants(struct gpuFrame_t *frame, const trRefdef_t *refdef, float previousTime);
+UniformBlockBinding RB_GetFoliageInteractionBlockUniformBinding(void);
+void RB_SetFoliageMotionUniforms(UniformDataWriter& writer, uint8_t cls);
+void RB_SetSpriteInteractionUniforms(UniformDataWriter& writer);
+bool RB_FoliageInteractionDebugColor(uint8_t cls, vec4_t color);
 void RB_AODebugOverlay(void);
 
 qboolean R_MotionBlurEnabled(void);

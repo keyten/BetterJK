@@ -331,6 +331,10 @@ qboolean	cgi_R_AddLineLightToScene( const vec3_t start, const vec3_t end, float 
 	return (qboolean)Q_syscall( CG_R_ADDLINELIGHTTOSCENE, start, end, PASSFLOAT(radius), PASSFLOAT(range), PASSFLOAT(r), PASSFLOAT(g), PASSFLOAT(b) );
 }
 
+void	cgi_R_SetFoliageInteractors( const foliageInteractor_t *interactors, int count ) {
+	Q_syscall( CG_R_SETFOLIAGEINTERACTORS, interactors, count );
+}
+
 void	cgi_R_RenderScene( const refdef_t *fd ) {
 	Q_syscall( CG_R_RENDERSCENE, fd );
 }

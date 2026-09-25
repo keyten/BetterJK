@@ -322,6 +322,21 @@ typedef struct refdef_s {
 	char		text[MAX_RENDER_STRINGS][MAX_RENDER_STRING_LENGTH];
 } refdef_t;
 
+// Foliage interaction (rend2 r_foliageInteraction): one character collider,
+// a vertical capsule around the real body (never the camera). Sent once per
+// frame by cgame through the optional renderer extension GetRefFoliageAPI.
+#define	MAX_FOLIAGE_INTERACTORS		16
+#define	FOLIAGE_INTERACTOR_PLAYER	1
+
+typedef struct {
+	int			id;			// entity number, pairs the collider with the previous frame
+	vec3_t		base;		// axis x, y; z = feet (origin z + mins z)
+	float		height;		// maxs z - mins z (smaller when crouched)
+	float		radius;		// horizontal half width of the bounding box
+	vec3_t		velocity;	// world units per second
+	int			flags;		// FOLIAGE_INTERACTOR_*
+} foliageInteractor_t;
+
 
 enum {
 	STEREO_CENTER,
