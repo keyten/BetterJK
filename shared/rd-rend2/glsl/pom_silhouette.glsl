@@ -34,7 +34,7 @@ uniform vec4 u_PomParams;	// linear steps at the normal, at grazing angles, bina
 uniform vec4 u_PomParams2;	// draw mode (1 shell, 2 crossfade base), depth mode (1 = behind a depth
 							// prepass), orthographic pixel footprint (world, 0 = perspective), debug view
 uniform vec4 u_PomFade;		// crossfade start distance, 1 / width, debug split x (window, < 0 off),
-							// shadow caster offset (world)
+							// shadow caster offset (world) | contact shadows on shells (colour passes)
 
 #define POM_MAX_LINEAR_STEPS 128
 #define POM_MAX_BINARY_STEPS 16
@@ -314,6 +314,16 @@ float PomShellDepth(in mat4 viewProjection, in vec3 hitPosition, in vec3 rayDir,
 	if (u_PomParams2.y > 0.5)
 		p -= rayDir * max(0.02, 1e-4 * viewDistance);
 	return PomWindowDepth(viewProjection, p);
+}
+
+// Sun shadow map lookup position of a shell hit: where the ray from the hit
+// towards the sun leaves the top of the volume. Seen from the sun, every caster
+// of the own shell lies at or behind that plane, so the lookup never finds the
+// displaced surface itself (no acne; PCSS measures the real occluders and keeps
+// its penumbra). Relief shadowing its own surface is left to GetPomSelfShadow.
+vec3 PomShadowLookupPosition(in vec3 hitPosition, in float depth, in float D, in vec3 N, in vec3 L)
+{
+	return hitPosition + L * (depth * D / max(dot(L, N), 0.2));
 }
 
 vec3 PomHeatColor(in float x)

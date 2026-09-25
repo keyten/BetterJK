@@ -403,6 +403,7 @@ extern cvar_t  *r_pomSilhouetteMaxSteps;
 extern cvar_t  *r_pomSilhouetteBinarySteps;
 extern cvar_t  *r_pomSilhouetteViewDependence;
 extern cvar_t  *r_pomSilhouetteShadows;
+extern cvar_t  *r_pomSilhouetteContactShadows;
 extern cvar_t  *r_pomSilhouetteDebug;
 extern cvar_t  *r_autoPomSilhouetteMode;
 extern cvar_t  *r_normalAmbient;

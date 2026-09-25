@@ -111,7 +111,7 @@ Nothing special per effect: they read the depth buffer and the material outputs 
 
 | feature | what it sees |
 |---|---|
-| GTAO / contact shadows (`tr_ao.cpp`) | the prepass depth = displaced surface; GTAO reconstructs normals from it |
+| GTAO / contact shadows (`tr_ao.cpp`) | the prepass depth = displaced surface; GTAO reconstructs normals from it; contact shadows are not applied to shell pixels (see Shadows) |
 | SSR (`tr_ssr.cpp`) | displaced depth; normal / roughness of the virtual material point (`out_SSRNormal`) |
 | SSGI (`tr_ssgi.cpp`) | albedo / radiance of the virtual point, view depth of the virtual point |
 | froxel fog (`r_volumetricFog 2`) | the opaque composite uses the displaced depth; legacy fog volumes use `fogpass_SPOM` |
@@ -133,12 +133,21 @@ There is no normal-mapping-only distance level: the existing POM has no distance
 - **Sun cascades (stage 2, done)**: with `r_pomSilhouetteShadows 1` (default) the shell is drawn into the cascades
   with the orthographic trace (sun direction, not the camera). Rend2 renders depth-shadow views with flipped culling
   (back faces); the shell is drawn with **unflipped** culling (its sun facing side is the displaced surface), the
-  base surface stays an ordinary caster for its parts facing away from the sun. Receivers use the virtual position.
+  base surface stays an ordinary caster for its parts facing away from the sun.
   The caster is pushed `max(0.25, 2 * r_shadowDepthBias)` units away from the sun against acne. Shells are drawn in
   the cascades up to the same distance from the *camera*.
+- **Receivers**: a shell pixel does not look the shadow map up at its virtual hit but where the ray from the hit
+  towards the sun leaves the top of the volume (`PomShadowLookupPosition`: `hit + L * s * D / max(N.L, 0.2)`).
+  Looking up at the hit made the displaced surface its own caster: at cascade resolution (a texel spans several
+  units, the height field varies much faster) that is acne, and PCSS found the surface itself as the blocker, so the
+  penumbra collapsed into hard black shadows. Seen from the sun every caster of the own shell lies at or behind the
+  top plane, so the lookup only finds real occluders and keeps the same soft penumbra as ordinary POM, which looks up
+  its flat base. The shell still casts onto other surfaces.
+- **Relief shadowing its own surface**: POM self shadow (`r_pomSelfShadow`, `GetPomSelfShadow`) with the shell hit
+  (`g_pom` is filled from it), independent of the shadow map resolution.
+- **Contact shadows** (`r_contactShadows`) march the displaced depth buffer and turn the grooves hard black; they
+  are not applied to shell pixels unless `r_pomSilhouetteContactShadows 1`. Crossfade base pixels keep them.
 - **Point light cube shadows and pshadows**: base geometry (documented limitation).
-- **POM self-shadowing**: not in this task (the branch has no POM self-shadow helper; only the hook exists).
-  Displaced bumps still shadow each other through the sun cascades at shadow map resolution.
 
 ## Surfaces
 
@@ -232,6 +241,7 @@ costs a trace per shell pixel (walls included) and there is no automatic enablin
 | `r_pomSilhouetteBinarySteps` | 6 | binary refinement |
 | `r_pomSilhouetteViewDependence` | 1 | how fast the steps grow towards grazing angles (0 = constant) |
 | `r_pomSilhouetteShadows` | 1 | shells in the sun cascades |
+| `r_pomSilhouetteContactShadows` | 0 | screen-space sun contact shadows on shell pixels |
 | `r_pomSilhouetteDebug` | 0 | cheat, see below |
 | `r_pomSilhouetteInfo` | command | shells, groups, walls, memory, fallbacks, last frame counters |
 | `r_autoPomSilhouette` | command | automatic mode and per-shader switches, see "Automatic mode" (`r_autoPomSilhouetteMode`, archive, 0) |
@@ -309,7 +319,9 @@ vid_restart`, `developer 1` for fallback reasons, `r_pomSilhouetteInfo`.
 3. Depth: stand a character in a groove / behind a bump (intersections follow the displaced surface); debug 10.
 4. GTAO (`r_aoMode`), contact shadows, SSR, SSGI, froxel fog and a legacy fog volume on the displaced edge.
 5. Sun shadows (`r_sunlightMode 2`) from the bumps onto the surface and the floor; `r_pomSilhouetteShadows 0` for
-   comparison; acne on lit bumps.
+   comparison; acne on lit bumps. Shadow edges of other geometry on a shelled surface as soft as with
+   `r_autoPomSilhouette 0` (`r_shadowDebug 4/5/6`: blocker depth, penumbra, visibility);
+   `r_pomSilhouetteContactShadows 1` for comparison.
 6. Crossfade: walk towards / away from the surface (`r_pomSilhouetteFade`, `r_pomSilhouetteDistance`).
 7. Movers with a shelled texture (brush models), motion blur / SMAA T2x on the displaced edge.
 8. `r_pomSilhouette 0` equals the `*-prespom.dll` build.

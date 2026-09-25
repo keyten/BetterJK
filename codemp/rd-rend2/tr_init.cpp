@@ -360,6 +360,7 @@ cvar_t  *r_pomSilhouetteMaxSteps;
 cvar_t  *r_pomSilhouetteBinarySteps;
 cvar_t  *r_pomSilhouetteViewDependence;
 cvar_t  *r_pomSilhouetteShadows;
+cvar_t  *r_pomSilhouetteContactShadows;
 cvar_t  *r_pomSilhouetteDebug;
 cvar_t  *r_autoPomSilhouetteMode;
 cvar_t	*r_forceParallaxBias;
@@ -2345,6 +2346,8 @@ void R_Register( void )
 	ri.Cvar_CheckRange( r_pomSilhouetteViewDependence, 0.0f, 4.0f, qfalse );
 	r_pomSilhouetteShadows = ri.Cvar_Get( "r_pomSilhouetteShadows", "1", CVAR_ARCHIVE, "Silhouette POM: shells cast the displaced surface into the sun shadow cascades" );
 	ri.Cvar_CheckRange( r_pomSilhouetteShadows, 0, 1, qtrue );
+	r_pomSilhouetteContactShadows = ri.Cvar_Get( "r_pomSilhouetteContactShadows", "0", CVAR_ARCHIVE, "Silhouette POM: apply screen-space sun contact shadows to shell pixels (they march the displaced depth and turn the grooves hard black)" );
+	ri.Cvar_CheckRange( r_pomSilhouetteContactShadows, 0, 1, qtrue );
 	r_pomSilhouetteDebug = ri.Cvar_Get( "r_pomSilhouetteDebug", "0", CVAR_CHEAT, "Silhouette POM debug view: 1 translucent shell, 2 shell wireframe, 3 original mesh wireframe, 4 top cap / walls, 5 boundary walls, 6 discarded shell pixels, 7 virtual hit depth, 8 ray steps, 9 split ordinary POM | silhouette POM, 10 linear depth, 11 material normal" );
 	ri.Cvar_CheckRange( r_pomSilhouetteDebug, 0, 11, qtrue );
 	r_autoPomSilhouetteMode = ri.Cvar_Get( "r_autoPomSilhouetteMode", "0", CVAR_ARCHIVE, "Silhouette POM for every material with an ordinary POM height map (set with the r_autoPomSilhouette command, needs r_pomSilhouette 1)" );

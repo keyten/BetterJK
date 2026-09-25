@@ -1410,7 +1410,9 @@ void RB_PomSilhouetteSetupDraw( const shaderStage_t *stage, UniformDataWriter& u
 		const float width = R_PomSilhouetteFadeWidth(range);
 		const float split = (debugView == 9) ?
 			(float)viewParms.viewportX + 0.5f * (float)viewParms.viewportWidth : -1.0f;
-		VectorSet4(fade, range - width, width > 0.0f ? 1.0f / width : 1e6f, split, 0.0f);
+		// .w: screen-space contact shadows on shell pixels (colour passes)
+		VectorSet4(fade, range - width, width > 0.0f ? 1.0f / width : 1e6f, split,
+			r_pomSilhouetteContactShadows->integer ? 1.0f : 0.0f);
 	}
 
 	uniforms.SetUniformVec4(UNIFORM_POMPARAMS, params);

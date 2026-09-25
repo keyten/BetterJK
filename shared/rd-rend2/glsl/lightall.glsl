@@ -3080,6 +3080,11 @@ void main()
 	vec2 screenAO = texture(u_SSAOMap, windowTex).rg;
 	AO = screenAO.r;
 	contactShadow = screenAO.g;
+	#if defined(USE_SILHOUETTE_POM)
+	// contact shadows march the displaced depth: hard black grooves on shells
+	if (pomShell && u_PomFade.w < 0.5)
+		contactShadow = 1.0;
+	#endif
 	#endif
 	float cascadeShadow = 1.0;
 	#if defined(USE_SHADOWMAP) && defined(USE_SHADOWS2)
@@ -3092,14 +3097,29 @@ void main()
   #if defined(USE_SHADOWMAP)
 	vec3 primaryLightDir = normalize(u_PrimaryLightOrigin.xyz);
 	float NPL = clamp(dot(N, primaryLightDir), 0.0, 1.0);
+	#if defined(USE_SILHOUETTE_POM)
+	// shell hits look the shadow map up above their own relief
+	vec3 shadowViewDir = viewDir;
+	if (pomShell && pomHit.hit)
+		shadowViewDir = u_ViewOrigin - PomShadowLookupPosition(pomHit.position, pomHit.depth,
+			var_PomShell.y, g_pom.N, primaryLightDir);
+	#endif
 	#if defined(USE_SHADOWS2)
 	vec3 geometricNormal = normalize(vertexNormal);
 	float geometricNPL = clamp(dot(geometricNormal, primaryLightDir), 0.0, 1.0);
+	#if defined(USE_SILHOUETTE_POM)
+	sunInfo = sunShadowModern(u_ViewOrigin - shadowViewDir, geometricNormal, geometricNPL);
+	#else
 	sunInfo = sunShadowModern(u_ViewOrigin - viewDir, geometricNormal, geometricNPL);
+	#endif
 	cascadeShadow = sunInfo.visibility;
 	#else
 	vec3 normalBias = vertexNormal * (1.0 - NPL);
+	#if defined(USE_SILHOUETTE_POM)
+	cascadeShadow = sunShadow(u_ViewOrigin, shadowViewDir, normalBias, u_ShadowMap);
+	#else
 	cascadeShadow = sunShadow(u_ViewOrigin, viewDir, normalBias, u_ShadowMap);
+	#endif
 	#endif
 	// contact shadows only refine the near field of the cascaded shadow map
 	float shadowValue = cascadeShadow * contactShadow * NPL;
