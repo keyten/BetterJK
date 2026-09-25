@@ -1197,11 +1197,17 @@ bool ShaderProgramBuilder::AddShader( const GPUShaderDesc& shaderDesc, const cha
 	static const int MAX_ATTEMPTS = 3;
 	const GLenum apiShader = ToGLShaderType(shaderDesc.type);
 
-	if ( library )
 	{
 		// A header that doesn't fit is silently truncated, only a failed
-		// source load below grows the buffer. Make room for the library.
-		const size_t minSize = strlen(library->source) + MAX_SHADER_SOURCE_LEN;
+		// source load below grows the buffer. Size it from the actual
+		// source, library and extra defines up front.
+		size_t minSize = MAX_SHADER_SOURCE_LEN;
+		if ( shaderDesc.source )
+			minSize += strlen(shaderDesc.source);
+		if ( library )
+			minSize += strlen(library->source);
+		if ( extra )
+			minSize += strlen(extra);
 		if ( shaderSource.size() < minSize )
 		{
 			shaderSource.resize(minSize);
