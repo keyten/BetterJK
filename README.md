@@ -15,6 +15,8 @@ The name is a reference to a BetterJA mod that I once maintained.
 
 ## Graphics
 
+For the complete rendering feature and cvar reference, see [docs/rendering-features.md](docs/rendering-features.md).
+
 ### Tone mapper improvement
 
 If the map is rendered in HDR, its pixels have to be translated back into SDR monitor. BetterJK introduces two translators (so, works only with `r_hdr 1`).
